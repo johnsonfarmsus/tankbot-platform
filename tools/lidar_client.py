@@ -4,7 +4,7 @@
 #   python3 lidar_client.py --plot     -> live plot (needs matplotlib)
 import socket, struct, time, json, sys, math
 
-HOST = 'tanklidar.local'; PORT = 5601
+HOST = 'tankbot.local'; PORT = 5601
 
 def main(duration=10, plot=False):
     ip = socket.gethostbyname(HOST)

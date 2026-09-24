@@ -29,6 +29,8 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_tanklidar._udp</string>
+		<string>_tankmotion._udp</string>
+		<string>_http._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>TankBot Brain connects to your robot on the local network to receive lidar data and send commands.</string>

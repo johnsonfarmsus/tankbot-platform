@@ -26,7 +26,7 @@ class _Partial {
 }
 
 class LidarClient {
-  LidarClient({this.host = 'tanklidar.local', this.port = 5601});
+  LidarClient({this.host = 'tankbot.local', this.port = 5601});
 
   final String host;
   final int port;
@@ -120,7 +120,11 @@ class LidarClient {
         for (var k = 0; k < p.chunkCount; k++) ...?p.chunks[k],
       ];
       if (_lastRotation != null && rot < _lastRotation!) _lastRotation = null; // bridge restarted
-      if (_lastRotation != null && rot > _lastRotation! + 1) droppedScans += rot - _lastRotation! - 1;
+      // Small gaps are real losses; big gaps mean we were paused/disconnected.
+      if (_lastRotation != null) {
+        final gap = rot - _lastRotation! - 1;
+        if (gap > 0 && gap <= 20) droppedScans += gap;
+      }
       _lastRotation = rot;
       completeScans++;
       _scanCtrl.add(LidarScan(rot, robotMs, all, DateTime.now()));
