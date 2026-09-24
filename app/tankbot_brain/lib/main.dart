@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'lidar_client.dart';
+import 'motion_client.dart';
+import 'joystick.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -28,13 +30,20 @@ class LidarScreen extends StatefulWidget {
   State<LidarScreen> createState() => _LidarScreenState();
 }
 
-class _LidarScreenState extends State<LidarScreen> {
+class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   final client = LidarClient();
+  final motion = MotionClient();
   final List<StreamSubscription> _subs = [];
   LidarScan? scan;
   Map<String, dynamic>? robotStatus;
+  Map<String, dynamic>? motionStatus;
   String link = 'Starting...';
   double rangeMm = 6000;
+  double maxSpeed = 0.6;
+  bool obstacleStop = false; // off until the lidar is mounted on the robot
+  static const double stopDistMm = 300, selfMaskMm = 150, frontHalfAngle = 25;
+  double _wantF = 0, _wantT = 0;
+  bool _blocked = false;
   final List<DateTime> _recent = [];
   Timer? _tick;
 
@@ -46,11 +55,15 @@ class _LidarScreenState extends State<LidarScreen> {
       _recent.add(now);
       _recent.removeWhere((t) => now.difference(t) > const Duration(seconds: 2));
       setState(() => scan = s);
+      if (motion.driving) _applyDrive(); // re-check obstacles on every new scan
     }));
     _subs.add(client.status.listen((s) => setState(() => robotStatus = s)));
     _subs.add(client.linkState.listen((s) => setState(() => link = s)));
+    _subs.add(motion.status.listen((m) => setState(() => motionStatus = m)));
     _tick = Timer.periodic(const Duration(milliseconds: 500), (_) => setState(() {}));
+    WidgetsBinding.instance.addObserver(this);
     client.start();
+    motion.start();
   }
 
   @override
@@ -59,18 +72,63 @@ class _LidarScreenState extends State<LidarScreen> {
       s.cancel();
     }
     _tick?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    motion.dispose();
     client.dispose();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) motion.release(); // never drive from the background
+  }
+
   bool get stale => scan == null || DateTime.now().difference(scan!.received) > const Duration(seconds: 1);
+
+  /// Closest lidar point in the front cone, ignoring anything closer than the self-mask.
+  double? get frontClearanceMm {
+    final sc = scan;
+    if (sc == null || stale) return null;
+    double? best;
+    for (final p in sc.points) {
+      final a = p.angleDeg > 180 ? p.angleDeg - 360 : p.angleDeg;
+      if (a.abs() <= frontHalfAngle && p.distMm > selfMaskMm) {
+        if (best == null || p.distMm < best) best = p.distMm;
+      }
+    }
+    return best;
+  }
+
+  void _applyDrive() {
+    var f = _wantF * maxSpeed;
+    final t = _wantT * maxSpeed;
+    final clear = frontClearanceMm;
+    // With obstacle stop on, forward needs fresh lidar data showing clear space ahead.
+    _blocked = obstacleStop && f > 0 && (stale || (clear != null && clear < stopDistMm));
+    if (_blocked) f = 0; // turning and reversing still allowed
+    motion.drive(f, t);
+  }
+
+  void _onStick(double f, double t) {
+    _wantF = f;
+    _wantT = t;
+    _applyDrive();
+  }
+
+  void _onRelease() {
+    _wantF = 0;
+    _wantT = 0;
+    _blocked = false;
+    motion.release();
+    setState(() {});
+  }
 
   Future<void> _enterIp() async {
     final ctrl = TextEditingController(text: client.address ?? '');
     final ip = await showDialog<String>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('Lidar bridge address'),
+        title: const Text('Robot address'),
         content: TextField(
           controller: ctrl,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -82,7 +140,19 @@ class _LidarScreenState extends State<LidarScreen> {
         ],
       ),
     );
-    if (ip != null) client.start(manualIp: ip);
+    if (ip != null) {
+      client.start(manualIp: ip);
+      motion.start(manualIp: ip);
+    }
+  }
+
+  String _motionText() {
+    final m = motionStatus;
+    if (!motion.connected) return 'Motion: not connected';
+    if (m == null) return 'Motion: waiting for robot...';
+    final l = (m['left'] as num).toStringAsFixed(2);
+    final r = (m['right'] as num).toStringAsFixed(2);
+    return 'Motors L $l  R $r  (${m['src']})\nwatchdog stops: ${m['wd_trips']}';
   }
 
   @override
@@ -93,27 +163,34 @@ class _LidarScreenState extends State<LidarScreen> {
       stale ? 'NO DATA' : '${rate.toStringAsFixed(1)} scans/s',
       if (scan != null) '${scan!.points.length} pts',
       'dropped ${client.droppedScans}',
-      if (st != null) 'robot ${(st['hz'] as num).toStringAsFixed(1)} Hz',
       if (st != null) 'Wi-Fi ${st['rssi']} dBm',
     ].join('  |  ');
+    const small = TextStyle(fontSize: 12);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('TankBot lidar'),
+        title: const Text('TankBot'),
         actions: [
           IconButton(icon: const Icon(Icons.wifi_find), tooltip: 'Set address', onPressed: _enterIp),
-          IconButton(icon: const Icon(Icons.refresh), tooltip: 'Reconnect', onPressed: () => client.start()),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Reconnect',
+            onPressed: () {
+              client.start();
+              motion.start();
+            },
+          ),
         ],
       ),
       body: SafeArea(
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+              padding: const EdgeInsets.fromLTRB(12, 2, 12, 0),
               child: Text(link, style: Theme.of(context).textTheme.bodySmall),
             ),
             Padding(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(6),
               child: Text(statusText,
                   style: TextStyle(color: stale ? Colors.redAccent : Colors.tealAccent, fontWeight: FontWeight.w500)),
             ),
@@ -123,19 +200,47 @@ class _LidarScreenState extends State<LidarScreen> {
                 size: Size.infinite,
               ),
             ),
+            if (_blocked)
+              Container(
+                width: double.infinity,
+                color: Colors.red.withValues(alpha: 0.8),
+                padding: const EdgeInsets.all(6),
+                child: const Text('OBSTACLE AHEAD - forward blocked',
+                    textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.w600)),
+              ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
               child: Row(
                 children: [
-                  const Text('Range'),
+                  Joystick(onChanged: _onStick, onReleased: _onRelease),
+                  const SizedBox(width: 12),
                   Expanded(
-                    child: Slider(
-                      value: rangeMm, min: 1000, max: 12000, divisions: 22,
-                      label: '${(rangeMm / 1000).toStringAsFixed(1)} m',
-                      onChanged: (v) => setState(() => rangeMm = v),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(_motionText(), style: small),
+                        const SizedBox(height: 4),
+                        Text('Max speed ${(maxSpeed * 100).round()}%', style: small),
+                        Slider(
+                            value: maxSpeed,
+                            min: 0.2,
+                            max: 1.0,
+                            divisions: 8,
+                            onChanged: (v) => setState(() => maxSpeed = v)),
+                        Text('Range ${(rangeMm / 1000).toStringAsFixed(1)} m', style: small),
+                        Slider(
+                            value: rangeMm,
+                            min: 1000,
+                            max: 12000,
+                            divisions: 22,
+                            onChanged: (v) => setState(() => rangeMm = v)),
+                        Row(children: [
+                          const Expanded(child: Text('Obstacle stop', style: small)),
+                          Switch(value: obstacleStop, onChanged: (v) => setState(() => obstacleStop = v)),
+                        ]),
+                      ],
                     ),
                   ),
-                  Text('${(rangeMm / 1000).toStringAsFixed(1)} m'),
                 ],
               ),
             ),
@@ -156,13 +261,17 @@ class RadarPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final c = size.center(Offset.zero);
     final radius = math.min(size.width, size.height) / 2 - 12;
-    final ring = Paint()..color = Colors.white24..style = PaintingStyle.stroke..strokeWidth = 1;
+    final ring = Paint()
+      ..color = Colors.white24
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
     final step = rangeMm <= 3000 ? 500.0 : 1000.0;
     for (var d = step; d <= rangeMm + 1; d += step) {
       final r = d / rangeMm * radius;
       canvas.drawCircle(c, r, ring);
       final tp = TextPainter(
-        text: TextSpan(text: '${(d / 1000).toStringAsFixed(d % 1000 == 0 ? 0 : 1)} m',
+        text: TextSpan(
+            text: '${(d / 1000).toStringAsFixed(d % 1000 == 0 ? 0 : 1)} m',
             style: const TextStyle(color: Colors.white38, fontSize: 10)),
         textDirection: TextDirection.ltr,
       )..layout();
@@ -171,7 +280,6 @@ class RadarPainter extends CustomPainter {
     canvas.drawLine(c + Offset(0, -radius), c + Offset(0, radius), ring);
     canvas.drawLine(c + Offset(-radius, 0), c + Offset(radius, 0), ring);
 
-    // Robot marker: a small wedge pointing to the front (up)
     final robot = Path()
       ..moveTo(c.dx, c.dy - 12)
       ..lineTo(c.dx - 8, c.dy + 8)
