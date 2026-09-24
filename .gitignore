@@ -1,14 +1,32 @@
-# PlatformIO build artifacts
-.pio
+# Secrets - never commit
+secrets.h
+**/secrets.h
 
-# macOS system files
-.DS_Store
-
-# IDE files
+# PlatformIO
+.pio/
 .vscode/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Flutter / Dart
+app/**/build/
+app/**/.dart_tool/
+app/**/.flutter-plugins
+app/**/.flutter-plugins-dependencies
+app/**/ios/Pods/
+app/**/ios/.symlinks/
+app/**/ios/Flutter/Generated.xcconfig
+app/**/ios/Flutter/flutter_export_environment.sh
+app/**/android/.gradle/
+app/**/android/local.properties
+*.iml
 .idea/
 
-# Compiled files
-*.o
-*.elf
+# macOS
+.DS_Store
+
+# Firmware backups (large binaries)
 *.bin
