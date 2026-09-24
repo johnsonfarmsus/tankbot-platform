@@ -4,7 +4,7 @@ All messages are UDP. Multi-byte numbers are little-endian. Devices advertise th
 
 ## Lidar bridge
 
-- mDNS host: `tanklidar.local`
+- mDNS host: `tankbot.local` (single host for web page, lidar and motion)
 - Bonjour service: `_tanklidar._udp`, port **5601**
 
 ### Subscribing
@@ -39,4 +39,30 @@ Sent once per second to each subscriber: `TLH1` followed by a JSON object, e.g.
 
 ## Motion controller
 
-To be defined: velocity commands (forward speed + turn rate), a command watchdog (stop if no command for ~300 ms), and status reports.
+- Bonjour service: `_tankmotion._udp`, port **5602**
+- Web control page: `http://tankbot.local/` (original TankBot page, now with hold-to-drive keep-alive)
+
+### Drive command `TMC1` (12 bytes)
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | char[4] | `TMC1` |
+| 4 | f32 | forward, -1..1 |
+| 8 | f32 | turn, -1..1 (positive = same as pushing the web joystick to the right) |
+
+Mixed on the robot exactly like the web joystick: `left = forward - turn`, `right = forward + turn`, normalised to at most 1, then scaled by the current speed level and trim.
+
+**Watchdog:** commands must repeat at least every **300 ms** (send at 10-20 Hz). If they stop, the robot stops on its own. Web page commands have a 500 ms watchdog; the page resends every 150 ms while a control is held.
+
+### Stop `TMS1` (4 bytes)
+
+Immediate stop.
+
+### Motion status `TMH1`
+
+Sent every 250 ms to whoever sent a motion command in the last 3 s: `TMH1` + JSON, e.g.
+
+```json
+{"left":0.00,"right":0.00,"src":"none","wd_trips":0,"speed":220,"trim":18,"cmds":0}
+```
+`src` is `udp`, `web` or `none`; `wd_trips` counts watchdog stops since boot.
