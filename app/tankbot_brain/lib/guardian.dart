@@ -1,6 +1,7 @@
 // Guardian: one decision, "is forward motion clear, and if not, why?", using the robot's real
 // geometry from the bot profile. Manual obstacle stop, tap-to-go and the banner all ask this.
 import 'dart:math' as math;
+import 'dart:ui' show Offset;
 import 'bot_profile.dart';
 import 'lidar_client.dart';
 
@@ -24,8 +25,29 @@ class Guardian {
     required double stopDistMm,
     String reflexBlock = 'none',
     bool lidarExpected = true,
+    List<Offset> depthObstacles = const [], // platform frame (fwd, left)
+    List<Offset> dropOffs = const [],
   }) {
     if (reflexBlock != 'none') return GuardVerdict(false, 'robot reflex: $reflexBlock', null);
+    final frontEdge0 = profile.lengthMm / 2000.0, halfWidth0 = profile.widthMm / 2000.0 + sideMarginM;
+    double? depthNearest;
+    for (final o in depthObstacles) {
+      if (o.dy.abs() > halfWidth0) continue;
+      final ahead = o.dx - frontEdge0;
+      if (ahead > 0 && (depthNearest == null || ahead < depthNearest)) depthNearest = ahead;
+    }
+    double? dropNearest;
+    for (final o in dropOffs) {
+      if (o.dy.abs() > halfWidth0 + 0.05) continue;
+      final ahead = o.dx - frontEdge0;
+      if (ahead > 0 && (dropNearest == null || ahead < dropNearest)) dropNearest = ahead;
+    }
+    if (dropNearest != null && dropNearest * 1000 < math.max(stopDistMm, 400)) {
+      return GuardVerdict(false, 'drop-off ahead (${(dropNearest * 1000).round()} mm)', dropNearest * 1000);
+    }
+    if (depthNearest != null && depthNearest * 1000 < stopDistMm) {
+      return GuardVerdict(false, 'depth camera: ${(depthNearest * 1000).round()} mm ahead', depthNearest * 1000);
+    }
     if (!lidarExpected) return const GuardVerdict(true, '', null);
     if (scan == null || scanStale) return const GuardVerdict(false, 'no fresh lidar data', null);
 

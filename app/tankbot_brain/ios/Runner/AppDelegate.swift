@@ -31,6 +31,8 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
   private let session = ARSession()
   private var sink: FlutterEventSink?
   private var lastSent: TimeInterval = 0
+  private var depthCounter = 0
+  var depthEnabled = true
 
   init(messenger: FlutterBinaryMessenger) {
     super.init()
@@ -81,6 +83,9 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
     guard ARWorldTrackingConfiguration.isSupported else { return }
     let config = ARWorldTrackingConfiguration()
     config.worldAlignment = .gravity
+    if #available(iOS 14.0, *), depthEnabled, ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+      config.frameSemantics.insert(.sceneDepth)
+    }
     session.run(config, options: reset ? [.resetTracking, .removeExistingAnchors] : [])
   }
 
@@ -96,8 +101,63 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
     return nil
   }
 
+  /// Depth image -> points relative to the camera in a level, heading-aligned frame (fwd, left, up).
+  @available(iOS 14.0, *)
+  private func emitDepth(_ frame: ARFrame, _ sink: @escaping FlutterEventSink) {
+    guard let depth = frame.sceneDepth else { return }
+    let map = depth.depthMap
+    guard let confMap = depth.confidenceMap else { return }
+    CVPixelBufferLockBaseAddress(map, .readOnly)
+    CVPixelBufferLockBaseAddress(confMap, .readOnly)
+    defer {
+      CVPixelBufferUnlockBaseAddress(map, .readOnly)
+      CVPixelBufferUnlockBaseAddress(confMap, .readOnly)
+    }
+    guard let dBase = CVPixelBufferGetBaseAddress(map), let cBase = CVPixelBufferGetBaseAddress(confMap) else { return }
+    let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map)
+    let dRow = CVPixelBufferGetBytesPerRow(map) / 4, cRow = CVPixelBufferGetBytesPerRow(confMap)
+    let dPtr = dBase.assumingMemoryBound(to: Float32.self)
+    let cPtr = cBase.assumingMemoryBound(to: UInt8.self)
+    let intr = frame.camera.intrinsics
+    let sx = Float(w) / Float(frame.camera.imageResolution.width)
+    let sy = Float(h) / Float(frame.camera.imageResolution.height)
+    let fx = intr[0][0] * sx, fy = intr[1][1] * sy, cx = intr[2][0] * sx, cy = intr[2][1] * sy
+    let T = frame.camera.transform
+    let camPos = simd_make_float3(T.columns.3)
+    let look = -simd_make_float3(T.columns.2)
+    var f = simd_float3(look.x, 0, look.z)
+    let fl = simd_length(f)
+    if fl < 0.2 { return } // camera pointing straight up/down: no usable heading
+    f /= fl
+    let left = simd_float3(f.z, 0, -f.x)
+    var out = [Float32]()
+    out.reserveCapacity(4096 * 3)
+    var v = 0
+    while v < h {
+      var u = 0
+      while u < w {
+        if cPtr[v * cRow + u] >= 2 {
+          let z = dPtr[v * dRow + u]
+          if z > 0.15 && z < 3.5 {
+            let x = (Float(u) - cx) * z / fx, y = (Float(v) - cy) * z / fy
+            let pw = T * simd_float4(x, -y, -z, 1)
+            let rel = simd_make_float3(pw) - camPos
+            out.append(simd_dot(rel, f)); out.append(simd_dot(rel, left)); out.append(rel.y)
+          }
+        }
+        u += 4
+      }
+      v += 4
+    }
+    let data = out.withUnsafeBufferPointer { Data(buffer: $0) }
+    let msg: [String: Any] = ["type": "depth", "t": frame.timestamp, "pts": FlutterStandardTypedData(float32: data)]
+    DispatchQueue.main.async { sink(msg) }
+  }
+
   func session(_ session: ARSession, didUpdate frame: ARFrame) {
     guard let sink = sink else { return }
+    depthCounter += 1
+    if #available(iOS 14.0, *), depthCounter % 6 == 0 { emitDepth(frame, sink) }
     if frame.timestamp - lastSent < 1.0 / 30.0 { return }
     lastSent = frame.timestamp
     let m = frame.camera.transform
@@ -110,6 +170,7 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
     case .limited(let reason): state = "limited:\(reason)"
     }
     let msg: [String: Any] = [
+      "type": "pose",
       "t": frame.timestamp,
       "sent": ProcessInfo.processInfo.systemUptime,
       "x": Double(pos.x), "y": Double(pos.y), "z": Double(pos.z),

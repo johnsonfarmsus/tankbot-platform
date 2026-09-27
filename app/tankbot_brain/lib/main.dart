@@ -21,6 +21,7 @@ import 'sensor_client.dart';
 import 'app_settings.dart';
 import 'role_screens.dart';
 import 'guardian.dart';
+import 'depth_obstacles.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -101,6 +102,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   final client = LidarClient();
   final motion = MotionClient();
   final sensors = SensorClient();
+  final depth = DepthObstacles();
   final poses = PoseClient();
   final grid = OccupancyGrid();
   final store = MapStore();
@@ -232,6 +234,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _telemTimer = Timer.periodic(const Duration(milliseconds: 200), (_) => _sendTelemetry());
     WidgetsBinding.instance.addObserver(this);
     _subs.add(sensors.readings.listen(_onRobotSensors));
+    _subs.add(poses.depth.listen((pts) => depth.update(pts, profile, appClockMs())));
     client.start();
     motion.start();
     sensors.start();
@@ -441,6 +444,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'path': [for (final q in navPath) [(q.dx * 100).round() / 100, (q.dy * 100).round() / 100]],
       },
       'robot': {'caps': sensors.caps, 'live': sensors.fresh ? sensors.latest : null, 'storage': store.robot},
+      'depth': {
+        'frames': depth.frames,
+        'fresh': depth.fresh(appClockMs()),
+        'obstacles': [for (final q in _depthWorldSplit(false)) [(q.dx * 100).round() / 100, (q.dy * 100).round() / 100]],
+        'dropoffs': [for (final q in _depthWorldSplit(true)) [(q.dx * 100).round() / 100, (q.dy * 100).round() / 100]],
+      },
       'nogo': [
         for (final e in active.edits)
           if (e['type'] == 'nogo') [e['x1'], e['y1'], e['x2'], e['y2'], e['id']]
@@ -947,6 +956,31 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     navNote = 'Bumped something - marked it on the map';
   }
 
+  /// Depth-camera obstacles and drop-offs in map coordinates (platform frame -> tracked point -> world).
+  List<Offset> _depthWorld() {
+    final p = robotPose;
+    if (p == null || !depth.fresh(appClockMs())) return const [];
+    final (tx, ty) = profile.trackedPoint;
+    final c = math.cos(p.heading), sd = math.sin(p.heading);
+    Offset toWorld(Offset q) {
+      final fwd = q.dx - tx, left = q.dy - ty;
+      return Offset(p.x + c * fwd - sd * left, p.y + sd * fwd + c * left);
+    }
+    return [for (final q in depth.obstacles) toWorld(q), for (final q in depth.cliffs) toWorld(q)];
+  }
+
+  List<Offset> _depthWorldSplit(bool cliffs) {
+    final p = robotPose;
+    if (p == null || !depth.fresh(appClockMs())) return const [];
+    final (tx, ty) = profile.trackedPoint;
+    final c = math.cos(p.heading), sd = math.sin(p.heading);
+    final src = cliffs ? depth.cliffs : depth.obstacles;
+    return [
+      for (final q in src)
+        Offset(p.x + c * (q.dx - tx) - sd * (q.dy - ty), p.y + sd * (q.dx - tx) + c * (q.dy - ty))
+    ];
+  }
+
   /// The ultrasonic's current reading as a point on the map (low obstacles the lidar misses).
   Offset? _ultrasonicPoint() {
     final live = sensors.fresh ? sensors.latest : null;
@@ -978,6 +1012,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       for (final q in ScanMatcher.robotFrame(sc.points, fwdM: lidarFwdM, leftM: lidarLeftM, stride: 2, maxR: 2.5))
         Offset(p.x + c * q.dx - sn * q.dy, p.y + sn * q.dx + c * q.dy),
       if (us != null) us,
+      ..._depthWorld(),
     ];
   }
 
@@ -1421,6 +1456,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         stopDistMm: stopDistMm,
         reflexBlock: sensors.block,
         lidarExpected: sensors.caps == null || (sensors.caps!['sensors'] as Map?)?['lidar'] != false,
+        depthObstacles: depth.fresh(appClockMs()) ? depth.obstacles : const [],
+        dropOffs: depth.fresh(appClockMs()) ? depth.cliffs : const [],
       );
   String blockReason = '';
 

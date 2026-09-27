@@ -376,6 +376,7 @@ function capsText(c, tr) {
     " | Surface labels: " + yn(c.meshClassification) + "\nPlace memory: " + yn(c.worldMaps) +
     " | Barometer: " + yn(c.barometer) + " | GPS: " + yn(c.gps) + " | Robot lidar: " + yn(c.robotLidar);
   if (tr) s += "\nNow tracking with: " + tr.source + " | lidar corrections: " + tr.matchHits + " used, " + tr.matchMisses + " skipped";
+  if (telem && telem.depth) s += "\nDepth camera: " + (telem.depth.fresh ? "live, " + telem.depth.obstacles.length + " low obstacles, " + telem.depth.dropoffs.length + " drop-off cells" : (telem.depth.frames ? "no recent frames" : "not available")) + " (" + telem.depth.frames + " frames)";
   return s;
 }
 
@@ -652,6 +653,12 @@ function frame() {
           ctx.strokeStyle = "#ff5252"; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
           ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]);
         }
+      }
+      if (t.depth && t.depth.fresh) {
+        ctx.fillStyle = "rgba(255,171,64,0.9)";
+        for (const q of t.depth.obstacles) { const s3 = toS(q[0], q[1]); ctx.fillRect(s3[0] - 2, s3[1] - 2, 4, 4); }
+        ctx.fillStyle = "rgba(255,82,82,0.95)";
+        for (const q of t.depth.dropoffs) { const s3 = toS(q[0], q[1]); ctx.fillRect(s3[0] - 3, s3[1] - 3, 6, 6); }
       }
       if (t.nav && t.nav.path && t.nav.path.length > 1) {
         ctx.strokeStyle = "#448aff"; ctx.lineWidth = 3; ctx.beginPath();

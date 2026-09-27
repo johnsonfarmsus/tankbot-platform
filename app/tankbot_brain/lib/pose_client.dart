@@ -2,6 +2,7 @@
 // All times are in app-clock milliseconds (see appClockMs).
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
 
 /// One monotonic clock for the whole app, so lidar scans and poses can be matched.
@@ -25,6 +26,9 @@ class PoseClient {
 
   final List<Pose> history = [];
   final _ctrl = StreamController<Pose>.broadcast();
+  final _depthCtrl = StreamController<Float32List>.broadcast();
+  /// Depth-camera point clouds: interleaved fwd, left, up (metres) relative to the camera.
+  Stream<Float32List> get depth => _depthCtrl.stream;
   StreamSubscription? _sub;
   double? _offsetMs; // app clock minus iOS uptime clock
   String state = 'off';
@@ -56,6 +60,11 @@ class PoseClient {
 
   void _onEvent(dynamic e) {
     final m = Map<String, dynamic>.from(e as Map);
+    if (m['type'] == 'depth') {
+      final pts = m['pts'];
+      if (pts is Float32List) _depthCtrl.add(pts);
+      return;
+    }
     final now = appClockMs();
     final sentMs = (m['sent'] as num) * 1000.0;
     // Delivery latency is always >= 0, so the smallest (now - sent) is the best offset estimate.
@@ -108,5 +117,6 @@ class PoseClient {
   void dispose() {
     _sub?.cancel();
     _ctrl.close();
+    _depthCtrl.close();
   }
 }
