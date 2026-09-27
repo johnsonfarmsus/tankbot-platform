@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -63,6 +64,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   ViewMode view = ViewMode.radar;
   bool mapping = true;
   bool robotMode = false;
+
+  // Mount detection (robot mode): only map once the phone sits still in its cradle,
+  // and pause if the phone moves relative to the robot (lidar scene unchanged).
+  String mountState = 'off'; // off (not robot mode) | mounting | mounted
+  String mountNote = '';
+  double _robotModeSinceMs = 0, _lastDriveMs = -1e9;
+  final List<_ScanSig> _sigs = [];
+  int disturbances = 0;
   final List<LidarScan> _pending = [];
   final List<Offset> trail = [];
   MapImage? mapImage;
@@ -84,7 +93,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       _recent.add(now);
       _recent.removeWhere((t) => now.difference(t) > const Duration(seconds: 2));
       scan = s;
-      if (mapping) _pending.add(s);
+      _checkDisturbance(s);
+      if (mapping && _mapAllowed) _pending.add(s);
       _processPending();
       if (motion.driving) _applyDrive();
       if (!robotMode) setState(() {});
@@ -97,6 +107,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         trail.add(Offset(p.x, p.y));
         if (trail.length > 5000) trail.removeAt(0);
       }
+      _checkMounted();
       _processPending();
     }));
     _tick = Timer.periodic(const Duration(milliseconds: 400), (_) async {
@@ -165,7 +176,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (m['mapping'] is bool) mapping = m['mapping'] as bool;
         break;
       case 'clearMap':
-        _resetMap();
+        _startNewMap();
         break;
     }
     setState(() {});
@@ -187,6 +198,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
             ],
       'lidarOffset': {'fwd': lidarFwdM, 'left': lidarLeftM},
       'blocked': _blocked,
+      'mount': {'state': mountState, 'note': mountNote, 'robotMode': robotMode, 'disturbances': disturbances},
       'settings': {'maxSpeed': maxSpeed, 'obstacleStop': obstacleStop, 'mapping': mapping},
       'motion': m == null ? null : {'left': m['left'], 'right': m['right'], 'src': m['src']},
       'stats': {
@@ -215,6 +227,109 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     });
   }
 
+  // ---------- mounting ----------
+  bool get _mapAllowed => !robotMode || mountState == 'mounted';
+  bool get _motorsIdle => !motion.driving && appClockMs() - _lastDriveMs > 700;
+
+  void _enterRobotMode() {
+    setState(() {
+      robotMode = true;
+      mountState = 'mounting';
+      mountNote = 'Mount me - mapping starts once I sit still in the cradle';
+      _robotModeSinceMs = appClockMs();
+      _pending.clear();
+      _sigs.clear();
+    });
+  }
+
+  void _exitRobotMode() => setState(() {
+        robotMode = false;
+        mountState = 'off';
+        mountNote = '';
+      });
+
+  /// Mounted = camera level (within ~15 deg), still for 3 s, motors idle.
+  void _checkMounted() {
+    if (!robotMode || mountState != 'mounting') return;
+    final now = appClockMs();
+    if (now - _robotModeSinceMs < 5000 || !_motorsIdle) return;
+    final h = poses.history;
+    if (h.isEmpty) return;
+    final last = h.last;
+    if (last.t - h.first.t < 3000) return;
+    for (var i = h.length - 1; i >= 0; i--) {
+      final p = h[i];
+      if (last.t - p.t > 3000) break;
+      if (!p.good || p.fy.abs() > 0.26) return;
+      if (math.sqrt(_sq(p.x - last.x) + _sq(p.y - last.y)) > 0.015) return;
+      if (_angDiff(p.heading, last.heading).abs() > 0.026) return;
+    }
+    _startNewMap(note: 'Mounted - mapping');
+  }
+
+  /// Robot idle, but ARKit says the phone moved while the lidar scene did not change:
+  /// the phone moved on the robot. Pause mapping until it settles again.
+  void _checkDisturbance(LidarScan s) {
+    final t = s.appMs;
+    if (!robotMode || t == null) return;
+    final sig = _ScanSig(t, _bins(s.points));
+    _sigs.add(sig);
+    while (_sigs.isNotEmpty && sig.t - _sigs.first.t > 1500) {
+      _sigs.removeAt(0);
+    }
+    if (mountState != 'mounted' || !_motorsIdle) return;
+    _ScanSig? old;
+    for (final o in _sigs) {
+      if (sig.t - o.t >= 450) old = o;
+    }
+    if (old == null) return;
+    final p0 = poses.at(old.t), p1 = poses.at(sig.t) ?? poses.latest;
+    if (p0 == null || p1 == null) return;
+    final moved = math.sqrt(_sq(p1.x - p0.x) + _sq(p1.y - p0.y));
+    final turned = _angDiff(p1.heading, p0.heading).abs();
+    if (moved < 0.03 && turned < 0.052) return; // under 3 cm and 3 deg: fine
+    if (_sceneChange(old.bins, sig.bins) > 0.15) return; // lidar saw the robot move too: consistent
+    disturbances++;
+    mountState = 'mounting';
+    mountNote = 'Phone moved on the robot - mapping paused until it settles';
+    _pending.clear();
+  }
+
+  Future<void> _startNewMap({String note = 'New map started here'}) async {
+    if (robotMode) {
+      mountState = 'mounted';
+      mountNote = note;
+    }
+    await _resetMap();
+    _sigs.clear();
+    if (mounted) setState(() {});
+  }
+
+  static Float32List _bins(List<LidarPoint> pts) {
+    final sum = Float32List(180), cnt = Float32List(180);
+    for (final p in pts) {
+      final b = (p.angleDeg / 2).floor() % 180;
+      sum[b] += p.distMm;
+      cnt[b] += 1;
+    }
+    for (var i = 0; i < 180; i++) {
+      sum[i] = cnt[i] > 0 ? sum[i] / cnt[i] : 0;
+    }
+    return sum;
+  }
+
+  /// Fraction of 2-degree bins whose range changed by more than 5 cm.
+  static double _sceneChange(Float32List a, Float32List b) {
+    var both = 0, changed = 0;
+    for (var i = 0; i < 180; i++) {
+      if (a[i] > 0 && b[i] > 0) {
+        both++;
+        if ((a[i] - b[i]).abs() > 50) changed++;
+      }
+    }
+    return both < 30 ? 1.0 : changed / both;
+  }
+
   // ---------- mapping ----------
   void _processPending() {
     final latest = poses.latest;
@@ -235,6 +350,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         break;
       }
       _pending.removeAt(0);
+      if (!_mapAllowed) continue;
       final p = poses.at(t);
       if (p == null || !p.good) {
         skippedNoPose++;
@@ -279,12 +395,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   void _onStick(double f, double t) {
+    _lastDriveMs = appClockMs();
     _wantF = f;
     _wantT = t;
     _applyDrive();
   }
 
   void _onRelease() {
+    _lastDriveMs = appClockMs();
     _wantF = 0;
     _wantT = 0;
     _blocked = false;
@@ -353,7 +471,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           IconButton(
             icon: const Icon(Icons.smart_toy),
             tooltip: 'Robot mode',
-            onPressed: () => setState(() => robotMode = true),
+            onPressed: _enterRobotMode,
           ),
           if (view == ViewMode.map)
             IconButton(
@@ -362,7 +480,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
               onPressed: () => setState(() => mapping = !mapping),
             ),
           if (view == ViewMode.map)
-            IconButton(icon: const Icon(Icons.delete_sweep), tooltip: 'Clear map', onPressed: _resetMap),
+            IconButton(icon: const Icon(Icons.delete_sweep), tooltip: 'New map here', onPressed: () => _startNewMap()),
           IconButton(icon: const Icon(Icons.wifi_find), tooltip: 'Set address', onPressed: _enterIp),
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -476,6 +594,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
                 const SizedBox(width: 12),
                 Text('TankBot Brain', style: s(26, Colors.white)),
               ]),
+              const SizedBox(height: 16),
+              if (mountNote.isNotEmpty)
+                Text(mountNote, style: s(18, mountState == 'mounted' ? Colors.tealAccent : Colors.amberAccent)),
               const SizedBox(height: 24),
               Text('Control from any browser on this Wi-Fi:', style: s(14)),
               const SizedBox(height: 6),
@@ -492,7 +613,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
               const Spacer(),
               Center(
                 child: TextButton(
-                  onLongPress: () => setState(() => robotMode = false),
+                  onLongPress: _exitRobotMode,
                   onPressed: () {},
                   child: Text('Long-press to exit robot mode', style: s(13, Colors.white38)),
                 ),
@@ -638,4 +759,23 @@ class MapPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(MapPainter old) => true;
+}
+
+class _ScanSig {
+  final double t;
+  final Float32List bins;
+  _ScanSig(this.t, this.bins);
+}
+
+double _sq(double v) => v * v;
+
+double _angDiff(double a, double b) {
+  var d = a - b;
+  while (d > math.pi) {
+    d -= 2 * math.pi;
+  }
+  while (d < -math.pi) {
+    d += 2 * math.pi;
+  }
+  return d;
 }

@@ -142,13 +142,14 @@ input[type=range]{width:100%}
 <span style="margin-left:auto"><button id="mode">Radar view</button></span></header>
 <div id="view"><canvas id="map"></canvas></div>
 <div id="banner">OBSTACLE AHEAD - forward blocked</div>
+<div id="mountbar" style="display:none;text-align:center;padding:6px;font-weight:600"></div>
 <div id="bottom"><canvas id="stick" width="340" height="340"></canvas>
 <div class="ctl">
 <div id="motors">Motors: -</div>
 <label>Max speed <span id="msv"></span><input id="ms" type="range" min="0.2" max="1" step="0.1" value="0.6"></label>
 <label>View range <span id="rgv"></span><input id="rg" type="range" min="1" max="12" step="0.5" value="4"></label>
 <div class="row"><label><input id="obs" type="checkbox"> Obstacle stop</label></div>
-<div class="row"><button id="mapping">Pause mapping</button><button id="clear">Clear map</button></div>
+<div class="row"><button id="mapping">Pause mapping</button><button id="clear">New map here</button></div>
 </div></div>
 <script>
 const $ = id => document.getElementById(id);
@@ -214,7 +215,7 @@ $("ms").oninput = e => { $("msv").textContent = Math.round(e.target.value * 100)
 $("rg").oninput = e => { $("rgv").textContent = e.target.value + " m"; };
 $("obs").onchange = e => send({type: "set", obstacleStop: e.target.checked});
 $("mapping").onclick = () => send({type: "set", mapping: !(telem && telem.settings.mapping)});
-$("clear").onclick = () => { if (confirm("Clear the map and restart tracking from the robot's current spot?")) send({type: "clearMap"}); };
+$("clear").onclick = () => { if (confirm("Start a new map with the robot's current spot as the origin?")) send({type: "clearMap"}); };
 $("mode").onclick = () => { mode = mode === "map" ? "radar" : "map"; $("mode").textContent = mode === "map" ? "Radar view" : "Map view"; };
 $("rgv").textContent = $("rg").value + " m";
 $("msv").textContent = Math.round($("ms").value * 100) + "%";
@@ -226,6 +227,11 @@ function updateUi() {
   $("obs").checked = s.obstacleStop;
   $("mapping").textContent = s.mapping ? "Pause mapping" : "Resume mapping";
   $("banner").style.display = t.blocked ? "block" : "none";
+  const mb = $("mountbar"), mt = t.mount;
+  if (mt && mt.robotMode && mt.note) {
+    mb.style.display = "block"; mb.textContent = mt.note;
+    mb.style.background = mt.state === "mounted" ? "#00695c" : "#8d6e00";
+  } else mb.style.display = "none";
   $("stat").textContent = st.scanRate.toFixed(1) + " scans/s | AR " + st.ar + " | mapped " + st.mapped + " | remotes " + st.remotes;
   $("motors").textContent = m ? "Motors L " + m.left.toFixed(2) + "  R " + m.right.toFixed(2) + " (" + m.src + ")" : "Motors: -";
 }

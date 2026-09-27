@@ -14,7 +14,9 @@ double appClockMs() => _appClock.elapsedMicroseconds / 1000.0;
 class Pose {
   final double t, x, y, heading;
   final bool good;
-  const Pose(this.t, this.x, this.y, this.heading, this.good);
+  /// Vertical part of the camera's forward vector: ~0 when the camera looks level.
+  final double fy;
+  const Pose(this.t, this.x, this.y, this.heading, this.good, [this.fy = 0]);
 }
 
 class PoseClient {
@@ -65,9 +67,10 @@ class PoseClient {
     final z = (m['z'] as num).toDouble();
     final fx = (m['fx'] as num).toDouble();
     final fz = (m['fz'] as num).toDouble();
+    final fy = (m['fy'] as num).toDouble();
     state = m['state'] as String;
     final flat = fx * fx + fz * fz; // camera must look roughly horizontal for a heading
-    final p = Pose(t, x, -z, math.atan2(-fz, fx), state == 'normal' && flat > 0.25);
+    final p = Pose(t, x, -z, math.atan2(-fz, fx), state == 'normal' && flat > 0.25, fy);
     history.add(p);
     while (history.isNotEmpty && t - history.first.t > 5000) {
       history.removeAt(0);
@@ -98,7 +101,8 @@ class PoseClient {
     while (dh < -math.pi) {
       dh += 2 * math.pi;
     }
-    return Pose(t, a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.heading + dh * f, a.good && b.good);
+    return Pose(t, a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.heading + dh * f, a.good && b.good,
+        a.fy + (b.fy - a.fy) * f);
   }
 
   void dispose() {
