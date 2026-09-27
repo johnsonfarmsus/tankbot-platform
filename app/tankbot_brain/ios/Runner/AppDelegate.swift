@@ -43,6 +43,10 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
       case "reset":
         self?.run(reset: true)
         result(nil)
+      case "keepAwake":
+        let on = (call.arguments as? Bool) ?? true
+        DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = on }
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
