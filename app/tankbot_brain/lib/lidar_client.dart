@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'pose_client.dart' show appClockMs;
 
 class LidarPoint {
   final double angleDeg; // clockwise from the lidar's front
@@ -16,7 +17,9 @@ class LidarScan {
   final int robotMs;
   final List<LidarPoint> points;
   final DateTime received;
-  LidarScan(this.rotation, this.robotMs, this.points, this.received);
+  /// Mid-rotation time on the app clock (ms), once clock sync has a fix.
+  final double? appMs;
+  LidarScan(this.rotation, this.robotMs, this.points, this.received, this.appMs);
 }
 
 class _Partial {
@@ -41,6 +44,13 @@ class LidarClient {
   int droppedScans = 0;
   DateTime? lastPacket;
 
+  // Clock sync (robot ms -> app ms)
+  int _syncSeq = 0;
+  final Map<int, double> _syncSent = {};
+  final List<List<double>> _syncSamples = []; // [rtt, offset]
+  double? robotOffsetMs; // robot_ms - app_ms
+  double? syncRttMs;
+
   final _scanCtrl = StreamController<LidarScan>.broadcast();
   final _statusCtrl = StreamController<Map<String, dynamic>>.broadcast();
   final _stateCtrl = StreamController<String>.broadcast();
@@ -55,6 +65,8 @@ class LidarClient {
     completeScans = 0;
     droppedScans = 0;
     _lastRotation = null;
+    _syncSamples.clear();
+    robotOffsetMs = null;
     try {
       if (manualIp != null && manualIp.trim().isNotEmpty) {
         _address = InternetAddress(manualIp.trim());
@@ -79,6 +91,16 @@ class LidarClient {
     final a = _address, s = _socket;
     if (a == null || s == null) return;
     s.send(ascii.encode('TLSUB'), a, port);
+    // clock sync ping
+    final seq = ++_syncSeq;
+    final b = ByteData(9);
+    for (var i = 0; i < 5; i++) {
+      b.setUint8(i, 'TLSYN'.codeUnitAt(i));
+    }
+    b.setUint32(5, seq, Endian.little);
+    _syncSent[seq] = appClockMs();
+    _syncSent.removeWhere((k, _) => k < seq - 10);
+    s.send(b.buffer.asUint8List(), a, port);
   }
 
   void _onEvent(RawSocketEvent e) {
@@ -89,9 +111,28 @@ class LidarClient {
     }
   }
 
+  void _handleSync(Uint8List data) {
+    final now = appClockMs();
+    final bd = ByteData.sublistView(data);
+    final seq = bd.getUint32(5, Endian.little);
+    final sent = _syncSent.remove(seq);
+    if (sent == null) return;
+    final robotMs = bd.getInt64(9, Endian.little) / 1000.0;
+    final rtt = now - sent;
+    _syncSamples.add([rtt, robotMs - (sent + now) / 2]);
+    if (_syncSamples.length > 30) _syncSamples.removeAt(0);
+    final best = _syncSamples.reduce((a, b) => a[0] <= b[0] ? a : b);
+    syncRttMs = best[0];
+    robotOffsetMs = best[1];
+  }
+
   void _handle(Uint8List data) {
     if (data.length < 4) return;
     lastPacket = DateTime.now();
+    if (data.length >= 17 && String.fromCharCodes(data.sublist(0, 5)) == 'TLSY1') {
+      _handleSync(data);
+      return;
+    }
     final magic = String.fromCharCodes(data.sublist(0, 4));
     if (magic == 'TLH1') {
       try {
@@ -127,7 +168,10 @@ class LidarClient {
       }
       _lastRotation = rot;
       completeScans++;
-      _scanCtrl.add(LidarScan(rot, robotMs, all, DateTime.now()));
+      final off = robotOffsetMs;
+      // robotMs is the rotation start; a rotation takes ~100 ms, so use the middle.
+      final appMs = off == null ? null : robotMs + 50 - off;
+      _scanCtrl.add(LidarScan(rot, robotMs, all, DateTime.now(), appMs));
     }
     _partials.removeWhere((k, _) => k + 3 < rot);
   }

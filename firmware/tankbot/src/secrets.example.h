@@ -3,3 +3,6 @@
 // secrets.h is git-ignored and never committed.
 #define WIFI_SSID "your-network-name"
 #define WIFI_PASS "your-password"
+
+// Optional but recommended: password required for wireless firmware updates.
+// #define OTA_PASS "choose-a-password"

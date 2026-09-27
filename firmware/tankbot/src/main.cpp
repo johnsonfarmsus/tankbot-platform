@@ -12,7 +12,9 @@
 #include <ESPmDNS.h>
 #include <DNSServer.h>
 #include <Preferences.h>
+#include <ArduinoOTA.h>
 #include <math.h>
+#include "esp_timer.h"
 #include "secrets.h"
 #include "web_ui.h"
 
@@ -291,7 +293,16 @@ void handleLidarUdp() {
   while (sz > 0) {
     char msg[16] = {0};
     udpLidar.read(msg, min(sz, 15));
-    if (strncmp(msg, "TLSUB", 5) == 0) {
+    if (strncmp(msg, "TLSYN", 5) == 0 && sz >= 9) {
+      // Clock sync: echo the client's sequence number with our clock in microseconds.
+      uint32_t seq; memcpy(&seq, msg + 5, 4);
+      int64_t us = esp_timer_get_time();
+      uint8_t r[17];
+      memcpy(r, "TLSY1", 5); memcpy(r + 5, &seq, 4); memcpy(r + 9, &us, 8);
+      udpLidar.beginPacket(udpLidar.remoteIP(), udpLidar.remotePort());
+      udpLidar.write(r, sizeof(r));
+      udpLidar.endPacket();
+    } else if (strncmp(msg, "TLSUB", 5) == 0) {
       IPAddress ip = udpLidar.remoteIP(); uint16_t port = udpLidar.remotePort();
       Sub *slot = nullptr;
       for (auto &s : subs) if (s.used && s.ip == ip && s.port == port) slot = &s;
@@ -353,6 +364,26 @@ void setupNetwork() {
   Serial.printf("[net] web on :80, lidar UDP :%u, motion UDP :%u\n", LIDAR_PORT, MOTION_PORT);
 }
 
+
+// ================= OTA (wireless firmware updates) =================
+// Upload with: pio run -e ota -t upload   (robot must be on the same network)
+// Set OTA_PASS in secrets.h to require a password (recommended).
+void setupOta() {
+  ArduinoOTA.setHostname(HOSTNAME);
+#ifdef OTA_PASS
+  ArduinoOTA.setPassword(OTA_PASS);
+#endif
+  ArduinoOTA.onStart([]() {
+    stopAll();                       // never drive during an update
+    Lidar.end();
+    Serial.println("[ota] update starting, motors stopped");
+  });
+  ArduinoOTA.onEnd([]() { Serial.println("[ota] update done, rebooting"); });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[ota] error %u\n", e); });
+  ArduinoOTA.begin();
+  Serial.println("[ota] ready");
+}
+
 // ================= main =================
 void setup() {
   setupMotors();                      // motors stopped before anything else
@@ -365,6 +396,7 @@ void setup() {
   Serial.printf("[motion] trim %d, speed %d, watchdog udp %lu ms / web %lu ms\n", motorTrim, currentSpeed,
                 (unsigned long)UDP_CMD_TIMEOUT_MS, (unsigned long)WEB_CMD_TIMEOUT_MS);
   setupNetwork();
+  setupOta();
   Lidar.setRxBufferSize(8192);
   Lidar.begin(LIDAR_BAUD, SERIAL_8N1, LIDAR_RX, LIDAR_TX);
   delay(50);
@@ -377,6 +409,7 @@ void loop() {
   while (Lidar.available()) { lidarByte(Lidar.read()); lastByteMs = millis(); }
   if (millis() - lastByteMs > 8000) { Serial.println("[lidar] no data for 8 s, restarting scan"); lidarStartScan(); lastByteMs = millis(); }
 
+  ArduinoOTA.handle();
   handleMotionUdp();
   motionWatchdog();
   if (apMode) dnsServer.processNextRequest();

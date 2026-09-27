@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'lidar_client.dart';
 import 'motion_client.dart';
 import 'joystick.dart';
+import 'pose_client.dart';
+import 'occupancy_grid.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -24,6 +26,8 @@ class TankBotApp extends StatelessWidget {
   }
 }
 
+enum ViewMode { radar, map }
+
 class LidarScreen extends StatefulWidget {
   const LidarScreen({super.key});
   @override
@@ -33,6 +37,8 @@ class LidarScreen extends StatefulWidget {
 class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   final client = LidarClient();
   final motion = MotionClient();
+  final poses = PoseClient();
+  final grid = OccupancyGrid();
   final List<StreamSubscription> _subs = [];
   LidarScan? scan;
   Map<String, dynamic>? robotStatus;
@@ -40,12 +46,24 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   String link = 'Starting...';
   double rangeMm = 6000;
   double maxSpeed = 0.6;
-  bool obstacleStop = false; // off until the lidar is mounted on the robot
+  bool obstacleStop = false;
   static const double stopDistMm = 300, selfMaskMm = 150, frontHalfAngle = 25;
   double _wantF = 0, _wantT = 0;
   bool _blocked = false;
   final List<DateTime> _recent = [];
   Timer? _tick;
+
+  // Mapping
+  ViewMode view = ViewMode.radar;
+  bool mapping = true;
+  final List<LidarScan> _pending = [];
+  final List<Offset> trail = [];
+  MapImage? mapImage;
+  bool _rendering = false;
+  int skippedNoPose = 0;
+
+  // Lidar position relative to the phone, metres. Set once the phone cradle is mounted.
+  static const double lidarFwdM = 0.0, lidarLeftM = 0.0;
 
   @override
   void initState() {
@@ -54,16 +72,35 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       final now = DateTime.now();
       _recent.add(now);
       _recent.removeWhere((t) => now.difference(t) > const Duration(seconds: 2));
-      setState(() => scan = s);
-      if (motion.driving) _applyDrive(); // re-check obstacles on every new scan
+      scan = s;
+      if (mapping) _pending.add(s);
+      _processPending();
+      if (motion.driving) _applyDrive();
+      setState(() {});
     }));
     _subs.add(client.status.listen((s) => setState(() => robotStatus = s)));
     _subs.add(client.linkState.listen((s) => setState(() => link = s)));
     _subs.add(motion.status.listen((m) => setState(() => motionStatus = m)));
-    _tick = Timer.periodic(const Duration(milliseconds: 500), (_) => setState(() {}));
+    _subs.add(poses.poses.listen((p) {
+      if (p.good && (trail.isEmpty || (Offset(p.x, p.y) - trail.last).distance > 0.05)) {
+        trail.add(Offset(p.x, p.y));
+        if (trail.length > 5000) trail.removeAt(0);
+      }
+      _processPending();
+    }));
+    _tick = Timer.periodic(const Duration(milliseconds: 400), (_) async {
+      if (grid.dirty && !_rendering && view == ViewMode.map) {
+        _rendering = true;
+        final img = await grid.render();
+        _rendering = false;
+        if (img != null) mapImage = img;
+      }
+      if (mounted) setState(() {});
+    });
     WidgetsBinding.instance.addObserver(this);
     client.start();
     motion.start();
+    poses.start();
   }
 
   @override
@@ -75,17 +112,47 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     motion.dispose();
     client.dispose();
+    poses.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) motion.release(); // never drive from the background
+    if (state != AppLifecycleState.resumed) motion.release();
+  }
+
+  /// Place scans into the map once we have a pose for the moment they were taken.
+  void _processPending() {
+    final latest = poses.latest;
+    while (_pending.isNotEmpty) {
+      final s = _pending.first;
+      final t = s.appMs;
+      if (t == null) {
+        _pending.removeAt(0);
+        skippedNoPose++;
+        continue;
+      }
+      if (latest == null || latest.t < t) {
+        // pose for this moment not here yet; give up on very old scans
+        if (latest != null && appClockMs() - t > 1000) {
+          _pending.removeAt(0);
+          skippedNoPose++;
+          continue;
+        }
+        break;
+      }
+      _pending.removeAt(0);
+      final p = poses.at(t);
+      if (p == null || !p.good) {
+        skippedNoPose++;
+        continue;
+      }
+      grid.integrate(p, s.points, lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
+    }
   }
 
   bool get stale => scan == null || DateTime.now().difference(scan!.received) > const Duration(seconds: 1);
 
-  /// Closest lidar point in the front cone, ignoring anything closer than the self-mask.
   double? get frontClearanceMm {
     final sc = scan;
     if (sc == null || stale) return null;
@@ -103,9 +170,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     var f = _wantF * maxSpeed;
     final t = _wantT * maxSpeed;
     final clear = frontClearanceMm;
-    // With obstacle stop on, forward needs fresh lidar data showing clear space ahead.
     _blocked = obstacleStop && f > 0 && (stale || (clear != null && clear < stopDistMm));
-    if (_blocked) f = 0; // turning and reversing still allowed
+    if (_blocked) f = 0;
     motion.drive(f, t);
   }
 
@@ -120,6 +186,15 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _wantT = 0;
     _blocked = false;
     motion.release();
+    setState(() {});
+  }
+
+  Future<void> _resetMap() async {
+    grid.clear();
+    trail.clear();
+    mapImage = null;
+    _pending.clear();
+    await poses.reset();
     setState(() {});
   }
 
@@ -155,6 +230,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     return 'Motors L $l  R $r  (${m['src']})\nwatchdog stops: ${m['wd_trips']}';
   }
 
+  String _trackingText() {
+    final p = poses.latest;
+    final sync = client.robotOffsetMs == null ? 'sync...' : 'sync ±${(client.syncRttMs! / 2).toStringAsFixed(0)} ms';
+    final pos = p == null ? '' : '  pos ${p.x.toStringAsFixed(2)}, ${p.y.toStringAsFixed(2)} m';
+    return 'AR ${poses.state}$pos  |  $sync  |  mapped ${grid.scansIntegrated}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final rate = _recent.length / 2.0;
@@ -171,6 +253,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       appBar: AppBar(
         title: const Text('TankBot'),
         actions: [
+          if (view == ViewMode.map)
+            IconButton(
+              icon: Icon(mapping ? Icons.pause_circle : Icons.play_circle),
+              tooltip: mapping ? 'Pause mapping' : 'Resume mapping',
+              onPressed: () => setState(() => mapping = !mapping),
+            ),
+          if (view == ViewMode.map)
+            IconButton(icon: const Icon(Icons.delete_sweep), tooltip: 'Clear map', onPressed: _resetMap),
           IconButton(icon: const Icon(Icons.wifi_find), tooltip: 'Set address', onPressed: _enterIp),
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -190,13 +280,27 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
               child: Text(link, style: Theme.of(context).textTheme.bodySmall),
             ),
             Padding(
-              padding: const EdgeInsets.all(6),
+              padding: const EdgeInsets.fromLTRB(8, 4, 8, 0),
               child: Text(statusText,
                   style: TextStyle(color: stale ? Colors.redAccent : Colors.tealAccent, fontWeight: FontWeight.w500)),
             ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 2, 8, 4),
+              child: Text(_trackingText(), style: const TextStyle(fontSize: 11, color: Colors.white70)),
+            ),
+            SegmentedButton<ViewMode>(
+              segments: const [
+                ButtonSegment(value: ViewMode.radar, label: Text('Radar'), icon: Icon(Icons.radar)),
+                ButtonSegment(value: ViewMode.map, label: Text('Map'), icon: Icon(Icons.map)),
+              ],
+              selected: {view},
+              onSelectionChanged: (s) => setState(() => view = s.first),
+            ),
             Expanded(
               child: CustomPaint(
-                painter: RadarPainter(scan: scan, rangeMm: rangeMm, stale: stale),
+                painter: view == ViewMode.radar
+                    ? RadarPainter(scan: scan, rangeMm: rangeMm, stale: stale)
+                    : MapPainter(map: mapImage, pose: poses.latest, trail: trail, rangeMm: rangeMm),
                 size: Size.infinite,
               ),
             ),
@@ -227,7 +331,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
                             max: 1.0,
                             divisions: 8,
                             onChanged: (v) => setState(() => maxSpeed = v)),
-                        Text('Range ${(rangeMm / 1000).toStringAsFixed(1)} m', style: small),
+                        Text('View range ${(rangeMm / 1000).toStringAsFixed(1)} m', style: small),
                         Slider(
                             value: rangeMm,
                             min: 1000,
@@ -308,4 +412,83 @@ class RadarPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(RadarPainter old) => old.scan != scan || old.rangeMm != rangeMm || old.stale != stale;
+}
+
+/// Top-down map, north-up (map +y is up), centred on the robot.
+class MapPainter extends CustomPainter {
+  MapPainter({required this.map, required this.pose, required this.trail, required this.rangeMm});
+  final MapImage? map;
+  final Pose? pose;
+  final List<Offset> trail;
+  final double rangeMm;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = size.center(Offset.zero);
+    final radius = math.min(size.width, size.height) / 2 - 12;
+    final ppm = radius / (rangeMm / 1000.0); // pixels per metre
+    final px = pose?.x ?? 0, py = pose?.y ?? 0;
+    Offset toScreen(double x, double y) => Offset(c.dx + (x - px) * ppm, c.dy - (y - py) * ppm);
+
+    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF15191C));
+    final m = map;
+    if (m != null) {
+      final tl = toScreen(m.leftM, m.topM);
+      final dst = Rect.fromLTWH(tl.dx, tl.dy, m.image.width * m.resolution * ppm, m.image.height * m.resolution * ppm);
+      canvas.drawImageRect(
+        m.image,
+        Rect.fromLTWH(0, 0, m.image.width.toDouble(), m.image.height.toDouble()),
+        dst,
+        Paint()..filterQuality = FilterQuality.none,
+      );
+    }
+    // 1 m grid
+    final gridPaint = Paint()
+      ..color = Colors.white10
+      ..strokeWidth = 1;
+    final x0 = (px - rangeMm / 1000 * 2).floorToDouble(), x1 = (px + rangeMm / 1000 * 2).ceilToDouble();
+    final y0 = (py - rangeMm / 1000 * 2).floorToDouble(), y1 = (py + rangeMm / 1000 * 2).ceilToDouble();
+    for (var x = x0; x <= x1; x++) {
+      canvas.drawLine(toScreen(x, y0), toScreen(x, y1), gridPaint);
+    }
+    for (var y = y0; y <= y1; y++) {
+      canvas.drawLine(toScreen(x0, y), toScreen(x1, y), gridPaint);
+    }
+    // trail
+    if (trail.length > 1) {
+      final path = Path()..moveTo(toScreen(trail.first.dx, trail.first.dy).dx, toScreen(trail.first.dx, trail.first.dy).dy);
+      for (final t in trail.skip(1)) {
+        final s = toScreen(t.dx, t.dy);
+        path.lineTo(s.dx, s.dy);
+      }
+      canvas.drawPath(
+          path,
+          Paint()
+            ..color = Colors.orangeAccent.withValues(alpha: 0.6)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2);
+    }
+    // robot arrow
+    final p = pose;
+    if (p != null) {
+      final h = p.heading;
+      final dir = Offset(math.cos(h), -math.sin(h));
+      final side = Offset(-dir.dy, dir.dx);
+      final robot = Path()
+        ..moveTo(c.dx + dir.dx * 14, c.dy + dir.dy * 14)
+        ..lineTo(c.dx - dir.dx * 9 + side.dx * 9, c.dy - dir.dy * 9 + side.dy * 9)
+        ..lineTo(c.dx - dir.dx * 9 - side.dx * 9, c.dy - dir.dy * 9 - side.dy * 9)
+        ..close();
+      canvas.drawPath(robot, Paint()..color = p.good ? Colors.orangeAccent : Colors.grey);
+    }
+    // scale label
+    final tp = TextPainter(
+      text: const TextSpan(text: 'grid: 1 m', style: TextStyle(color: Colors.white38, fontSize: 10)),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, const Offset(8, 8));
+  }
+
+  @override
+  bool shouldRepaint(MapPainter old) => true;
 }

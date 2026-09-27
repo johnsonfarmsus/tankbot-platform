@@ -29,6 +29,10 @@ Each point: `u16 angle_q6` (degrees = value / 64, clockwise from the lidar's fro
 
 A rotation is complete when all `chunk count` chunks with the same rotation number have arrived. Drop incomplete rotations; the next one arrives 100 ms later.
 
+### Clock sync `TLSYN` / `TLSY1`
+
+The client sends `TLSYN` + `u32 seq` (9 bytes) to port 5601. The bridge replies immediately with `TLSY1` + `u32 seq` + `i64` bridge time in microseconds (17 bytes, same clock as `millis()`). The client keeps the reply with the smallest round-trip time and estimates `offset = bridge_ms - (sent + received) / 2`, which converts scan timestamps into its own clock. Send about once per second.
+
 ### Status packet `TLH1`
 
 Sent once per second to each subscriber: `TLH1` followed by a JSON object, e.g.
