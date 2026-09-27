@@ -12,6 +12,7 @@ import 'joystick.dart';
 import 'pose_client.dart';
 import 'occupancy_grid.dart';
 import 'brain_server.dart';
+import 'map_store.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -46,6 +47,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   final motion = MotionClient();
   final poses = PoseClient();
   final grid = OccupancyGrid();
+  final store = MapStore();
+  late MapSession active;
+  double _lastAutosaveMs = 0;
+  List<Map<String, dynamic>> savedMaps = [];
+  bool _loadingMap = false;
   late final BrainServer server;
   final List<StreamSubscription> _subs = [];
   LidarScan? scan;
@@ -89,6 +95,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    active = MapSession.fresh(lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
     server = BrainServer(onMessage: _onRemote, onRemoteSilent: _onRelease);
     _subs.add(client.scans.listen((s) {
       final now = DateTime.now();
@@ -123,6 +130,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           _mapChangedSinceSend = true;
         }
       }
+      await _autosaveIfDue();
       await _sendMapIfDue();
       if (mounted) setState(() {});
     });
@@ -131,7 +139,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     client.start();
     motion.start();
     poses.start();
-    server.start().then((_) => setState(() {}));
+    server.start().then((_) {
+      _refreshMapList();
+      setState(() {});
+    });
     _keepAwake(true); // the brain must never auto-lock: iOS would suspend it
   }
 
@@ -158,7 +169,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) motion.release();
+    if (state != AppLifecycleState.resumed) {
+      motion.release();
+      _saveActive(); // never lose the map to backgrounding or an app update
+    }
   }
 
   // ---------- remote control ----------
@@ -182,6 +196,24 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       case 'clearMap':
         _startNewMap();
         break;
+      case 'maps.list':
+        _refreshMapList();
+        break;
+      case 'maps.save':
+        final n = (m['name'] as String?)?.trim();
+        if (n != null && n.isNotEmpty && n != active.name) {
+          active.name = n.length > 60 ? n.substring(0, 60) : n;
+          active.renamed = true;
+        }
+        _saveActive();
+        break;
+      case 'maps.load':
+        if (m['id'] is String) _loadMap(m['id'] as String);
+        break;
+      case 'maps.delete':
+        final id = m['id'];
+        if (id is String && id != active.id) store.delete(id).then((_) => _refreshMapList());
+        break;
     }
     setState(() {});
   }
@@ -201,6 +233,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
                 [(sc.points[i].angleDeg * 10).round() / 10, (sc.points[i].distMm).round() / 1000]
             ],
       'lidarOffset': {'fwd': lidarFwdM, 'left': lidarLeftM},
+      'mapInfo': _mapInfo(),
       'blocked': _blocked,
       'mount': {'state': mountState, 'note': mountNote, 'robotMode': robotMode, 'disturbances': disturbances},
       'settings': {
@@ -250,6 +283,77 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     } finally {
       c.close();
     }
+  }
+
+  // ---------- saved maps ----------
+  static const double _kfMoveM = 0.15, _kfTurnRad = 0.087; // new keyframe every 15 cm or 5 degrees
+
+  void _maybeKeyframe(Pose p, List<LidarPoint> pts) {
+    if (_loadingMap) return;
+    final k = active.keyframes;
+    if (k.isNotEmpty) {
+      final last = k.last;
+      final moved = math.sqrt(_sq(p.x - last.x) + _sq(p.y - last.y));
+      if (moved < _kfMoveM && _angDiff(p.heading, last.h).abs() < _kfTurnRad) return;
+    }
+    k.add(Keyframe.fromScan(p.x, p.y, p.heading, pts));
+    active.updated = DateTime.now();
+  }
+
+  Future<void> _saveActive() async {
+    if (active.keyframes.isEmpty || !active.unsaved) return;
+    await store.save(active);
+    _lastAutosaveMs = appClockMs();
+    await _refreshMapList();
+  }
+
+  Future<void> _autosaveIfDue() async {
+    if (appClockMs() - _lastAutosaveMs < 20000) return;
+    _lastAutosaveMs = appClockMs();
+    await _saveActive();
+  }
+
+  Future<void> _refreshMapList() async {
+    savedMaps = await store.list();
+    _broadcastMaps();
+  }
+
+  void _broadcastMaps() => server.broadcast({'type': 'maps', 'list': savedMaps, 'active': _mapInfo()});
+
+  Map<String, dynamic> _mapInfo() => {
+        'id': active.id,
+        'name': active.name,
+        'keyframes': active.keyframes.length,
+        'unsaved': active.unsaved,
+        'savedAgoS': active.savedAt == null ? null : DateTime.now().difference(active.savedAt!).inSeconds,
+        'loading': _loadingMap,
+      };
+
+  /// Continue a saved map. For now the robot must start from the map's home spot,
+  /// facing the same way (automatic relocalisation comes next).
+  Future<void> _loadMap(String id) async {
+    if (_loadingMap || id == active.id) return;
+    await _saveActive();
+    final m = await store.load(id);
+    if (m == null) return;
+    _loadingMap = true;
+    _broadcastMaps();
+    _onRelease();
+    await _resetMap(); // clears the grid and resets the ARKit origin to the robot's current spot
+    for (var i = 0; i < m.keyframes.length; i++) {
+      final k = m.keyframes[i];
+      grid.integrate(Pose(0, k.x, k.y, k.h, true), k.points(), lidarFwdM: m.lidarFwdM, lidarLeftM: m.lidarLeftM);
+      if (i % 40 == 39) await Future<void>.delayed(Duration.zero); // keep the app responsive
+    }
+    active = m;
+    _loadingMap = false;
+    if (robotMode) {
+      mountState = 'mounted';
+      mountNote = 'Continuing "${m.name}" from its home spot';
+    }
+    _sigs.clear();
+    _broadcastMaps();
+    if (mounted) setState(() {});
   }
 
   // ---------- mounting ----------
@@ -325,8 +429,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       mountState = 'mounted';
       mountNote = note;
     }
+    await _saveActive(); // keep the map we had
+    active = MapSession.fresh(lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
     await _resetMap();
     _sigs.clear();
+    _broadcastMaps();
     if (mounted) setState(() {});
   }
 
@@ -382,6 +489,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         continue;
       }
       grid.integrate(p, s.points, lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
+      _maybeKeyframe(p, s.points);
     }
   }
 
@@ -471,7 +579,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final p = poses.latest;
     final sync = client.robotOffsetMs == null ? 'sync...' : 'sync ±${(client.syncRttMs! / 2).toStringAsFixed(0)} ms';
     final pos = p == null ? '' : '  pos ${p.x.toStringAsFixed(2)}, ${p.y.toStringAsFixed(2)} m';
-    return 'AR ${poses.state}$pos  |  $sync  |  mapped ${grid.scansIntegrated}';
+    return 'AR ${poses.state}$pos  |  $sync  |  ${active.name}: ${active.keyframes.length} keyframes${active.unsaved ? " (unsaved)" : ""}';
   }
 
   // ---------- UI ----------

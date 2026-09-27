@@ -139,7 +139,7 @@ button{background:#23303a;color:#e6eef0;border:1px solid #3a4a55;border-radius:8
 input[type=range]{width:100%}
 </style></head><body>
 <header><span id="conn">Connecting...</span><span id="stat"></span>
-<span style="margin-left:auto;display:flex;gap:8px"><button id="setbtn">Settings</button><button id="mode">Radar view</button></span></header>
+<span style="margin-left:auto;display:flex;gap:8px"><button id="mapsbtn">Maps</button><button id="setbtn">Settings</button><button id="mode">Radar view</button></span></header>
 <div id="settings" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10;align-items:center;justify-content:center">
  <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:min(420px,90vw);display:flex;flex-direction:column;gap:12px;font-size:14px">
   <div style="font-weight:600;font-size:16px">Settings</div>
@@ -150,6 +150,18 @@ input[type=range]{width:100%}
   <label>Obstacle stop distance: <span id="sdv">-</span>
    <input id="sd" type="range" min="150" max="1000" step="25" value="300"></label>
   <button id="setclose">Done</button>
+ </div>
+</div>
+<div id="maps" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10;align-items:center;justify-content:center">
+ <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:min(520px,92vw);max-height:85vh;overflow:auto;display:flex;flex-direction:column;gap:10px;font-size:14px">
+  <div style="font-weight:600;font-size:16px">Maps</div>
+  <div id="mapActive" style="color:#9fb3bb"></div>
+  <div class="row"><input id="mapName" style="flex:1;min-width:0;background:#101416;color:#e6eef0;border:1px solid #3a4a55;border-radius:8px;padding:6px" placeholder="Map name"><button id="mapSave">Save</button></div>
+  <div class="row"><button id="mapNew">New map here</button></div>
+  <div style="font-weight:600;margin-top:6px">Saved maps</div>
+  <div id="mapList" style="display:flex;flex-direction:column;gap:6px"></div>
+  <div style="color:#9fb3bb;font-size:12px">Load continues a saved map. Put the robot on that map's home spot (the white circle marker), facing the direction of its line, before loading. Maps autosave every 20 s.</div>
+  <button id="mapsClose">Done</button>
  </div>
 </div>
 <div id="view"><canvas id="map"></canvas></div>
@@ -177,7 +189,8 @@ function connect() {
   };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
-    if (m.type === "telem") { telem = m; updateUi(); }
+    if (m.type === "telem") { telem = m; updateUi(); if (mapsOpen) renderActive(); }
+    else if (m.type === "maps") { mapsData = m; renderMaps(); }
     else if (m.type === "map") {
       const img = new Image();
       img.onload = () => { mapImg = img; mapMeta = m; };
@@ -236,7 +249,9 @@ stick.addEventListener("pointermove", e => { if (e.pointerId === activePointer) 
 stick.addEventListener("pointerup", e => { if (e.pointerId === activePointer) release(); });
 stick.addEventListener("pointercancel", e => { if (e.pointerId === activePointer) release(); });
 document.addEventListener("visibilitychange", () => { if (document.hidden) release(); });
+const typing = e => e.target && e.target.tagName === "INPUT" && e.target.type === "text";
 document.addEventListener("keydown", e => {
+  if (typing(e)) return;
   if (e.code === "Space") { e.preventDefault(); release(); return; }
   const k = KEYMAP[e.code]; if (!k) return;
   e.preventDefault();
@@ -246,6 +261,7 @@ document.addEventListener("keydown", e => {
   drawStick();
 });
 document.addEventListener("keyup", e => {
+  if (typing(e)) return;
   const k = KEYMAP[e.code]; if (!k) return;
   e.preventDefault();
   keys.delete(k);
@@ -260,7 +276,7 @@ $("ms").oninput = e => { $("msv").textContent = Math.round(e.target.value * 100)
 $("rg").oninput = e => { $("rgv").textContent = e.target.value + " m"; };
 $("obs").onchange = e => send({type: "set", obstacleStop: e.target.checked});
 $("mapping").onclick = () => send({type: "set", mapping: !(telem && telem.settings.mapping)});
-$("clear").onclick = () => { if (confirm("Start a new map with the robot's current spot as the origin?")) send({type: "clearMap"}); };
+$("clear").onclick = () => { if (confirm("Start a new map here? The current map is saved first.")) send({type: "clearMap"}); };
 $("mode").onclick = () => { mode = mode === "map" ? "radar" : "map"; $("mode").textContent = mode === "map" ? "Radar view" : "Map view"; };
 $("rgv").textContent = $("rg").value + " m";
 
@@ -279,6 +295,54 @@ $("trim").oninput = e => { $("trimv").textContent = e.target.value; };
 $("trim").onchange = e => send({type: "set", trim: -parseInt(e.target.value, 10)});
 $("sd").oninput = e => { $("sdv").textContent = Math.round(e.target.value / 10) + " cm"; };
 $("sd").onchange = e => send({type: "set", stopDistMm: parseFloat(e.target.value)});
+
+// ---- maps panel ----
+let mapsOpen = false, mapsData = null;
+function fmtDate(ms) {
+  const d = new Date(ms);
+  return d.toLocaleDateString() + " " + d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+}
+function renderActive() {
+  const a = telem && telem.mapInfo; if (!a) return;
+  $("mapActive").textContent = "Current: " + a.name + " - " + a.keyframes + " keyframes - " +
+    (a.loading ? "loading..." : (a.unsaved ? "unsaved changes" : "saved"));
+}
+function renderMaps() {
+  if (!mapsData) return;
+  const activeId = (telem && telem.mapInfo && telem.mapInfo.id) || (mapsData.active && mapsData.active.id);
+  const list = $("mapList"); list.textContent = "";
+  if (!mapsData.list.length) { list.textContent = "No saved maps yet."; return; }
+  for (const mp of mapsData.list) {
+    const row = document.createElement("div"); row.className = "row";
+    row.style.borderTop = "1px solid #2c3a44"; row.style.paddingTop = "6px";
+    const info = document.createElement("div"); info.style.flex = "1"; info.style.minWidth = "0";
+    const nm = document.createElement("div"); nm.style.fontWeight = "600";
+    nm.textContent = mp.name + (mp.id === activeId ? "  (current)" : "");
+    const sub = document.createElement("div"); sub.style.color = "#9fb3bb"; sub.style.fontSize = "12px";
+    sub.textContent = mp.keyframes + " keyframes" + (mp.sizeM ? " - " + mp.sizeM : "") + " - saved " + fmtDate(mp.updated);
+    info.append(nm, sub); row.append(info);
+    if (mp.id !== activeId) {
+      const lb = document.createElement("button"); lb.textContent = "Load";
+      lb.onclick = () => {
+        if (confirm("Continue \"" + mp.name + "\"?\n\nThe robot must be on this map's home spot, facing the same way it faced when the map was started.")) {
+          send({type: "maps.load", id: mp.id});
+        }
+      };
+      const db = document.createElement("button"); db.textContent = "Delete";
+      db.onclick = () => { if (confirm("Delete \"" + mp.name + "\"? This cannot be undone.")) send({type: "maps.delete", id: mp.id}); };
+      row.append(lb, db);
+    }
+    list.append(row);
+  }
+}
+$("mapsbtn").onclick = () => {
+  $("maps").style.display = "flex"; mapsOpen = true;
+  if (telem && telem.mapInfo) $("mapName").value = telem.mapInfo.name;
+  renderActive(); send({type: "maps.list"});
+};
+$("mapsClose").onclick = () => { $("maps").style.display = "none"; mapsOpen = false; };
+$("mapSave").onclick = () => send({type: "maps.save", name: $("mapName").value});
+$("mapNew").onclick = () => { if (confirm("Start a new map here? The current map is saved first.")) send({type: "clearMap"}); };
 $("msv").textContent = Math.round($("ms").value * 100) + "%";
 
 let settingsInit = false;
@@ -327,6 +391,11 @@ function frame() {
       for (let gx = Math.floor(p.x - range * 2); gx <= p.x + range * 2; gx++) { const a = toS(gx, 0)[0]; ctx.moveTo(a, 0); ctx.lineTo(a, H); }
       for (let gy = Math.floor(p.y - range * 2); gy <= p.y + range * 2; gy++) { const b = toS(0, gy)[1]; ctx.moveTo(0, b); ctx.lineTo(W, b); }
       ctx.stroke();
+      // home marker: where this map started, and the direction the robot faced
+      const hm = toS(0, 0);
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(hm[0], hm[1], 7, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(hm[0], hm[1]); ctx.lineTo(hm[0], hm[1] - 16); ctx.stroke();
       if (t.scan && p.good) {
         const ch = Math.cos(p.h), sh = Math.sin(p.h);
         const ox = p.x + ch * off.fwd - sh * off.left, oy = p.y + sh * off.fwd + ch * off.left;
