@@ -141,9 +141,9 @@ button{background:#23303a;color:#e6eef0;border:1px solid #3a4a55;border-radius:8
 input[type=range]{width:100%}
 </style></head><body>
 <header><span id="conn">Connecting...</span><span id="stat"></span>
-<span style="margin-left:auto;display:flex;gap:8px"><button id="botbtn">Bot</button><button id="mapsbtn">Maps</button><button id="setbtn">Settings</button><button id="mode">Radar view</button></span></header>
-<div id="settings" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10;align-items:center;justify-content:center">
- <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:min(420px,90vw);display:flex;flex-direction:column;gap:12px;font-size:14px">
+<nav style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap"><button class="tab" data-page="drive">Drive</button><button class="tab" data-page="maps">Maps</button><button class="tab" data-page="bot">Bot</button><button class="tab" data-page="settings">Settings</button><button id="mode">Radar view</button></nav></header>
+<div id="settings" style="display:none;flex:1;min-height:0;overflow:auto;padding:12px">
+ <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:100%;max-width:640px;margin:0 auto;box-sizing:border-box;display:flex;flex-direction:column;gap:12px;font-size:14px">
   <div style="font-weight:600;font-size:16px">Settings</div>
   <label>Steering trim: <span id="trimv">-</span>
    <input id="trim" type="range" min="-20" max="20" step="1" value="0"></label>
@@ -154,11 +154,11 @@ input[type=range]{width:100%}
    <input id="sd" type="range" min="150" max="1000" step="25" value="300"></label>
   <div style="font-weight:600;margin-top:4px">This brain</div>
   <div id="capsInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
-  <button id="setclose">Done</button>
+  <button id="setclose">Back to Drive</button>
  </div>
 </div>
-<div id="bot" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10;align-items:center;justify-content:center">
- <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:min(760px,94vw);max-height:90vh;overflow:auto;display:flex;flex-direction:column;gap:10px;font-size:13px">
+<div id="bot" style="display:none;flex:1;min-height:0;overflow:auto;padding:12px">
+ <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:100%;max-width:1000px;margin:0 auto;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;font-size:13px">
   <div style="font-weight:600;font-size:16px">Bot</div>
   <div class="row">
    <label>Name <input id="botName" style="width:120px"></label>
@@ -167,18 +167,18 @@ input[type=range]{width:100%}
    <label>length <input id="botL" type="number" min="50" max="3000" style="width:64px"> mm</label>
   </div>
   <div class="row" style="align-items:flex-start">
-   <div><div style="color:#9fb3bb">Top view (front is up) - drag sensors</div><canvas id="botTop" width="300" height="300" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
-   <div><div style="color:#9fb3bb">Side view from the left - drag up/down for height</div><canvas id="botSide" width="300" height="220" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
+   <div><div style="color:#9fb3bb">Top view (front is up) - drag sensors</div><canvas id="botTop" width="460" height="460" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
+   <div><div style="color:#9fb3bb">Side view from the left - drag up/down for height</div><canvas id="botSide" width="460" height="320" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
   </div>
   <div style="font-weight:600">Sensors</div>
   <div id="botSensors" style="display:flex;flex-direction:column;gap:4px"></div>
   <div class="row"><select id="botAddType"><option value="lidar">Lidar</option><option value="camera">Phone camera</option><option value="bumper">Bumper</option><option value="tof">ToF distance</option><option value="imu">IMU</option><option value="depth">Depth camera</option></select><button id="botAdd">Add sensor</button></div>
   <div style="color:#9fb3bb;font-size:12px">Positions are from the front and left edges of the platform; heights are above the floor. The phone camera is where the robot's tracked position sits; the lidar offset and the planning footprint are worked out from these.</div>
-  <div class="row"><button id="botSave">Save to robot</button><button id="botCancel">Cancel</button><span id="botInfo" style="color:#9fb3bb"></span></div>
+  <div class="row"><button id="botSave">Save to robot</button><button id="botCancel">Back to Drive (discards unsaved changes)</button><span id="botInfo" style="color:#9fb3bb"></span></div>
  </div>
 </div>
-<div id="maps" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10;align-items:center;justify-content:center">
- <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:min(520px,92vw);max-height:85vh;overflow:auto;display:flex;flex-direction:column;gap:10px;font-size:14px">
+<div id="maps" style="display:none;flex:1;min-height:0;overflow:auto;padding:12px">
+ <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:100%;max-width:760px;margin:0 auto;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;font-size:14px">
   <div style="font-weight:600;font-size:16px">Maps</div>
   <div id="mapActive" style="color:#9fb3bb"></div>
   <div id="mapQuality" style="color:#9fb3bb;font-size:12px"></div>
@@ -188,9 +188,10 @@ input[type=range]{width:100%}
   <div style="font-weight:600;margin-top:6px">Saved maps</div>
   <div id="mapList" style="display:flex;flex-direction:column;gap:6px"></div>
   <div style="color:#9fb3bb;font-size:12px">Load switches to a saved map; the robot then finds itself on it with the lidar. If it can't, drive a little, or put it on the home spot (white circle, facing along its line) and press I'm at home. Maps autosave every 20 s, and the last map loads automatically.</div>
-  <button id="mapsClose">Done</button>
+  <button id="mapsClose">Back to Drive</button>
  </div>
 </div>
+<div id="drive" style="display:flex;flex-direction:column;flex:1;min-height:0">
 <div id="view"><canvas id="map"></canvas>
 <div id="edittools" style="display:none;position:absolute;top:8px;left:8px;right:8px;background:rgba(16,20,22,0.92);border:1px solid #3a4a55;border-radius:10px;padding:8px;gap:6px;flex-wrap:wrap;align-items:center;font-size:13px">
  <button data-tool="pan">Pan</button><button data-tool="erase">Eraser</button><button data-tool="nogo">No-go line</button><button data-tool="unnogo">Remove no-go</button>
@@ -209,7 +210,7 @@ input[type=range]{width:100%}
 <label>View range <span id="rgv"></span><input id="rg" type="range" min="1" max="12" step="0.5" value="4"></label>
 <div class="row"><button id="mapping">Pause mapping</button><button id="clear">New map here</button><button id="editbtn">Edit map</button><button id="gobtn" style="border-color:#448aff">Go to...</button></div>
 <div style="color:#9fb3bb;font-size:12px">Keyboard: arrow keys or W A S D to drive, Space to stop</div>
-</div></div>
+</div></div></div>
 <script>
 const $ = id => document.getElementById(id);
 let ws = null, telem = null, mapImg = null, mapMeta = null, mode = "map", sendTimer = null;
@@ -324,9 +325,8 @@ function syncSettings() {
   if (typeof s.trim === "number") { $("trim").value = -s.trim; $("trimv").textContent = -s.trim; }
   if (typeof s.stopDistMm === "number") { $("sd").value = s.stopDistMm; $("sdv").textContent = Math.round(s.stopDistMm / 10) + " cm"; }
 }
-$("setbtn").onclick = () => { $("settings").style.display = "flex"; settingsOpen = true; syncSettings();
-  if (telem) $("capsInfo").textContent = capsText(telem.caps, telem.tracking); };
-$("setclose").onclick = () => { $("settings").style.display = "none"; settingsOpen = false; };
+
+$("setclose").onclick = () => showPage("drive");
 $("trim").oninput = e => { $("trimv").textContent = e.target.value; };
 $("trim").onchange = e => send({type: "set", trim: -parseInt(e.target.value, 10)});
 $("sd").oninput = e => { $("sdv").textContent = Math.round(e.target.value / 10) + " cm"; };
@@ -357,8 +357,8 @@ function openBot() {
   $("botW").value = botDraft.platform.widthMm; $("botL").value = botDraft.platform.lengthMm;
   renderBotSensors(); drawBot();
 }
-$("botbtn").onclick = () => { $("bot").style.display = "flex"; botOpen = true; botDraft = null; openBot(); };
-$("botCancel").onclick = () => { $("bot").style.display = "none"; botOpen = false; botDraft = null; };
+
+$("botCancel").onclick = () => showPage("drive");
 $("botSave").onclick = () => {
   if (!botDraft) return;
   botDraft.name = $("botName").value; botDraft.drive = $("botDrive").value;
@@ -396,56 +396,82 @@ function renderBotSensors() {
     box.append(row);
   });
 }
-function botTopScale() { const W = botDraft.platform.widthMm, L = botDraft.platform.lengthMm; const sc = 250 / Math.max(W, L); return {sc, ox: 150 - W * sc / 2, oy: 150 - L * sc / 2}; }
-function botSideScale() { const L = botDraft.platform.lengthMm; let H = 100; for (const sn of botDraft.sensors) H = Math.max(H, sn.heightMm + 40); const sc = Math.min(250 / L, 180 / H); return {sc, ox: 150 - L * sc / 2, floorY: 200}; }
+function botTopScale() {
+  const cv2 = $("botTop"), W = botDraft.platform.widthMm, L = botDraft.platform.lengthMm;
+  const sc = (cv2.width - 70) / Math.max(W, L);
+  return {sc, ox: cv2.width / 2 - W * sc / 2, oy: cv2.height / 2 - L * sc / 2, cw: cv2.width, ch: cv2.height};
+}
+function botSideScale() {
+  const cv2 = $("botSide"), L = botDraft.platform.lengthMm;
+  let H = 100; for (const sn of botDraft.sensors) H = Math.max(H, sn.heightMm + 40);
+  const sc = Math.min((cv2.width - 70) / L, (cv2.height - 50) / H);
+  return {sc, ox: cv2.width / 2 - L * sc / 2, floorY: cv2.height - 24, cw: cv2.width, ch: cv2.height};
+}
 function drawBot() {
   if (!botDraft) return;
   const W = botDraft.platform.widthMm, L = botDraft.platform.lengthMm;
-  // top view
   const c = $("botTop").getContext("2d"), t = botTopScale();
-  c.clearRect(0, 0, 300, 300);
+  c.clearRect(0, 0, t.cw, t.ch);
   c.fillStyle = "#2a3238"; c.fillRect(t.ox, t.oy, W * t.sc, L * t.sc);
   c.strokeStyle = "#64ffda"; c.lineWidth = 2; c.strokeRect(t.ox, t.oy, W * t.sc, L * t.sc);
-  c.fillStyle = "#64ffda"; c.beginPath(); c.moveTo(150, t.oy - 12); c.lineTo(143, t.oy - 3); c.lineTo(157, t.oy - 3); c.closePath(); c.fill();
-  c.fillStyle = "#9fb3bb"; c.font = "11px sans-serif"; c.fillText("front", 160, t.oy - 4);
+  c.fillStyle = "#64ffda"; c.beginPath(); c.moveTo(t.cw / 2, t.oy - 14); c.lineTo(t.cw / 2 - 8, t.oy - 3); c.lineTo(t.cw / 2 + 8, t.oy - 3); c.closePath(); c.fill();
+  c.fillStyle = "#9fb3bb"; c.font = "12px sans-serif"; c.fillText("front", t.cw / 2 + 12, t.oy - 5);
+  c.fillText(W + " x " + L + " mm", t.ox, t.oy + L * t.sc + 16);
   for (const sn of botDraft.sensors) {
     const x = t.ox + sn.fromLeftMm * t.sc, y = t.oy + sn.fromFrontMm * t.sc;
-    c.fillStyle = SENSOR_COLOR[sn.type]; c.beginPath(); c.arc(x, y, 9, 0, Math.PI * 2); c.fill();
-    const a = -sn.yawDeg * Math.PI / 180 - Math.PI / 2;
-    c.strokeStyle = SENSOR_COLOR[sn.type]; c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a) * 16, y + Math.sin(a) * 16); c.stroke();
-    c.fillStyle = "#e6eef0"; c.fillText(sn.name, x + 12, y + 4);
+    c.fillStyle = SENSOR_COLOR[sn.type]; c.beginPath(); c.arc(x, y, 10, 0, Math.PI * 2); c.fill();
+    const a2 = -sn.yawDeg * Math.PI / 180 - Math.PI / 2;
+    c.strokeStyle = SENSOR_COLOR[sn.type]; c.lineWidth = 2; c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a2) * 20, y + Math.sin(a2) * 20); c.stroke();
+    c.fillStyle = "#e6eef0"; c.fillText(sn.name, x + 13, y + 4);
   }
-  // side view from the left: front to the right
-  const s = $("botSide").getContext("2d"), v = botSideScale();
-  s.clearRect(0, 0, 300, 220);
-  s.strokeStyle = "#556"; s.beginPath(); s.moveTo(0, v.floorY); s.lineTo(300, v.floorY); s.stroke();
-  s.fillStyle = "#9fb3bb"; s.font = "11px sans-serif"; s.fillText("floor", 4, v.floorY - 4); s.fillText("front", 260, v.floorY + 14);
+  const sctx = $("botSide").getContext("2d"), v = botSideScale();
+  sctx.clearRect(0, 0, v.cw, v.ch);
+  sctx.strokeStyle = "#556"; sctx.beginPath(); sctx.moveTo(0, v.floorY); sctx.lineTo(v.cw, v.floorY); sctx.stroke();
+  sctx.fillStyle = "#9fb3bb"; sctx.font = "12px sans-serif"; sctx.fillText("floor", 6, v.floorY - 6); sctx.fillText("front", v.cw - 44, v.floorY + 16);
   const platY = v.floorY - 60 * v.sc;
-  s.fillStyle = "#2a3238"; s.fillRect(v.ox, platY - 4, L * v.sc, 4);
+  sctx.fillStyle = "#2a3238"; sctx.fillRect(v.ox, platY - 5, L * v.sc, 5);
   for (const sn of botDraft.sensors) {
     const x = v.ox + (L - sn.fromFrontMm) * v.sc, y = v.floorY - sn.heightMm * v.sc;
-    s.strokeStyle = "#3a4a55"; s.beginPath(); s.moveTo(x, platY); s.lineTo(x, y); s.stroke();
-    s.fillStyle = SENSOR_COLOR[sn.type]; s.beginPath(); s.arc(x, y, 8, 0, Math.PI * 2); s.fill();
-    s.fillStyle = "#e6eef0"; s.fillText(sn.name + " " + Math.round(sn.heightMm) + " mm", x + 11, y + 4);
+    sctx.strokeStyle = "#3a4a55"; sctx.beginPath(); sctx.moveTo(x, platY); sctx.lineTo(x, y); sctx.stroke();
+    sctx.fillStyle = SENSOR_COLOR[sn.type]; sctx.beginPath(); sctx.arc(x, y, 9, 0, Math.PI * 2); sctx.fill();
+    sctx.fillStyle = "#e6eef0"; sctx.fillText(sn.name + " " + Math.round(sn.heightMm) + " mm", x + 12, y + 4);
   }
 }
-function botHit(canvas, e, mapper) {
-  const b = canvas.getBoundingClientRect(), px = (e.clientX - b.left) * canvas.width / b.width, py = (e.clientY - b.top) * canvas.height / b.height;
-  let best = null, bd = 16;
-  for (const sn of botDraft.sensors) { const q = mapper(sn); const d = Math.hypot(q[0] - px, q[1] - py); if (d < bd) { bd = d; best = sn; } }
-  return {sn: best, px, py};
+function canvasPt(canvas, e) {
+  const b = canvas.getBoundingClientRect();
+  return [(e.clientX - b.left) * canvas.width / b.width, (e.clientY - b.top) * canvas.height / b.height];
 }
-$("botTop").addEventListener("pointerdown", e => { if (!botDraft) return; const t = botTopScale(); const h = botHit($("botTop"), e, sn => [t.ox + sn.fromLeftMm * t.sc, t.oy + sn.fromFrontMm * t.sc]); if (h.sn) { botDrag = {sn: h.sn, view: "top"}; $("botTop").setPointerCapture(e.pointerId); } });
-$("botTop").addEventListener("pointermove", e => { if (!botDrag || botDrag.view !== "top") return; const t = botTopScale(); const b = $("botTop").getBoundingClientRect();
-  const px = (e.clientX - b.left) * 300 / b.width, py = (e.clientY - b.top) * 300 / b.height;
+function botHit(canvas, e, mapper) {
+  const [px, py] = canvasPt(canvas, e);
+  let best = null, bd = 18;
+  for (const sn of botDraft.sensors) { const q = mapper(sn); const d = Math.hypot(q[0] - px, q[1] - py); if (d < bd) { bd = d; best = sn; } }
+  return best;
+}
+$("botTop").addEventListener("pointerdown", e => {
+  if (!botDraft) return;
+  const t = botTopScale();
+  const sn = botHit($("botTop"), e, sn => [t.ox + sn.fromLeftMm * t.sc, t.oy + sn.fromFrontMm * t.sc]);
+  if (sn) { botDrag = {sn, view: "top"}; $("botTop").setPointerCapture(e.pointerId); }
+});
+$("botTop").addEventListener("pointermove", e => {
+  if (!botDrag || botDrag.view !== "top") return;
+  const t = botTopScale(), [px, py] = canvasPt($("botTop"), e);
   botDrag.sn.fromLeftMm = Math.round(Math.max(-50, Math.min(botDraft.platform.widthMm + 50, (px - t.ox) / t.sc)));
   botDrag.sn.fromFrontMm = Math.round(Math.max(-50, Math.min(botDraft.platform.lengthMm + 50, (py - t.oy) / t.sc)));
-  renderBotSensors(); drawBot(); });
-$("botSide").addEventListener("pointerdown", e => { if (!botDraft) return; const v = botSideScale(); const h = botHit($("botSide"), e, sn => [v.ox + (botDraft.platform.lengthMm - sn.fromFrontMm) * v.sc, v.floorY - sn.heightMm * v.sc]); if (h.sn) { botDrag = {sn: h.sn, view: "side"}; $("botSide").setPointerCapture(e.pointerId); } });
-$("botSide").addEventListener("pointermove", e => { if (!botDrag || botDrag.view !== "side") return; const v = botSideScale(); const b = $("botSide").getBoundingClientRect();
-  const py = (e.clientY - b.top) * 220 / b.height;
+  renderBotSensors(); drawBot();
+});
+$("botSide").addEventListener("pointerdown", e => {
+  if (!botDraft) return;
+  const v = botSideScale();
+  const sn = botHit($("botSide"), e, sn => [v.ox + (botDraft.platform.lengthMm - sn.fromFrontMm) * v.sc, v.floorY - sn.heightMm * v.sc]);
+  if (sn) { botDrag = {sn, view: "side"}; $("botSide").setPointerCapture(e.pointerId); }
+});
+$("botSide").addEventListener("pointermove", e => {
+  if (!botDrag || botDrag.view !== "side") return;
+  const v = botSideScale(), [, py] = canvasPt($("botSide"), e);
   botDrag.sn.heightMm = Math.round(Math.max(0, (v.floorY - py) / v.sc));
-  renderBotSensors(); drawBot(); });
+  renderBotSensors(); drawBot();
+});
 const botEndDrag = () => { botDrag = null; };
 ["botTop", "botSide"].forEach(id => { $(id).addEventListener("pointerup", botEndDrag); $(id).addEventListener("pointercancel", botEndDrag); });
 
@@ -493,12 +519,8 @@ function renderMaps() {
     list.append(row);
   }
 }
-$("mapsbtn").onclick = () => {
-  $("maps").style.display = "flex"; mapsOpen = true;
-  if (telem && telem.mapInfo) $("mapName").value = telem.mapInfo.name;
-  renderActive(); send({type: "maps.list"});
-};
-$("mapsClose").onclick = () => { $("maps").style.display = "none"; mapsOpen = false; };
+
+$("mapsClose").onclick = () => showPage("drive");
 $("relocBtn").onclick = () => send({type: "reloc"});
 $("homeBtn").onclick = () => { if (confirm("Is the robot on the home spot (white circle), facing along its line?")) send({type: "atHome"}); };
 $("mapSave").onclick = () => send({type: "maps.save", name: $("mapName").value});
@@ -707,6 +729,22 @@ cv.addEventListener("pointerup", endEditDrag);
 cv.addEventListener("pointercancel", endEditDrag);
 cv.addEventListener("pointerleave", () => { hover = null; });
 
+// ---- pages ----
+const PAGES = ["drive", "maps", "bot", "settings"];
+let page = "drive";
+function showPage(p) {
+  if (page === "drive" && p !== "drive") { release(); goMode = false; if (editMode) $("editDone").onclick(); } // never drive from another page
+  page = p;
+  for (const n of PAGES) $(n).style.display = n === p ? (n === "drive" ? "flex" : "block") : "none";
+  document.querySelectorAll(".tab").forEach(b => b.style.outline = b.dataset.page === p ? "2px solid #64ffda" : "none");
+  $("mode").style.display = p === "drive" ? "" : "none";
+  mapsOpen = p === "maps"; settingsOpen = p === "settings"; botOpen = p === "bot";
+  if (p === "maps") { if (telem && telem.mapInfo) $("mapName").value = telem.mapInfo.name; renderActive(); send({type: "maps.list"}); }
+  if (p === "settings") { syncSettings(); if (telem) $("capsInfo").textContent = capsText(telem.caps, telem.tracking); }
+  if (p === "bot") { botDraft = null; openBot(); } else botDraft = null;
+}
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => showPage(b.dataset.page));
+showPage("drive");
 drawStick(); connect(); requestAnimationFrame(frame);
 </script></body></html>
 ''';
