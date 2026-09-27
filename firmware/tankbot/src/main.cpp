@@ -51,6 +51,10 @@ bool apMode = false;
 enum CmdSource { SRC_NONE, SRC_WEB, SRC_UDP };
 int currentSpeed = SPEED_MEDIUM;
 int motorTrim = 0;
+int minPwm = 170;                    // lowest PWM that actually moves the tracks (saved in flash)
+static const uint32_t KICK_MS = 120; // full-power burst when a track starts from standstill
+int targetPwmA = 0, targetPwmB = 0;  // requested PWM per side
+uint32_t kickUntilA = 0, kickUntilB = 0;
 float curLeft = 0, curRight = 0;
 CmdSource cmdSrc = SRC_NONE;
 uint32_t lastCmdMs = 0, watchdogTrips = 0, udpCommands = 0;
@@ -61,6 +65,23 @@ void stopMotorsRaw() {
   digitalWrite(IN1, LOW); digitalWrite(IN2, LOW); digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
   ledcWrite(PWM_CHANNEL_A, 0); ledcWrite(PWM_CHANNEL_B, 0);
   curLeft = curRight = 0;
+  targetPwmA = targetPwmB = 0;
+  kickUntilA = kickUntilB = 0;
+}
+
+// Command magnitude (0..1) -> PWM between minPwm and the current speed level.
+int cmdToPwm(float x) {
+  float a = fabsf(x);
+  if (a < 0.05f) return 0;
+  int top = max(currentSpeed, minPwm);
+  return constrain(minPwm + (int)(a * (top - minPwm)), 0, 255);
+}
+
+// Called every loop: ends the kick-start burst and settles to the requested power.
+void motorKickUpdate() {
+  uint32_t now = millis();
+  if (kickUntilA && now >= kickUntilA) { kickUntilA = 0; ledcWrite(PWM_CHANNEL_A, targetPwmA); }
+  if (kickUntilB && now >= kickUntilB) { kickUntilB = 0; ledcWrite(PWM_CHANNEL_B, targetPwmB); }
 }
 
 void setupMotors() {
@@ -77,16 +98,23 @@ void applyMotors(float left, float right) {
   left = constrain(left, -1.0f, 1.0f);
   right = constrain(right, -1.0f, 1.0f);
   if (fabsf(left) < 0.05f && fabsf(right) < 0.05f) { stopMotorsRaw(); return; }
-  int leftSpeed = abs((int)(left * currentSpeed));
-  int rightSpeed = abs((int)(right * currentSpeed));
+  int leftSpeed = cmdToPwm(left);
+  int rightSpeed = cmdToPwm(right);
   if (motorTrim < 0) leftSpeed = constrain(leftSpeed + (int)(motorTrim * fabsf(left)), 0, 255);
   else if (motorTrim > 0) rightSpeed = constrain(rightSpeed - (int)(motorTrim * fabsf(right)), 0, 255);
   if (left >= 0) { digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW); }
   else           { digitalWrite(IN1, LOW);  digitalWrite(IN2, HIGH); }
   if (right >= 0) { digitalWrite(IN3, LOW);  digitalWrite(IN4, HIGH); }
   else            { digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW); }
-  ledcWrite(PWM_CHANNEL_A, leftSpeed);
-  ledcWrite(PWM_CHANNEL_B, rightSpeed);
+  uint32_t now = millis();
+  // Kick-start a side that was stopped (or is reversing direction).
+  bool kickA = leftSpeed > 0 && (targetPwmA == 0 || (left >= 0) != (curLeft >= 0));
+  bool kickB = rightSpeed > 0 && (targetPwmB == 0 || (right >= 0) != (curRight >= 0));
+  if (kickA) kickUntilA = now + KICK_MS;
+  if (kickB) kickUntilB = now + KICK_MS;
+  targetPwmA = leftSpeed; targetPwmB = rightSpeed;
+  ledcWrite(PWM_CHANNEL_A, kickUntilA ? 255 : leftSpeed);
+  ledcWrite(PWM_CHANNEL_B, kickUntilB ? 255 : rightSpeed);
   curLeft = left; curRight = right;
 }
 
@@ -142,8 +170,8 @@ void sendMotionStatus() {
   if (motionPeerPort == 0 || millis() - motionPeerSeen > 3000) return;
   char body[200];
   int n = snprintf(body, sizeof(body),
-    "TMH1{\"left\":%.2f,\"right\":%.2f,\"src\":\"%s\",\"wd_trips\":%lu,\"speed\":%d,\"trim\":%d,\"cmds\":%lu}",
-    curLeft, curRight, srcName(cmdSrc), (unsigned long)watchdogTrips, currentSpeed, motorTrim, (unsigned long)udpCommands);
+    "TMH1{\"left\":%.2f,\"right\":%.2f,\"src\":\"%s\",\"wd_trips\":%lu,\"speed\":%d,\"trim\":%d,\"minpwm\":%d,\"cmds\":%lu}",
+    curLeft, curRight, srcName(cmdSrc), (unsigned long)watchdogTrips, currentSpeed, motorTrim, minPwm, (unsigned long)udpCommands);
   udpMotion.beginPacket(motionPeer, motionPeerPort);
   udpMotion.write((uint8_t *)body, n);
   udpMotion.endPacket();
@@ -185,6 +213,14 @@ void handleTrim() {
   motorTrim = constrain(server.arg("value").toInt(), -20, 20);
   preferences.begin("tankbot", false); preferences.putInt("trim", motorTrim); preferences.end();
   server.send(200, "text/plain", "Trim: " + String(motorTrim));
+}
+
+void handleMinPwm() {
+  if (server.hasArg("value")) {
+    minPwm = constrain(server.arg("value").toInt(), 0, 255);
+    preferences.begin("tankbot", false); preferences.putInt("minpwm", minPwm); preferences.end();
+  }
+  server.send(200, "text/plain", String(minPwm));
 }
 
 void handleGetTrim() { server.send(200, "text/plain", String(motorTrim)); }
@@ -356,6 +392,7 @@ void setupNetwork() {
   server.on("/speed", handleSpeed);
   server.on("/trim", handleTrim);
   server.on("/getTrim", handleGetTrim);
+  server.on("/minpwm", handleMinPwm);
   server.on("/joystick", handleJoystick);
   server.onNotFound(handleRoot);   // also serves captive-portal checks in AP mode
   server.begin();
@@ -392,8 +429,9 @@ void setup() {
   Serial.println("\n=== TankBot combined firmware ===");
   preferences.begin("tankbot", true);
   motorTrim = preferences.getInt("trim", 0);
+  minPwm = preferences.getInt("minpwm", 170);
   preferences.end();
-  Serial.printf("[motion] trim %d, speed %d, watchdog udp %lu ms / web %lu ms\n", motorTrim, currentSpeed,
+  Serial.printf("[motion] min pwm %d, trim %d, speed %d, watchdog udp %lu ms / web %lu ms\n", minPwm, motorTrim, currentSpeed,
                 (unsigned long)UDP_CMD_TIMEOUT_MS, (unsigned long)WEB_CMD_TIMEOUT_MS);
   setupNetwork();
   setupOta();
@@ -411,6 +449,7 @@ void loop() {
 
   ArduinoOTA.handle();
   handleMotionUdp();
+  motorKickUpdate();
   motionWatchdog();
   if (apMode) dnsServer.processNextRequest();
   server.handleClient();
