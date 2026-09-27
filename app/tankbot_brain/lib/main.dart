@@ -20,6 +20,7 @@ import 'bot_profile.dart';
 import 'sensor_client.dart';
 import 'app_settings.dart';
 import 'role_screens.dart';
+import 'guardian.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -153,7 +154,6 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   double maxSpeed = 0.6;
   bool obstacleStop = true; // on by default; can be turned off in the controller's Settings
   double get stopDistMm => profile.stopDistMm;
-  static const double selfMaskMm = 150, frontHalfAngle = 25;
   double _wantF = 0, _wantT = 0;
   bool _blocked = false;
   final List<DateTime> _recent = [];
@@ -454,6 +454,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'navFrontBlocks': navFrontBlocks,
       },
       'blocked': _blocked,
+      'blockReason': blockReason,
+      'guard': {'clear': guard.forwardClear, 'reason': guard.reason, 'frontMm': guard.frontMm},
+      'tier': (() {
+        final (name, next) = Tier.compute(
+            robotCaps: sensors.caps, phoneCaps: caps, mounted: widget.role == AppRole.mounted, motionConnected: motion.connected);
+        return {'name': name, 'next': next};
+      })(),
       'mount': {'state': mountState, 'note': mountNote, 'robotMode': robotMode, 'disturbances': disturbances},
       'settings': {
         'maxSpeed': maxSpeed,
@@ -1108,16 +1115,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     } else {
       f = cruise;
     }
-    // the ESP32's own reflexes (bumper, cliff, ultrasonic) veto forward motion: treat as blocked
-    final reflex = sensors.block;
-    if (f > 0 && reflex != 'none') {
-      navFrontBlocks++;
-      f = 0;
-      navNote = 'Robot reflex: $reflex - going around';
-    }
-    // something right in front: no forward motion; re-plan around it now (turning is still fine)
-    final clear = frontClearanceMm;
-    if (f > 0 && (stale || (clear != null && clear < math.max(stopDistMm, 250)))) {
+    // autonomy always asks the guardian before moving forward (whatever the manual setting)
+    final g = guard;
+    if (f > 0 && !g.forwardClear) {
       navFrontBlocks++;
       f = 0;
       if (now - _navLastBlockReplanMs > 1000) {
@@ -1126,7 +1126,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           _navStopMotors();
           return;
         }
-        navNote = 'Something is in the way - going around';
+        navNote = 'In the way (${g.reason}) - going around';
       }
     }
     _cmdF = f;
@@ -1375,24 +1375,25 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   // ---------- driving ----------
   bool get stale => scan == null || DateTime.now().difference(scan!.received) > const Duration(seconds: 1);
 
-  double? get frontClearanceMm {
-    final sc = scan;
-    if (sc == null || stale) return null;
-    double? best;
-    for (final p in sc.points) {
-      final a = p.angleDeg > 180 ? p.angleDeg - 360 : p.angleDeg;
-      if (a.abs() <= frontHalfAngle && p.distMm > selfMaskMm) {
-        if (best == null || p.distMm < best) best = p.distMm;
-      }
-    }
-    return best;
-  }
+  /// The guardian's current verdict on forward motion (lidar around the body's front, ESP32 reflexes).
+  GuardVerdict get guard => Guardian.evaluate(
+        profile: profile,
+        scan: scan,
+        scanStale: stale,
+        stopDistMm: stopDistMm,
+        reflexBlock: sensors.block,
+        lidarExpected: sensors.caps == null || (sensors.caps!['sensors'] as Map?)?['lidar'] != false,
+      );
+  String blockReason = '';
 
   void _applyDrive() {
     var f = _wantF * maxSpeed;
     final t = _wantT * maxSpeed;
-    final clear = frontClearanceMm;
-    _blocked = obstacleStop && f > 0 && (stale || (clear != null && clear < stopDistMm));
+    final g = guard;
+    // manual driving: the obstacle-stop setting can switch the lidar check off, never the reflexes
+    final veto = f > 0 && !g.forwardClear && (obstacleStop || g.reason.startsWith('robot reflex'));
+    _blocked = veto;
+    blockReason = veto ? g.reason : '';
     if (_blocked) f = 0;
     motion.drive(f, t);
   }
@@ -1542,8 +1543,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
                 width: double.infinity,
                 color: Colors.red.withValues(alpha: 0.8),
                 padding: const EdgeInsets.all(6),
-                child: const Text('OBSTACLE AHEAD - forward blocked',
-                    textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.w600)),
+                child: Text('OBSTACLE AHEAD - forward blocked ($blockReason)',
+                    textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w600)),
               ),
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),

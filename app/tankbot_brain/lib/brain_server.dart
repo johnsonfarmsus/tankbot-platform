@@ -354,10 +354,9 @@ function robotText(r) {
   if (!r || !r.caps) return "Robot: no capability report yet (is the robot on firmware v2?)";
   const c = r.caps, sn = c.sensors || {}, on = [];
   for (const k of ["lidar", "tof", "ultrasonic", "bumperL", "bumperR"]) if (sn[k]) on.push(k);
-  let tier = "Drive";
-  if (sn.bumperL || sn.bumperR || sn.tof || sn.ultrasonic) tier = "Reflexes";
-  if (sn.lidar) tier = "Mapping";
-  let t = "Robot: " + c.name + " (firmware " + c.fw + ", " + c.drive + ")\nAttached: " + (on.length ? on.join(", ") : "none") + "\nTier: " + tier;
+  const tr = telem && telem.tier;
+  let t = "Robot: " + c.name + " (firmware " + c.fw + ", " + c.drive + ")\nAttached: " + (on.length ? on.join(", ") : "none");
+  if (tr) t += "\nTier: " + tr.name + "\nNext: " + tr.next;
   const l = r.live;
   if (l) t += "\nLive: bumpers " + (l.bumpL < 0 ? "-" : l.bumpL ? "HIT" : "ok") + " / " + (l.bumpR < 0 ? "-" : l.bumpR ? "HIT" : "ok") +
     ", ToF " + (l.tofMm < 0 ? "-" : l.tofMm + " mm") + ", ultrasonic " + (l.usMm < 0 ? "-" : l.usMm + " mm") +
@@ -568,6 +567,7 @@ function updateUi() {
   $("obs").checked = s.obstacleStop;
   $("mapping").textContent = s.mapping ? "Pause mapping" : "Resume mapping";
   $("banner").style.display = t.blocked ? "block" : "none";
+  if (t.blocked) $("banner").textContent = "OBSTACLE AHEAD - forward blocked (" + (t.blockReason || "") + ")";
   const mb = $("mountbar"), mt = t.mount;
   if (mt && mt.robotMode && mt.note) {
     mb.style.display = "block"; mb.textContent = mt.note;
