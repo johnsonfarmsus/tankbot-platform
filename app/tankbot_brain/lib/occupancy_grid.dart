@@ -16,6 +16,10 @@ class OccupancyGrid {
 
   static const double _free = -0.4, _hit = 0.85, _min = -4.0, _max = 4.0;
   static const double maxRangeM = 8.0, minRangeM = 0.15;
+  /// Rays only mark floor as open for this far; beyond it, long beams through doorways
+  /// and reflections would paint floor that was never really seen.
+  static const double freeRangeM = 4.5;
+  late final int _maxFreeCells = (freeRangeM / resolution).round();
 
   // Region that has been touched, in cells (for fast rendering).
   int minCx = 1 << 30, maxCx = -1, minCy = 1 << 30, maxCy = -1;
@@ -124,6 +128,24 @@ class OccupancyGrid {
     return out;
   }
 
+  /// Map edit: wipe a circle back to open floor (ghost walls, junk).
+  void eraseCircle(double x, double y, double r) {
+    final cr = (r / resolution).ceil();
+    final cx0 = _c(x), cy0 = _c(y);
+    final r2 = (r / resolution) * (r / resolution);
+    for (var dy = -cr; dy <= cr; dy++) {
+      for (var dx = -cr; dx <= cr; dx++) {
+        if (dx * dx + dy * dy > r2) continue;
+        final cx = cx0 + dx, cy = cy0 + dy;
+        if (cx < 0 || cy < 0 || cx >= size || cy >= size) continue;
+        _lo[cy * size + cx] = -2.0;
+        _touch(cx, cy);
+      }
+    }
+    _fieldScans = -1000; // force the matching field to refresh
+    dirty = true;
+  }
+
   void clear() {
     _lo.fillRange(0, _lo.length, 0);
     minCx = 1 << 30; maxCx = -1; minCy = 1 << 30; maxCy = -1;
@@ -164,20 +186,22 @@ class OccupancyGrid {
       final fwd = r * math.cos(a), left = -r * math.sin(a); // clockwise angle -> right is negative left
       final wx = ox + ch * fwd - sh * left;
       final wy = oy + sh * fwd + ch * left;
-      _ray(x0, y0, _c(wx), _c(wy), hit);
+      _ray(x0, y0, _c(wx), _c(wy), hit, _maxFreeCells);
     }
     scansIntegrated++;
     dirty = true;
   }
 
   // Bresenham line: cells along the beam are free, the end cell is occupied.
-  void _ray(int x0, int y0, int x1, int y1, bool hit) {
+  void _ray(int x0, int y0, int x1, int y1, bool hit, int maxFree) {
     var dx = (x1 - x0).abs(), dy = -(y1 - y0).abs();
     final sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
     var err = dx + dy, x = x0, y = y0;
+    var steps = 0;
     while (true) {
       if (x == x1 && y == y1) break;
-      _add(x, y, _free);
+      if (steps >= maxFree && !hit) break;
+      if (steps++ < maxFree) _add(x, y, _free);
       final e2 = 2 * err;
       if (e2 >= dy) { err += dy; x += sx; }
       if (e2 <= dx) { err += dx; y += sy; }

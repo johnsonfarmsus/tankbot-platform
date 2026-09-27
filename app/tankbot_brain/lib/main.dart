@@ -85,7 +85,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   String link = 'Starting...';
   double rangeMm = 6000;
   double maxSpeed = 0.6;
-  bool obstacleStop = false;
+  bool obstacleStop = true; // on by default; can be turned off in the controller's Settings
   double stopDistMm = 300;
   static const double selfMaskMm = 150, frontHalfAngle = 25;
   double _wantF = 0, _wantT = 0;
@@ -232,6 +232,45 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       case 'atHome':
         _atHome();
         break;
+      case 'map.erase':
+        final ex = (m['x'] as num?)?.toDouble(), ey = (m['y'] as num?)?.toDouble();
+        final er = ((m['r'] as num?)?.toDouble() ?? 0.2).clamp(0.05, 1.0);
+        if (ex != null && ey != null) {
+          active.edits.add({'type': 'erase', 'id': active.nextEditId++, 'stroke': m['stroke'], 'x': ex, 'y': ey, 'r': er});
+          grid.eraseCircle(ex, ey, er);
+          active.edited = true;
+        }
+        break;
+      case 'map.nogo':
+        final nv = [m['x1'], m['y1'], m['x2'], m['y2']];
+        if (nv.every((e) => e is num)) {
+          final nid = active.nextEditId++;
+          active.edits.add({
+            'type': 'nogo', 'id': nid, 'stroke': 'nogo$nid',
+            'x1': (nv[0] as num).toDouble(), 'y1': (nv[1] as num).toDouble(),
+            'x2': (nv[2] as num).toDouble(), 'y2': (nv[3] as num).toDouble(),
+          });
+          active.edited = true;
+        }
+        break;
+      case 'map.nogoDelete':
+        final did = m['id'];
+        active.edits.removeWhere((e) => e['type'] == 'nogo' && e['id'] == did);
+        active.edited = true;
+        break;
+      case 'map.undo':
+        if (active.edits.isNotEmpty) {
+          final stroke = active.edits.last['stroke'];
+          final wasErase = active.edits.last['type'] == 'erase';
+          if (stroke != null) {
+            active.edits.removeWhere((e) => e['stroke'] == stroke);
+          } else {
+            active.edits.removeLast();
+          }
+          active.edited = true;
+          if (wasErase) _rebuildGrid(); // erasing changed the grid: redraw without it
+        }
+        break;
       case 'maps.list':
         _refreshMapList();
         break;
@@ -273,6 +312,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       'loc': {'state': locState, 'note': locNote},
       'tracking': {'source': poseSource, 'matchHits': matchHits, 'matchMisses': matchMisses, 'lastCorrCm': lastCorrCm},
       'caps': caps,
+      'nogo': [
+        for (final e in active.edits)
+          if (e['type'] == 'nogo') [e['x1'], e['y1'], e['x2'], e['y2'], e['id']]
+      ],
       'quality': {
         'matchHits': matchHits,
         'matchMisses': matchMisses,
@@ -397,8 +440,18 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       grid.integrate(Pose(0, k.x, k.y, k.h, true), k.points(), lidarFwdM: active.lidarFwdM, lidarLeftM: active.lidarLeftM);
       if (i % 40 == 39) await Future<void>.delayed(Duration.zero);
     }
+    _applyEdits();
     _rebuilding = false;
     _mapChangedSinceSend = true;
+  }
+
+  /// Re-apply eraser edits after the grid is rebuilt from keyframes.
+  void _applyEdits() {
+    for (final e in active.edits) {
+      if (e['type'] == 'erase') {
+        grid.eraseCircle((e['x'] as num).toDouble(), (e['y'] as num).toDouble(), (e['r'] as num).toDouble());
+      }
+    }
   }
 
   /// A controller just connected: send it the current map right away.
@@ -476,6 +529,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       if (i % 40 == 39) await Future<void>.delayed(Duration.zero); // keep the app responsive
     }
     active = m;
+    _applyEdits();
     _loadingMap = false;
     await store.setLast(m.id);
     locState = 'localizing';

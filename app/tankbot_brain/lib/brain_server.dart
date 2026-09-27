@@ -149,6 +149,7 @@ input[type=range]{width:100%}
    <input id="trim" type="range" min="-20" max="20" step="1" value="0"></label>
   <div style="display:flex;justify-content:space-between;color:#9fb3bb;font-size:12px"><span>&larr; steer left</span><span>steer right &rarr;</span></div>
   <div style="color:#9fb3bb;font-size:12px">If it drifts right when driving straight, move the slider toward left (and the other way round). Saved on the robot. You can keep driving with the arrow keys while this is open.</div>
+  <label style="display:flex;align-items:center;gap:8px"><input id="obs" type="checkbox"> Obstacle stop (recommended: on)</label>
   <label>Obstacle stop distance: <span id="sdv">-</span>
    <input id="sd" type="range" min="150" max="1000" step="25" value="300"></label>
   <div style="font-weight:600;margin-top:4px">This brain</div>
@@ -169,7 +170,13 @@ input[type=range]{width:100%}
   <button id="mapsClose">Done</button>
  </div>
 </div>
-<div id="view"><canvas id="map"></canvas></div>
+<div id="view"><canvas id="map"></canvas>
+<div id="edittools" style="display:none;position:absolute;top:8px;left:8px;right:8px;background:rgba(16,20,22,0.92);border:1px solid #3a4a55;border-radius:10px;padding:8px;gap:6px;flex-wrap:wrap;align-items:center;font-size:13px">
+ <button data-tool="pan">Pan</button><button data-tool="erase">Eraser</button><button data-tool="nogo">No-go line</button><button data-tool="unnogo">Remove no-go</button>
+ <label>Eraser <select id="eraseR"><option value="0.1">10 cm</option><option value="0.2" selected>20 cm</option><option value="0.4">40 cm</option></select></label>
+ <button id="undoEdit">Undo</button><button id="recenter">Recenter</button><button id="editDone">Done</button>
+ <span id="edithint" style="color:#9fb3bb;width:100%"></span>
+</div></div>
 <div id="banner">OBSTACLE AHEAD - forward blocked</div>
 <div id="mountbar" style="display:none;text-align:center;padding:6px;font-weight:600"></div>
 <div id="locbar" style="display:none;background:#8d6e00;padding:6px;font-weight:600;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap"><span id="loctext"></span><button id="locRetry">Try again</button><button id="locHome">I'm at home</button></div>
@@ -178,8 +185,7 @@ input[type=range]{width:100%}
 <div id="motors">Motors: -</div>
 <label>Max speed <span id="msv"></span><input id="ms" type="range" min="0.2" max="1" step="0.1" value="0.6"></label>
 <label>View range <span id="rgv"></span><input id="rg" type="range" min="1" max="12" step="0.5" value="4"></label>
-<div class="row"><label><input id="obs" type="checkbox"> Obstacle stop</label></div>
-<div class="row"><button id="mapping">Pause mapping</button><button id="clear">New map here</button></div>
+<div class="row"><button id="mapping">Pause mapping</button><button id="clear">New map here</button><button id="editbtn">Edit map</button></div>
 <div style="color:#9fb3bb;font-size:12px">Keyboard: arrow keys or W A S D to drive, Space to stop</div>
 </div></div>
 <script>
@@ -411,15 +417,17 @@ function frame() {
     const p = t.pose || {x: 0, y: 0, h: Math.PI / 2, good: false};
     const off = t.lidarOffset || {fwd: 0, left: 0};
     if (mode === "map") {
-      const toS = (x, y) => [cx + (x - p.x) * ppm, cy - (y - p.y) * ppm];
+      const vx = p.x + panX, vy = p.y + panY;
+      view = {cx, cy, ppm, vx, vy};
+      const toS = (x, y) => [cx + (x - vx) * ppm, cy - (y - vy) * ppm];
       if (mapImg && mapMeta) {
         const tl = toS(mapMeta.left, mapMeta.top);
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(mapImg, tl[0], tl[1], mapImg.width * mapMeta.res * ppm, mapImg.height * mapMeta.res * ppm);
       }
       ctx.strokeStyle = "rgba(255,255,255,0.07)"; ctx.lineWidth = 1; ctx.beginPath();
-      for (let gx = Math.floor(p.x - range * 2); gx <= p.x + range * 2; gx++) { const a = toS(gx, 0)[0]; ctx.moveTo(a, 0); ctx.lineTo(a, H); }
-      for (let gy = Math.floor(p.y - range * 2); gy <= p.y + range * 2; gy++) { const b = toS(0, gy)[1]; ctx.moveTo(0, b); ctx.lineTo(W, b); }
+      for (let gx = Math.floor(vx - range * 2); gx <= vx + range * 2; gx++) { const a = toS(gx, 0)[0]; ctx.moveTo(a, 0); ctx.lineTo(a, H); }
+      for (let gy = Math.floor(vy - range * 2); gy <= vy + range * 2; gy++) { const b = toS(0, gy)[1]; ctx.moveTo(0, b); ctx.lineTo(W, b); }
       ctx.stroke();
       // home marker: where this map started, and the direction the robot faced
       const hm = toS(0, 0);
@@ -436,7 +444,27 @@ function frame() {
           ctx.fillRect(q[0] - 1.5, q[1] - 1.5, 3, 3);
         }
       }
-      drawArrow(cx, cy, p.h, p.good);
+      if (t.nogo) {
+        ctx.strokeStyle = "#ff5252"; ctx.lineWidth = 3;
+        for (const l of t.nogo) {
+          const a = toS(l[0], l[1]), b = toS(l[2], l[3]);
+          ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+        }
+      }
+      if (editMode && hover) {
+        if (tool === "erase") {
+          const hs = toS(hover.x, hover.y);
+          ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.arc(hs[0], hs[1], parseFloat($("eraseR").value) * ppm, 0, Math.PI * 2); ctx.stroke();
+        }
+        if (tool === "nogo" && nogoStart) {
+          const a = toS(nogoStart.x, nogoStart.y), b = toS(hover.x, hover.y);
+          ctx.strokeStyle = "#ff5252"; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+          ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]);
+        }
+      }
+      const rs = toS(p.x, p.y);
+      drawArrow(rs[0], rs[1], p.h, p.good);
     } else {
       ctx.strokeStyle = "rgba(255,255,255,0.15)";
       for (let r = 1; r <= range; r++) { ctx.beginPath(); ctx.arc(cx, cy, r * ppm, 0, Math.PI * 2); ctx.stroke(); }
@@ -451,6 +479,74 @@ function frame() {
   }
   requestAnimationFrame(frame);
 }
+// ---- map editing ----
+let editMode = false, tool = "pan", panX = 0, panY = 0, nogoStart = null, hover = null;
+let editDrag = null, lastErase = null, strokeId = 0, view = null;
+const HINTS = {
+  pan: "Drag the map to look around.",
+  erase: "Drag over ghost walls or junk to wipe them back to open floor.",
+  nogo: "Click two points to draw a line the robot must never cross.",
+  unnogo: "Click a red no-go line to remove it.",
+};
+function setTool(t) {
+  tool = t; nogoStart = null;
+  document.querySelectorAll("#edittools [data-tool]").forEach(b => b.style.outline = b.dataset.tool === t ? "2px solid #64ffda" : "none");
+  $("edithint").textContent = HINTS[t];
+}
+document.querySelectorAll("#edittools [data-tool]").forEach(b => b.onclick = () => setTool(b.dataset.tool));
+$("editbtn").onclick = () => {
+  editMode = true;
+  if (mode !== "map") { mode = "map"; $("mode").textContent = "Radar view"; }
+  $("edittools").style.display = "flex"; setTool("pan");
+};
+$("editDone").onclick = () => { editMode = false; panX = panY = 0; nogoStart = null; hover = null; $("edittools").style.display = "none"; };
+$("recenter").onclick = () => { panX = panY = 0; };
+$("undoEdit").onclick = () => send({type: "map.undo"});
+function toWorld(e) {
+  if (!view) return null;
+  const b = cv.getBoundingClientRect(), sx = e.clientX - b.left, sy = e.clientY - b.top;
+  return {x: view.vx + (sx - view.cx) / view.ppm, y: view.vy - (sy - view.cy) / view.ppm};
+}
+function eraseAt(w) {
+  const r = parseFloat($("eraseR").value);
+  if (lastErase && Math.hypot(w.x - lastErase.x, w.y - lastErase.y) < r * 0.5) return;
+  lastErase = w;
+  send({type: "map.erase", x: w.x, y: w.y, r: r, stroke: strokeId});
+}
+function segDist(px, py, l) {
+  const x1 = l[0], y1 = l[1], x2 = l[2], y2 = l[3], dx = x2 - x1, dy = y2 - y1;
+  const L = dx * dx + dy * dy || 1e-9;
+  let t = ((px - x1) * dx + (py - y1) * dy) / L; t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+cv.addEventListener("pointerdown", e => {
+  if (!editMode || mode !== "map") return;
+  const w = toWorld(e); if (!w) return;
+  cv.setPointerCapture(e.pointerId);
+  if (tool === "pan") editDrag = {x: e.clientX, y: e.clientY};
+  else if (tool === "erase") { editDrag = true; lastErase = null; strokeId = Date.now(); eraseAt(w); }
+  else if (tool === "nogo") {
+    if (!nogoStart) nogoStart = w;
+    else { send({type: "map.nogo", x1: nogoStart.x, y1: nogoStart.y, x2: w.x, y2: w.y}); nogoStart = null; }
+  } else if (tool === "unnogo" && telem && telem.nogo) {
+    let best = null, bd = 0.3;
+    for (const l of telem.nogo) { const d = segDist(w.x, w.y, l); if (d < bd) { bd = d; best = l; } }
+    if (best) send({type: "map.nogoDelete", id: best[4]});
+  }
+});
+cv.addEventListener("pointermove", e => {
+  if (!editMode) return;
+  hover = toWorld(e);
+  if (tool === "pan" && editDrag && view) {
+    panX -= (e.clientX - editDrag.x) / view.ppm; panY += (e.clientY - editDrag.y) / view.ppm;
+    editDrag = {x: e.clientX, y: e.clientY};
+  } else if (tool === "erase" && editDrag && hover) eraseAt(hover);
+});
+const endEditDrag = () => { editDrag = null; };
+cv.addEventListener("pointerup", endEditDrag);
+cv.addEventListener("pointercancel", endEditDrag);
+cv.addEventListener("pointerleave", () => { hover = null; });
+
 drawStick(); connect(); requestAnimationFrame(frame);
 </script></body></html>
 ''';

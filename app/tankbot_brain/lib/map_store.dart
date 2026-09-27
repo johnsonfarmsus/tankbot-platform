@@ -45,7 +45,10 @@ class MapSession {
   int savedCount = 0;
   DateTime? savedAt;
   bool renamed = false;
-  bool edited = false; // keyframes corrected (loop closing) since the last save
+  bool edited = false; // keyframes corrected or map edited since the last save
+  /// Map edits: {'type': 'erase', x, y, r} and {'type': 'nogo', x1, y1, x2, y2}, each with id + stroke.
+  final List<Map<String, dynamic>> edits = [];
+  int nextEditId = 1;
 
   bool get unsaved => keyframes.length != savedCount || renamed || edited;
 
@@ -131,6 +134,9 @@ class MapStore {
     final mTmp = File('${d.path}/meta.json.tmp');
     await mTmp.writeAsString(jsonEncode(m.meta()), flush: true);
     await mTmp.rename('${d.path}/meta.json');
+    final eTmp = File('${d.path}/edits.json.tmp');
+    await eTmp.writeAsString(jsonEncode({'next': m.nextEditId, 'edits': m.edits}), flush: true);
+    await eTmp.rename('${d.path}/edits.json');
     m.savedCount = count;
     m.renamed = false;
     m.edited = false;
@@ -151,6 +157,14 @@ class MapStore {
         lidarLeftM: (meta['lidarLeftM'] as num?)?.toDouble() ?? 0,
       );
       m.keyframes.addAll(_decode(await File('${root.path}/$id/keyframes.bin').readAsBytes()));
+      final ef = File('${root.path}/$id/edits.json');
+      if (await ef.exists()) {
+        final e = jsonDecode(await ef.readAsString()) as Map<String, dynamic>;
+        m.nextEditId = (e['next'] as num?)?.toInt() ?? 1;
+        for (final x in (e['edits'] as List? ?? [])) {
+          m.edits.add(Map<String, dynamic>.from(x as Map));
+        }
+      }
       m.savedCount = m.keyframes.length;
       m.savedAt = DateTime.now();
       return m;
