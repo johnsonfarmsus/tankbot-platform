@@ -1,6 +1,7 @@
 import Flutter
 import UIKit
 import ARKit
+import CoreMotion
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
@@ -43,6 +44,27 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
       case "reset":
         self?.run(reset: true)
         result(nil)
+      case "capabilities":
+        var sys = utsname()
+        uname(&sys)
+        let model = withUnsafePointer(to: &sys.machine) {
+          $0.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
+        }
+        let tracking = ARWorldTrackingConfiguration.isSupported
+        var depth = false, mesh = false
+        if #available(iOS 14.0, *) { depth = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) }
+        if #available(iOS 13.4, *) { mesh = ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) }
+        result([
+          "platform": "ios",
+          "model": model,
+          "worldTracking": tracking,
+          "sceneDepth": depth,
+          "meshClassification": mesh,
+          "worldMaps": tracking,
+          "barometer": CMAltimeter.isRelativeAltitudeAvailable(),
+          "gyro": CMMotionManager().isGyroAvailable,
+          "gps": UIDevice.current.userInterfaceIdiom == .phone,
+        ])
       case "documentsDir":
         result(FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path)
       case "keepAwake":

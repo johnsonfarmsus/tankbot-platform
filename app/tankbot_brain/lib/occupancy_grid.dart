@@ -25,10 +25,111 @@ class OccupancyGrid {
   int _c(double m) => (m / resolution).floor() + size ~/ 2;
   double cellToWorld(int c) => (c - size ~/ 2) * resolution;
 
+  // ---- likelihood field: how close each cell is to the nearest wall (for scan matching) ----
+  static const double fieldSigmaM = 0.06, fieldMaxM = 0.3;
+  Float32List? _field;
+  int _fx0 = 0, _fy0 = 0, _fw = 0, _fh = 0, _fieldScans = -1;
+
+  /// Rebuild the field if the map changed (cheap: two passes over the mapped area).
+  void ensureField({bool force = false}) {
+    if (maxCx < 0) return;
+    if (!force && _field != null && _fieldScans == scansIntegrated) return;
+    final m = (fieldMaxM / resolution).ceil() + 1;
+    final x0 = math.max(0, minCx - m), x1 = math.min(size - 1, maxCx + m);
+    final y0 = math.max(0, minCy - m), y1 = math.min(size - 1, maxCy + m);
+    final w = x1 - x0 + 1, h = y1 - y0 + 1;
+    const inf = 1e9;
+    final d = Float32List(w * h);
+    for (var y = 0; y < h; y++) {
+      final row = (y0 + y) * size;
+      for (var x = 0; x < w; x++) {
+        d[y * w + x] = _lo[row + x0 + x] > 0.5 ? 0 : inf;
+      }
+    }
+    const a = 1.0, b = 1.41421356;
+    // chamfer distance transform: forward pass then backward pass
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        final i = y * w + x;
+        var v = d[i];
+        if (x > 0 && d[i - 1] + a < v) v = d[i - 1] + a;
+        if (y > 0) {
+          if (d[i - w] + a < v) v = d[i - w] + a;
+          if (x > 0 && d[i - w - 1] + b < v) v = d[i - w - 1] + b;
+          if (x < w - 1 && d[i - w + 1] + b < v) v = d[i - w + 1] + b;
+        }
+        d[i] = v;
+      }
+    }
+    for (var y = h - 1; y >= 0; y--) {
+      for (var x = w - 1; x >= 0; x--) {
+        final i = y * w + x;
+        var v = d[i];
+        if (x < w - 1 && d[i + 1] + a < v) v = d[i + 1] + a;
+        if (y < h - 1) {
+          if (d[i + w] + a < v) v = d[i + w] + a;
+          if (x < w - 1 && d[i + w + 1] + b < v) v = d[i + w + 1] + b;
+          if (x > 0 && d[i + w - 1] + b < v) v = d[i + w - 1] + b;
+        }
+        d[i] = v;
+      }
+    }
+    final twoSig2 = 2 * fieldSigmaM * fieldSigmaM;
+    final maxCells = fieldMaxM / resolution;
+    for (var i = 0; i < d.length; i++) {
+      final dc = d[i];
+      if (dc > maxCells) {
+        d[i] = 0;
+      } else {
+        final dm = dc * resolution;
+        d[i] = math.exp(-dm * dm / twoSig2);
+      }
+    }
+    _field = d;
+    _fx0 = x0;
+    _fy0 = y0;
+    _fw = w;
+    _fh = h;
+    _fieldScans = scansIntegrated;
+  }
+
+  /// 0..1: 1 on a wall, falling off over a few centimetres.
+  double likelihood(double wx, double wy) {
+    final f = _field;
+    if (f == null) return 0;
+    final x = (wx / resolution).floor() + size ~/ 2 - _fx0, y = (wy / resolution).floor() + size ~/ 2 - _fy0;
+    if (x < 0 || y < 0 || x >= _fw || y >= _fh) return 0;
+    return f[y * _fw + x];
+  }
+
+  /// Log-odds at a world position (0 = unknown / outside the grid).
+  double at(double wx, double wy) {
+    final cx = (wx / resolution).floor() + size ~/ 2, cy = (wy / resolution).floor() + size ~/ 2;
+    if (cx < 0 || cy < 0 || cx >= size || cy >= size) return 0;
+    return _lo[cy * size + cx];
+  }
+
+  /// Centres of known-free cells, sampled every `stepM` metres (candidate robot positions).
+  List<ui.Offset> freeCellCentres(double stepM) {
+    final out = <ui.Offset>[];
+    if (maxCx < 0) return out;
+    final st = math.max(1, (stepM / resolution).round());
+    for (var cy = minCy; cy <= maxCy; cy += st) {
+      for (var cx = minCx; cx <= maxCx; cx += st) {
+        if (_lo[cy * size + cx] < -0.5) {
+          out.add(ui.Offset(cellToWorld(cx) + resolution / 2, cellToWorld(cy) + resolution / 2));
+        }
+      }
+    }
+    return out;
+  }
+
   void clear() {
     _lo.fillRange(0, _lo.length, 0);
     minCx = 1 << 30; maxCx = -1; minCy = 1 << 30; maxCy = -1;
     scansIntegrated = 0;
+    _field = null;
+    _fieldScans = -1;
     dirty = true;
   }
 

@@ -157,6 +157,27 @@ class MapStore {
     }
   }
 
+  Future<void> setLast(String id) async {
+    final root = await _dir();
+    if (root == null) return;
+    try {
+      await File('${root.path}/last.json').writeAsString(jsonEncode({'id': id}));
+    } catch (_) {}
+  }
+
+  Future<String?> getLast() async {
+    final root = await _dir();
+    if (root == null) return null;
+    try {
+      final m = jsonDecode(await File('${root.path}/last.json').readAsString()) as Map<String, dynamic>;
+      final id = m['id'] as String?;
+      if (id == null || !await File('${root.path}/$id/meta.json').exists()) return null;
+      return id;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> delete(String id) async {
     final root = await _dir();
     if (root == null || id.contains('/') || id.contains('..')) return;

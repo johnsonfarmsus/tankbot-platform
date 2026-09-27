@@ -13,6 +13,7 @@ import 'pose_client.dart';
 import 'occupancy_grid.dart';
 import 'brain_server.dart';
 import 'map_store.dart';
+import 'scan_matcher.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -52,6 +53,21 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   double _lastAutosaveMs = 0;
   List<Map<String, dynamic>> savedMaps = [];
   bool _loadingMap = false;
+
+  // Tracking: camera (ARKit/ARCore) corrected by lidar scan matching, or lidar alone.
+  late final ScanMatcher matcher = ScanMatcher(grid);
+  final PoseCorrection _corr = PoseCorrection();
+  String _mode = 'ar'; // 'ar' = camera tracking + lidar, 'lidar' = lidar only
+  double _arBadSinceMs = -1;
+  Pose? _lidarPose; // pose while tracking with the lidar alone
+  Pose? _lastRobotPose;
+  String locState = 'tracking'; // tracking | localizing | lost
+  String locNote = '';
+  bool _relocRunning = false;
+  int _relocAttempts = 0;
+  int matchHits = 0, matchMisses = 0;
+  double lastCorrCm = 0;
+  Map<String, dynamic> caps = {};
   late final BrainServer server;
   final List<StreamSubscription> _subs = [];
   LidarScan? scan;
@@ -112,8 +128,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _subs.add(client.linkState.listen((s) => setState(() => link = s)));
     _subs.add(motion.status.listen((m) => motionStatus = m));
     _subs.add(poses.poses.listen((p) {
-      if (p.good && (trail.isEmpty || (Offset(p.x, p.y) - trail.last).distance > 0.05)) {
-        trail.add(Offset(p.x, p.y));
+      final rp = robotPose;
+      if (rp != null && rp.good && locState == 'tracking' &&
+          (trail.isEmpty || (Offset(rp.x, rp.y) - trail.last).distance > 0.05)) {
+        trail.add(Offset(rp.x, rp.y));
         if (trail.length > 5000) trail.removeAt(0);
       }
       _checkMounted();
@@ -139,8 +157,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     client.start();
     motion.start();
     poses.start();
+    _loadCaps();
     server.start().then((_) {
       _refreshMapList();
+      _loadLastMap(); // remember the house across restarts
       setState(() {});
     });
     _keepAwake(true); // the brain must never auto-lock: iOS would suspend it
@@ -196,6 +216,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       case 'clearMap':
         _startNewMap();
         break;
+      case 'reloc':
+        _relocAttempts = 0;
+        _relocalize();
+        break;
+      case 'atHome':
+        _atHome();
+        break;
       case 'maps.list':
         _refreshMapList();
         break;
@@ -220,7 +247,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   void _sendTelemetry() {
     if (server.clientCount == 0) return;
-    final p = poses.latest;
+    final p = robotPose;
     final sc = scan;
     final m = motionStatus;
     server.broadcast({
@@ -234,6 +261,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
             ],
       'lidarOffset': {'fwd': lidarFwdM, 'left': lidarLeftM},
       'mapInfo': _mapInfo(),
+      'loc': {'state': locState, 'note': locNote},
+      'tracking': {'source': poseSource, 'matchHits': matchHits, 'matchMisses': matchMisses, 'lastCorrCm': lastCorrCm},
+      'caps': caps,
       'blocked': _blocked,
       'mount': {'state': mountState, 'note': mountNote, 'robotMode': robotMode, 'disturbances': disturbances},
       'settings': {
@@ -303,6 +333,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   Future<void> _saveActive() async {
     if (active.keyframes.isEmpty || !active.unsaved) return;
     await store.save(active);
+    await store.setLast(active.id);
     _lastAutosaveMs = appClockMs();
     await _refreshMapList();
   }
@@ -329,8 +360,22 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'loading': _loadingMap,
       };
 
-  /// Continue a saved map. For now the robot must start from the map's home spot,
-  /// facing the same way (automatic relocalisation comes next).
+  Future<void> _loadCaps() async {
+    try {
+      final r = await _native.invokeMethod('capabilities');
+      caps = Map<String, dynamic>.from(r as Map);
+    } on MissingPluginException {
+      caps = {'platform': 'other'};
+    } catch (_) {}
+    caps['robotLidar'] = true; // the robot's lidar is always the mapping backbone
+  }
+
+  Future<void> _loadLastMap() async {
+    final id = await store.getLast();
+    if (id != null && id != active.id) await _loadMap(id);
+  }
+
+  /// Load a saved map and find the robot on it using the lidar.
   Future<void> _loadMap(String id) async {
     if (_loadingMap || id == active.id) return;
     await _saveActive();
@@ -339,7 +384,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _loadingMap = true;
     _broadcastMaps();
     _onRelease();
-    await _resetMap(); // clears the grid and resets the ARKit origin to the robot's current spot
+    grid.clear();
+    trail.clear();
+    mapImage = null;
+    _pending.clear();
+    _corr.reset();
+    _lidarPose = null;
+    _lastRobotPose = null;
     for (var i = 0; i < m.keyframes.length; i++) {
       final k = m.keyframes[i];
       grid.integrate(Pose(0, k.x, k.y, k.h, true), k.points(), lidarFwdM: m.lidarFwdM, lidarLeftM: m.lidarLeftM);
@@ -347,12 +398,112 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     active = m;
     _loadingMap = false;
-    if (robotMode) {
-      mountState = 'mounted';
-      mountNote = 'Continuing "${m.name}" from its home spot';
-    }
-    _sigs.clear();
+    await store.setLast(m.id);
+    locState = 'localizing';
+    locNote = 'Finding myself on "${m.name}"...';
+    _relocAttempts = 0;
     _broadcastMaps();
+    // in robot mode, wait until the phone is settled in its cradle
+    if (!robotMode || mountState == 'mounted') _relocalize();
+    if (mounted) setState(() {});
+  }
+
+  void _onMounted() {
+    if (active.keyframes.length >= 10) {
+      mountState = 'mounted';
+      mountNote = 'Mounted - finding myself on "${active.name}"';
+      _relocAttempts = 0;
+      _relocalize();
+    } else {
+      _startNewMap(note: 'Mounted - mapping');
+    }
+  }
+
+  /// Search the whole saved map for where the current lidar view fits.
+  Future<void> _relocalize() async {
+    if (_relocRunning || _loadingMap) return;
+    if (active.keyframes.length < 10) {
+      locState = 'tracking';
+      locNote = '';
+      return;
+    }
+    _relocRunning = true;
+    locState = 'localizing';
+    locNote = 'Finding myself on "${active.name}"...';
+    _pending.clear();
+    if (mounted) setState(() {});
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    final s = scan;
+    if (s == null || stale) {
+      _relocRunning = false;
+      _relocFailed('no lidar data');
+      return;
+    }
+    final t = s.appMs;
+    final raw = t == null ? null : (poses.at(t) ?? poses.latest);
+    final pts = ScanMatcher.robotFrame(s.points, fwdM: lidarFwdM, leftM: lidarLeftM);
+    final res = await matcher.global(pts);
+    _relocRunning = false;
+    if (res.isEmpty) {
+      _relocFailed('the map has no open space yet');
+      return;
+    }
+    final best = res.first;
+    MatchResult? rival;
+    for (final r in res.skip(1)) {
+      final far = math.sqrt(_sq(r.x - best.x) + _sq(r.y - best.y)) > 0.6 || _angDiff(r.h, best.h).abs() > 0.4;
+      if (far) {
+        rival = r;
+        break;
+      }
+    }
+    final ambiguous = rival != null && rival.score > best.score * 0.93;
+    if (best.hitRatio < 0.5 || ambiguous) {
+      _relocFailed(ambiguous ? 'two places look alike' : 'no good match');
+      return;
+    }
+    if (_mode == 'ar' && raw != null && raw.good) {
+      _corr.setSoThat(raw, best.x, best.y, best.h);
+    } else {
+      _lidarPose = Pose(appClockMs(), best.x, best.y, best.h, true);
+      _mode = 'lidar';
+    }
+    _lastRobotPose = Pose(appClockMs(), best.x, best.y, best.h, true);
+    locState = 'tracking';
+    locNote = 'Found myself on "${active.name}" (${(best.hitRatio * 100).round()}% of the scan fits)';
+    _relocAttempts = 0;
+    trail.clear();
+    _sigs.clear();
+    if (mounted) setState(() {});
+  }
+
+  void _relocFailed(String why) {
+    locState = 'lost';
+    _relocAttempts++;
+    locNote = "Can't find myself yet ($why). Drive a little and I'll keep trying, or put me on the home spot and press I'm at home.";
+    if (_relocAttempts < 8) {
+      Future<void>.delayed(const Duration(seconds: 4), () {
+        if (locState == 'lost') _relocalize();
+      });
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// Manual fallback: the robot is on the map's home spot, facing the way it faced when the map started.
+  void _atHome() {
+    const h = math.pi / 2;
+    final raw = poses.latest;
+    if (_mode == 'ar' && raw != null && raw.good) {
+      _corr.setSoThat(raw, 0, 0, h);
+    } else {
+      _lidarPose = Pose(appClockMs(), 0, 0, h, true);
+      _mode = 'lidar';
+    }
+    _lastRobotPose = Pose(appClockMs(), 0, 0, h, true);
+    locState = 'tracking';
+    locNote = 'Placed on the home spot';
+    _relocAttempts = 0;
+    trail.clear();
     if (mounted) setState(() {});
   }
 
@@ -393,7 +544,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       if (math.sqrt(_sq(p.x - last.x) + _sq(p.y - last.y)) > 0.015) return;
       if (_angDiff(p.heading, last.heading).abs() > 0.026) return;
     }
-    _startNewMap(note: 'Mounted - mapping');
+    _onMounted();
   }
 
   /// Robot idle, but ARKit says the phone moved while the lidar scene did not change:
@@ -463,34 +614,109 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   // ---------- mapping ----------
+  bool get _arLive {
+    final l = poses.latest;
+    return l != null && l.good && appClockMs() - l.t < 600;
+  }
+
+  String get poseSource => _mode == 'ar' ? 'camera tracking + lidar' : 'lidar only';
+
+  /// Robot pose in map coordinates (camera pose corrected by the lidar, or lidar alone).
+  Pose? get robotPose {
+    if (_mode == 'lidar') return _lidarPose;
+    final l = poses.latest;
+    return l == null ? null : _corr.apply(l);
+  }
+
+  /// Use camera tracking when it is healthy; fall back to lidar-only tracking when it is not,
+  /// keeping the pose continuous across the switch.
+  void _updateMode() {
+    final now = appClockMs();
+    if (_arLive) {
+      _arBadSinceMs = -1;
+      if (_mode == 'lidar') {
+        final lp = _lidarPose;
+        if (lp != null) _corr.setSoThat(poses.latest!, lp.x, lp.y, lp.heading);
+        _mode = 'ar';
+      }
+    } else {
+      if (_arBadSinceMs < 0) _arBadSinceMs = now;
+      if (_mode == 'ar' && now - _arBadSinceMs > 1000) {
+        _lidarPose = _lastRobotPose ?? Pose(now, 0, 0, math.pi / 2, true);
+        _mode = 'lidar';
+      }
+    }
+  }
+
   void _processPending() {
+    _updateMode();
     final latest = poses.latest;
     while (_pending.isNotEmpty) {
       final s = _pending.first;
       final t = s.appMs;
-      if (t == null) {
-        _pending.removeAt(0);
-        skippedNoPose++;
-        continue;
-      }
-      if (latest == null || latest.t < t) {
-        if (latest != null && appClockMs() - t > 1000) {
+      Pose? raw;
+      if (_mode == 'ar') {
+        if (t == null) {
           _pending.removeAt(0);
           skippedNoPose++;
           continue;
         }
-        break;
+        if (latest == null || latest.t < t) {
+          if (latest != null && appClockMs() - t > 1000) {
+            _pending.removeAt(0);
+            skippedNoPose++;
+            continue;
+          }
+          break; // the camera pose for this moment has not arrived yet
+        }
+        raw = poses.at(t);
+        _pending.removeAt(0);
+        if (raw == null || !raw.good) {
+          skippedNoPose++;
+          continue;
+        }
+      } else {
+        _pending.removeAt(0);
       }
-      _pending.removeAt(0);
-      if (!_mapAllowed) continue;
-      final p = poses.at(t);
-      if (p == null || !p.good) {
-        skippedNoPose++;
-        continue;
-      }
-      grid.integrate(p, s.points, lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
-      _maybeKeyframe(p, s.points);
+      if (!_mapAllowed || _loadingMap || locState != 'tracking') continue;
+      final pose = _trackScan(s, raw);
+      if (pose == null) continue;
+      _lastRobotPose = pose;
+      grid.integrate(pose, s.points, lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
+      _maybeKeyframe(pose, s.points);
     }
+  }
+
+  /// Best pose for this scan: the camera's guess (or the last lidar pose), refined by
+  /// matching the scan against the walls already on the map.
+  Pose? _trackScan(LidarScan s, Pose? raw) {
+    final lidarOnly = raw == null;
+    final guess = lidarOnly ? (_lidarPose ?? Pose(appClockMs(), 0, 0, math.pi / 2, true)) : _corr.apply(raw);
+    if (grid.scansIntegrated < 15) {
+      if (lidarOnly) _lidarPose = guess;
+      return guess; // not enough map yet to match against
+    }
+    final pts = ScanMatcher.robotFrame(s.points, fwdM: lidarFwdM, leftM: lidarLeftM, stride: 2);
+    if (pts.length < 40) return lidarOnly ? null : guess;
+    final r = matcher.local(pts, guess.x, guess.y, guess.heading,
+        lin: lidarOnly ? 0.12 : 0.08, linStep: 0.02, ang: lidarOnly ? 0.14 : 0.05, angStep: 0.01);
+    if (r.hitRatio < 0.35 || r.atEdge) {
+      matchMisses++;
+      return lidarOnly ? null : guess; // unsure: keep the camera's guess, or skip the scan
+    }
+    matchHits++;
+    // Camera mode: move halfway to the match each scan (smooth, robust to one bad match).
+    final a = lidarOnly ? 1.0 : 0.5;
+    final nx = guess.x + (r.x - guess.x) * a, ny = guess.y + (r.y - guess.y) * a;
+    final nh = guess.heading + _angDiff(r.h, guess.heading) * a;
+    lastCorrCm = math.sqrt(_sq(r.x - guess.x) + _sq(r.y - guess.y)) * 100;
+    final pose = Pose(guess.t, nx, ny, nh, true, guess.fy);
+    if (lidarOnly) {
+      _lidarPose = pose;
+    } else {
+      _corr.setSoThat(raw, nx, ny, nh);
+    }
+    return pose;
   }
 
   Future<void> _resetMap() async {
@@ -498,6 +724,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     trail.clear();
     mapImage = null;
     _pending.clear();
+    _corr.reset();
+    _lidarPose = null;
+    _lastRobotPose = null;
+    locState = 'tracking';
+    locNote = '';
     await poses.reset();
     if (mounted) setState(() {});
   }
@@ -576,7 +807,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   String _trackingText() {
-    final p = poses.latest;
+    final p = robotPose;
     final sync = client.robotOffsetMs == null ? 'sync...' : 'sync ±${(client.syncRttMs! / 2).toStringAsFixed(0)} ms';
     final pos = p == null ? '' : '  pos ${p.x.toStringAsFixed(2)}, ${p.y.toStringAsFixed(2)} m';
     return 'AR ${poses.state}$pos  |  $sync  |  ${active.name}: ${active.keyframes.length} keyframes${active.unsaved ? " (unsaved)" : ""}';
@@ -654,7 +885,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
               child: CustomPaint(
                 painter: view == ViewMode.radar
                     ? RadarPainter(scan: scan, rangeMm: rangeMm, stale: stale)
-                    : MapPainter(map: mapImage, pose: poses.latest, trail: trail, rangeMm: rangeMm),
+                    : MapPainter(map: mapImage, pose: robotPose, trail: trail, rangeMm: rangeMm),
                 size: Size.infinite,
               ),
             ),
@@ -710,7 +941,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   /// Minimal screen for when the phone is mounted on the robot.
   Widget _robotModeScreen(BuildContext context) {
-    final p = poses.latest;
+    final p = robotPose;
     final ok = !stale && poses.state == 'normal';
     final sync = client.robotOffsetMs == null ? 'syncing' : '±${(client.syncRttMs! / 2).toStringAsFixed(0)} ms';
     TextStyle s(double size, [Color c = Colors.white70]) => TextStyle(fontSize: size, color: c);
@@ -730,6 +961,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
               const SizedBox(height: 16),
               if (mountNote.isNotEmpty)
                 Text(mountNote, style: s(18, mountState == 'mounted' ? Colors.tealAccent : Colors.amberAccent)),
+              if (locNote.isNotEmpty)
+                Text(locNote, style: s(15, locState == 'tracking' ? Colors.tealAccent : Colors.amberAccent)),
+              Text('Tracking: $poseSource', style: s(14)),
               const SizedBox(height: 24),
               Text('Control from any browser on this Wi-Fi:', style: s(14)),
               const SizedBox(height: 6),

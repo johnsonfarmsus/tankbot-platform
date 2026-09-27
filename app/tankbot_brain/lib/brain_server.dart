@@ -149,6 +149,8 @@ input[type=range]{width:100%}
   <div style="color:#9fb3bb;font-size:12px">If it drifts right when driving straight, move the slider toward left (and the other way round). Saved on the robot. You can keep driving with the arrow keys while this is open.</div>
   <label>Obstacle stop distance: <span id="sdv">-</span>
    <input id="sd" type="range" min="150" max="1000" step="25" value="300"></label>
+  <div style="font-weight:600;margin-top:4px">This brain</div>
+  <div id="capsInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
   <button id="setclose">Done</button>
  </div>
 </div>
@@ -160,13 +162,14 @@ input[type=range]{width:100%}
   <div class="row"><button id="mapNew">New map here</button></div>
   <div style="font-weight:600;margin-top:6px">Saved maps</div>
   <div id="mapList" style="display:flex;flex-direction:column;gap:6px"></div>
-  <div style="color:#9fb3bb;font-size:12px">Load continues a saved map. Put the robot on that map's home spot (the white circle marker), facing the direction of its line, before loading. Maps autosave every 20 s.</div>
+  <div style="color:#9fb3bb;font-size:12px">Load switches to a saved map; the robot then finds itself on it with the lidar. If it can't, drive a little, or put it on the home spot (white circle, facing along its line) and press I'm at home. Maps autosave every 20 s, and the last map loads automatically.</div>
   <button id="mapsClose">Done</button>
  </div>
 </div>
 <div id="view"><canvas id="map"></canvas></div>
 <div id="banner">OBSTACLE AHEAD - forward blocked</div>
 <div id="mountbar" style="display:none;text-align:center;padding:6px;font-weight:600"></div>
+<div id="locbar" style="display:none;background:#8d6e00;padding:6px;font-weight:600;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap"><span id="loctext"></span><button id="locRetry">Try again</button><button id="locHome">I'm at home</button></div>
 <div id="bottom"><canvas id="stick" width="340" height="340"></canvas>
 <div class="ctl">
 <div id="motors">Motors: -</div>
@@ -289,12 +292,27 @@ function syncSettings() {
   if (typeof s.trim === "number") { $("trim").value = -s.trim; $("trimv").textContent = -s.trim; }
   if (typeof s.stopDistMm === "number") { $("sd").value = s.stopDistMm; $("sdv").textContent = Math.round(s.stopDistMm / 10) + " cm"; }
 }
-$("setbtn").onclick = () => { $("settings").style.display = "flex"; settingsOpen = true; syncSettings(); };
+$("setbtn").onclick = () => { $("settings").style.display = "flex"; settingsOpen = true; syncSettings();
+  if (telem) $("capsInfo").textContent = capsText(telem.caps, telem.tracking); };
 $("setclose").onclick = () => { $("settings").style.display = "none"; settingsOpen = false; };
 $("trim").oninput = e => { $("trimv").textContent = e.target.value; };
 $("trim").onchange = e => send({type: "set", trim: -parseInt(e.target.value, 10)});
 $("sd").oninput = e => { $("sdv").textContent = Math.round(e.target.value / 10) + " cm"; };
 $("sd").onchange = e => send({type: "set", stopDistMm: parseFloat(e.target.value)});
+
+// ---- localisation + capabilities ----
+$("locRetry").onclick = () => send({type: "reloc"});
+$("locHome").onclick = () => { if (confirm("Is the robot on the map's home spot (white circle), facing along its line?")) send({type: "atHome"}); };
+function capsText(c, tr) {
+  if (!c) return "";
+  const yn = v => v ? "yes" : "no";
+  let s = "Phone: " + (c.model || c.platform || "unknown") +
+    "\nCamera tracking: " + yn(c.worldTracking) + " | Depth camera: " + yn(c.sceneDepth) +
+    " | Surface labels: " + yn(c.meshClassification) + "\nPlace memory: " + yn(c.worldMaps) +
+    " | Barometer: " + yn(c.barometer) + " | GPS: " + yn(c.gps) + " | Robot lidar: " + yn(c.robotLidar);
+  if (tr) s += "\nNow tracking with: " + tr.source + " | lidar corrections: " + tr.matchHits + " used, " + tr.matchMisses + " skipped";
+  return s;
+}
 
 // ---- maps panel ----
 let mapsOpen = false, mapsData = null;
@@ -324,7 +342,7 @@ function renderMaps() {
     if (mp.id !== activeId) {
       const lb = document.createElement("button"); lb.textContent = "Load";
       lb.onclick = () => {
-        if (confirm("Continue \"" + mp.name + "\"?\n\nThe robot must be on this map's home spot, facing the same way it faced when the map was started.")) {
+        if (confirm("Switch to \"" + mp.name + "\"? The current map is saved first.")) {
           send({type: "maps.load", id: mp.id});
         }
       };
@@ -357,7 +375,11 @@ function updateUi() {
     mb.style.display = "block"; mb.textContent = mt.note;
     mb.style.background = mt.state === "mounted" ? "#00695c" : "#8d6e00";
   } else mb.style.display = "none";
-  $("stat").textContent = st.scanRate.toFixed(1) + " scans/s | AR " + st.ar + " | mapped " + st.mapped + " | remotes " + st.remotes;
+  $("stat").textContent = st.scanRate.toFixed(1) + " scans/s | " + (t.tracking ? t.tracking.source : "AR " + st.ar) + " | remotes " + st.remotes;
+  const lb = $("locbar");
+  if (t.loc && t.loc.state !== "tracking") { lb.style.display = "flex"; $("loctext").textContent = t.loc.note; }
+  else lb.style.display = "none";
+  if (settingsOpen) $("capsInfo").textContent = capsText(t.caps, t.tracking);
   $("motors").textContent = m ? "Motors L " + m.left.toFixed(2) + "  R " + m.right.toFixed(2) + " (" + m.src + ")" : "Motors: -";
 }
 
