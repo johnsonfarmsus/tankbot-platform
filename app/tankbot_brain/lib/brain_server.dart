@@ -150,6 +150,7 @@ input[type=range]{width:100%}
 <label>View range <span id="rgv"></span><input id="rg" type="range" min="1" max="12" step="0.5" value="4"></label>
 <div class="row"><label><input id="obs" type="checkbox"> Obstacle stop</label></div>
 <div class="row"><button id="mapping">Pause mapping</button><button id="clear">New map here</button></div>
+<div style="color:#9fb3bb;font-size:12px">Keyboard: arrow keys or W A S D to drive, Space to stop</div>
 </div></div>
 <script>
 const $ = id => document.getElementById(id);
@@ -177,15 +178,30 @@ function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 // ---- joystick: sends 20x per second while held; the brain stops the robot if these stop ----
 const stick = $("stick"), sctx = stick.getContext("2d");
 let knob = null, activePointer = null;
+const keys = new Set();
+const KEYMAP = {ArrowUp: "u", KeyW: "u", ArrowDown: "d", KeyS: "d", ArrowLeft: "l", KeyA: "l", ArrowRight: "r", KeyD: "r"};
+function keyVector() {
+  const f = (keys.has("u") ? 1 : 0) - (keys.has("d") ? 1 : 0);
+  let t = (keys.has("r") ? 1 : 0) - (keys.has("l") ? 1 : 0);
+  if (f !== 0) t *= 0.5;   // arc while driving; full spin when turning alone
+  return {f, t};
+}
+function currentVector() {
+  if (knob) return {f: dz(-knob.y), t: dz(knob.x)};
+  if (keys.size) return keyVector();
+  return null;
+}
 function drawStick() {
   const w = stick.width, r = w / 2;
   sctx.clearRect(0, 0, w, w);
   sctx.beginPath(); sctx.arc(r, r, r - 4, 0, Math.PI * 2);
   sctx.fillStyle = "rgba(255,255,255,0.06)"; sctx.fill();
-  sctx.lineWidth = 4; sctx.strokeStyle = knob ? "#64ffda" : "#3a4a55"; sctx.stroke();
-  const k = knob || {x: 0, y: 0};
+  sctx.lineWidth = 4; sctx.strokeStyle = (knob || keys.size) ? "#64ffda" : "#3a4a55"; sctx.stroke();
+  const kv = keys.size ? keyVector() : null;
+  const active = knob || kv;
+  const k = knob || (kv ? {x: kv.t, y: -kv.f} : {x: 0, y: 0});
   sctx.beginPath(); sctx.arc(r + k.x * (r - 60), r + k.y * (r - 60), 52, 0, Math.PI * 2);
-  sctx.fillStyle = knob ? "#64ffda" : "#55636b"; sctx.fill();
+  sctx.fillStyle = active ? "#64ffda" : "#55636b"; sctx.fill();
 }
 function stickPos(e) {
   const b = stick.getBoundingClientRect();
@@ -196,10 +212,10 @@ function stickPos(e) {
 function dz(v) { return Math.abs(v) < 0.08 ? 0 : v; }
 function startDrive() {
   if (sendTimer) return;
-  sendTimer = setInterval(() => { if (knob) send({type: "drive", f: dz(-knob.y), t: dz(knob.x)}); }, 50);
+  sendTimer = setInterval(() => { const v = currentVector(); if (v) send({type: "drive", f: v.f, t: v.t}); }, 50);
 }
 function stopDrive() { if (sendTimer) { clearInterval(sendTimer); sendTimer = null; } send({type: "stop"}); }
-function release() { activePointer = null; knob = null; stopDrive(); drawStick(); }
+function release() { activePointer = null; knob = null; keys.clear(); stopDrive(); drawStick(); }
 stick.addEventListener("pointerdown", e => {
   activePointer = e.pointerId; stick.setPointerCapture(e.pointerId);
   knob = stickPos(e); startDrive(); drawStick();
@@ -208,7 +224,24 @@ stick.addEventListener("pointermove", e => { if (e.pointerId === activePointer) 
 stick.addEventListener("pointerup", e => { if (e.pointerId === activePointer) release(); });
 stick.addEventListener("pointercancel", e => { if (e.pointerId === activePointer) release(); });
 document.addEventListener("visibilitychange", () => { if (document.hidden) release(); });
-window.addEventListener("blur", () => { if (knob) release(); });
+document.addEventListener("keydown", e => {
+  if (e.code === "Space") { e.preventDefault(); release(); return; }
+  const k = KEYMAP[e.code]; if (!k) return;
+  e.preventDefault();
+  if (e.repeat || keys.has(k)) return;
+  keys.add(k); startDrive();
+  const v = currentVector(); if (v) send({type: "drive", f: v.f, t: v.t});
+  drawStick();
+});
+document.addEventListener("keyup", e => {
+  const k = KEYMAP[e.code]; if (!k) return;
+  e.preventDefault();
+  keys.delete(k);
+  if (keys.size === 0 && !knob) stopDrive();
+  else { const v = currentVector(); if (v) send({type: "drive", f: v.f, t: v.t}); }
+  drawStick();
+});
+window.addEventListener("blur", () => { if (knob || keys.size) release(); });
 
 // ---- controls ----
 $("ms").oninput = e => { $("msv").textContent = Math.round(e.target.value * 100) + "%"; send({type: "set", maxSpeed: parseFloat(e.target.value)}); };
