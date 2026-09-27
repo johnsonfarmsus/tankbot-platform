@@ -67,7 +67,7 @@ class Planner {
   static const double startEscapeM = 0.30; // allow leaving a tight spot near the start
 
   static PlanResult plan(OccupancyGrid g, List<List<double>> nogo, List<Offset> live,
-      double sx, double sy, double gx, double gy) {
+      double sx, double sy, double gx, double gy, {double robotRadius = robotRadiusM}) {
     if (g.maxCx < 0) return const PlanResult([], 'The map is empty');
     final res = g.resolution;
     const margin = 12;
@@ -136,7 +136,7 @@ class Planner {
         d[i] = v;
       }
     }
-    final rC = robotRadiusM / res, comfortC = comfortM / res, escC = startEscapeM / res;
+    final rC = robotRadius / res, comfortC = math.max(comfortM, robotRadius + 0.2) / res, escC = startEscapeM / res;
 
     final sX = cx(sx), sY = cy(sy);
     if (!inside(sX, sY)) return const PlanResult([], "I'm not on the map");

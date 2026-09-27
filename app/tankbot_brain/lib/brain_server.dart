@@ -141,7 +141,7 @@ button{background:#23303a;color:#e6eef0;border:1px solid #3a4a55;border-radius:8
 input[type=range]{width:100%}
 </style></head><body>
 <header><span id="conn">Connecting...</span><span id="stat"></span>
-<span style="margin-left:auto;display:flex;gap:8px"><button id="mapsbtn">Maps</button><button id="setbtn">Settings</button><button id="mode">Radar view</button></span></header>
+<span style="margin-left:auto;display:flex;gap:8px"><button id="botbtn">Bot</button><button id="mapsbtn">Maps</button><button id="setbtn">Settings</button><button id="mode">Radar view</button></span></header>
 <div id="settings" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10;align-items:center;justify-content:center">
  <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:min(420px,90vw);display:flex;flex-direction:column;gap:12px;font-size:14px">
   <div style="font-weight:600;font-size:16px">Settings</div>
@@ -155,6 +155,26 @@ input[type=range]{width:100%}
   <div style="font-weight:600;margin-top:4px">This brain</div>
   <div id="capsInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
   <button id="setclose">Done</button>
+ </div>
+</div>
+<div id="bot" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10;align-items:center;justify-content:center">
+ <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:min(760px,94vw);max-height:90vh;overflow:auto;display:flex;flex-direction:column;gap:10px;font-size:13px">
+  <div style="font-weight:600;font-size:16px">Bot</div>
+  <div class="row">
+   <label>Name <input id="botName" style="width:120px"></label>
+   <label>Drive <select id="botDrive"><option value="tank">Tank</option><option value="wheelchair">Wheelchair</option><option value="mecanum">Mecanum</option></select></label>
+   <label>Platform width <input id="botW" type="number" min="50" max="3000" style="width:64px"> mm</label>
+   <label>length <input id="botL" type="number" min="50" max="3000" style="width:64px"> mm</label>
+  </div>
+  <div class="row" style="align-items:flex-start">
+   <div><div style="color:#9fb3bb">Top view (front is up) - drag sensors</div><canvas id="botTop" width="300" height="300" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
+   <div><div style="color:#9fb3bb">Side view from the left - drag up/down for height</div><canvas id="botSide" width="300" height="220" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
+  </div>
+  <div style="font-weight:600">Sensors</div>
+  <div id="botSensors" style="display:flex;flex-direction:column;gap:4px"></div>
+  <div class="row"><select id="botAddType"><option value="lidar">Lidar</option><option value="camera">Phone camera</option><option value="bumper">Bumper</option><option value="tof">ToF distance</option><option value="imu">IMU</option><option value="depth">Depth camera</option></select><button id="botAdd">Add sensor</button></div>
+  <div style="color:#9fb3bb;font-size:12px">Positions are from the front and left edges of the platform; heights are above the floor. The phone camera is where the robot's tracked position sits; the lidar offset and the planning footprint are worked out from these.</div>
+  <div class="row"><button id="botSave">Save to robot</button><button id="botCancel">Cancel</button><span id="botInfo" style="color:#9fb3bb"></span></div>
  </div>
 </div>
 <div id="maps" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10;align-items:center;justify-content:center">
@@ -205,6 +225,7 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.type === "telem") { telem = m; updateUi(); if (mapsOpen) renderActive(); }
     else if (m.type === "maps") { mapsData = m; renderMaps(); }
+    else if (m.type === "bot") { botProfile = m.profile; if (botOpen && !botDraft) openBot(); }
     else if (m.type === "map") {
       const img = new Image();
       img.onload = () => { mapImg = img; mapMeta = m; };
@@ -263,7 +284,7 @@ stick.addEventListener("pointermove", e => { if (e.pointerId === activePointer) 
 stick.addEventListener("pointerup", e => { if (e.pointerId === activePointer) release(); });
 stick.addEventListener("pointercancel", e => { if (e.pointerId === activePointer) release(); });
 document.addEventListener("visibilitychange", () => { if (document.hidden) release(); });
-const typing = e => e.target && e.target.tagName === "INPUT" && e.target.type === "text";
+const typing = e => e.target && ((e.target.tagName === "INPUT" && (e.target.type === "text" || e.target.type === "number")) || e.target.tagName === "SELECT");
 document.addEventListener("keydown", e => {
   if (typing(e)) return;
   if (e.code === "Space") { e.preventDefault(); release(); return; }
@@ -324,6 +345,109 @@ function capsText(c, tr) {
   if (tr) s += "\nNow tracking with: " + tr.source + " | lidar corrections: " + tr.matchHits + " used, " + tr.matchMisses + " skipped";
   return s;
 }
+
+// ---- Bot tab: the bot profile editor ----
+let botProfile = null, botDraft = null, botOpen = false, botDrag = null;
+const SENSOR_LABEL = {lidar: "Lidar", camera: "Phone camera", bumper: "Bumper", tof: "ToF", imu: "IMU", depth: "Depth cam"};
+const SENSOR_COLOR = {lidar: "#64ffda", camera: "#ffab40", bumper: "#ff5252", tof: "#448aff", imu: "#ce93d8", depth: "#ffd54f"};
+function openBot() {
+  if (!botProfile) { send({type: "bot.get"}); return; }
+  botDraft = JSON.parse(JSON.stringify(botProfile));
+  $("botName").value = botDraft.name; $("botDrive").value = botDraft.drive;
+  $("botW").value = botDraft.platform.widthMm; $("botL").value = botDraft.platform.lengthMm;
+  renderBotSensors(); drawBot();
+}
+$("botbtn").onclick = () => { $("bot").style.display = "flex"; botOpen = true; botDraft = null; openBot(); };
+$("botCancel").onclick = () => { $("bot").style.display = "none"; botOpen = false; botDraft = null; };
+$("botSave").onclick = () => {
+  if (!botDraft) return;
+  botDraft.name = $("botName").value; botDraft.drive = $("botDrive").value;
+  botDraft.platform.widthMm = parseFloat($("botW").value); botDraft.platform.lengthMm = parseFloat($("botL").value);
+  send({type: "bot.set", profile: botDraft});
+  $("botInfo").textContent = "Saved";
+  setTimeout(() => { $("botInfo").textContent = ""; }, 2000);
+};
+["botW", "botL"].forEach(id => $(id).oninput = () => { if (!botDraft) return;
+  botDraft.platform.widthMm = parseFloat($("botW").value) || 100; botDraft.platform.lengthMm = parseFloat($("botL").value) || 100; drawBot(); });
+$("botAdd").onclick = () => {
+  if (!botDraft) return;
+  const type = $("botAddType").value;
+  botDraft.sensors.push({id: type + "_" + Date.now(), type, name: SENSOR_LABEL[type],
+    fromLeftMm: botDraft.platform.widthMm / 2, fromFrontMm: 20, heightMm: 50, yawDeg: 0});
+  renderBotSensors(); drawBot();
+};
+function numInput(v, min, max, w, onchange) {
+  const i = document.createElement("input"); i.type = "number"; i.value = Math.round(v); i.min = min; i.max = max; i.style.width = w + "px";
+  i.oninput = () => onchange(parseFloat(i.value) || 0); return i;
+}
+function renderBotSensors() {
+  const box = $("botSensors"); box.textContent = "";
+  botDraft.sensors.forEach((sn, idx) => {
+    const row = document.createElement("div"); row.className = "row";
+    const dot = document.createElement("span"); dot.style.cssText = "display:inline-block;width:10px;height:10px;border-radius:5px;background:" + SENSOR_COLOR[sn.type];
+    const nm = document.createElement("input"); nm.value = sn.name; nm.style.width = "110px"; nm.oninput = () => { sn.name = nm.value; drawBot(); };
+    const lab = t => { const e = document.createElement("span"); e.textContent = t; e.style.color = "#9fb3bb"; return e; };
+    const del = document.createElement("button"); del.textContent = "x"; del.onclick = () => { botDraft.sensors.splice(idx, 1); renderBotSensors(); drawBot(); };
+    row.append(dot, lab(SENSOR_LABEL[sn.type]), nm,
+      lab("from left"), numInput(sn.fromLeftMm, -500, 3000, 60, v => { sn.fromLeftMm = v; drawBot(); }),
+      lab("from front"), numInput(sn.fromFrontMm, -500, 3000, 60, v => { sn.fromFrontMm = v; drawBot(); }),
+      lab("height"), numInput(sn.heightMm, 0, 3000, 60, v => { sn.heightMm = v; drawBot(); }),
+      lab("yaw"), numInput(sn.yawDeg, -180, 180, 50, v => { sn.yawDeg = v; drawBot(); }), del);
+    box.append(row);
+  });
+}
+function botTopScale() { const W = botDraft.platform.widthMm, L = botDraft.platform.lengthMm; const sc = 250 / Math.max(W, L); return {sc, ox: 150 - W * sc / 2, oy: 150 - L * sc / 2}; }
+function botSideScale() { const L = botDraft.platform.lengthMm; let H = 100; for (const sn of botDraft.sensors) H = Math.max(H, sn.heightMm + 40); const sc = Math.min(250 / L, 180 / H); return {sc, ox: 150 - L * sc / 2, floorY: 200}; }
+function drawBot() {
+  if (!botDraft) return;
+  const W = botDraft.platform.widthMm, L = botDraft.platform.lengthMm;
+  // top view
+  const c = $("botTop").getContext("2d"), t = botTopScale();
+  c.clearRect(0, 0, 300, 300);
+  c.fillStyle = "#2a3238"; c.fillRect(t.ox, t.oy, W * t.sc, L * t.sc);
+  c.strokeStyle = "#64ffda"; c.lineWidth = 2; c.strokeRect(t.ox, t.oy, W * t.sc, L * t.sc);
+  c.fillStyle = "#64ffda"; c.beginPath(); c.moveTo(150, t.oy - 12); c.lineTo(143, t.oy - 3); c.lineTo(157, t.oy - 3); c.closePath(); c.fill();
+  c.fillStyle = "#9fb3bb"; c.font = "11px sans-serif"; c.fillText("front", 160, t.oy - 4);
+  for (const sn of botDraft.sensors) {
+    const x = t.ox + sn.fromLeftMm * t.sc, y = t.oy + sn.fromFrontMm * t.sc;
+    c.fillStyle = SENSOR_COLOR[sn.type]; c.beginPath(); c.arc(x, y, 9, 0, Math.PI * 2); c.fill();
+    const a = -sn.yawDeg * Math.PI / 180 - Math.PI / 2;
+    c.strokeStyle = SENSOR_COLOR[sn.type]; c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a) * 16, y + Math.sin(a) * 16); c.stroke();
+    c.fillStyle = "#e6eef0"; c.fillText(sn.name, x + 12, y + 4);
+  }
+  // side view from the left: front to the right
+  const s = $("botSide").getContext("2d"), v = botSideScale();
+  s.clearRect(0, 0, 300, 220);
+  s.strokeStyle = "#556"; s.beginPath(); s.moveTo(0, v.floorY); s.lineTo(300, v.floorY); s.stroke();
+  s.fillStyle = "#9fb3bb"; s.font = "11px sans-serif"; s.fillText("floor", 4, v.floorY - 4); s.fillText("front", 260, v.floorY + 14);
+  const platY = v.floorY - 60 * v.sc;
+  s.fillStyle = "#2a3238"; s.fillRect(v.ox, platY - 4, L * v.sc, 4);
+  for (const sn of botDraft.sensors) {
+    const x = v.ox + (L - sn.fromFrontMm) * v.sc, y = v.floorY - sn.heightMm * v.sc;
+    s.strokeStyle = "#3a4a55"; s.beginPath(); s.moveTo(x, platY); s.lineTo(x, y); s.stroke();
+    s.fillStyle = SENSOR_COLOR[sn.type]; s.beginPath(); s.arc(x, y, 8, 0, Math.PI * 2); s.fill();
+    s.fillStyle = "#e6eef0"; s.fillText(sn.name + " " + Math.round(sn.heightMm) + " mm", x + 11, y + 4);
+  }
+}
+function botHit(canvas, e, mapper) {
+  const b = canvas.getBoundingClientRect(), px = (e.clientX - b.left) * canvas.width / b.width, py = (e.clientY - b.top) * canvas.height / b.height;
+  let best = null, bd = 16;
+  for (const sn of botDraft.sensors) { const q = mapper(sn); const d = Math.hypot(q[0] - px, q[1] - py); if (d < bd) { bd = d; best = sn; } }
+  return {sn: best, px, py};
+}
+$("botTop").addEventListener("pointerdown", e => { if (!botDraft) return; const t = botTopScale(); const h = botHit($("botTop"), e, sn => [t.ox + sn.fromLeftMm * t.sc, t.oy + sn.fromFrontMm * t.sc]); if (h.sn) { botDrag = {sn: h.sn, view: "top"}; $("botTop").setPointerCapture(e.pointerId); } });
+$("botTop").addEventListener("pointermove", e => { if (!botDrag || botDrag.view !== "top") return; const t = botTopScale(); const b = $("botTop").getBoundingClientRect();
+  const px = (e.clientX - b.left) * 300 / b.width, py = (e.clientY - b.top) * 300 / b.height;
+  botDrag.sn.fromLeftMm = Math.round(Math.max(-50, Math.min(botDraft.platform.widthMm + 50, (px - t.ox) / t.sc)));
+  botDrag.sn.fromFrontMm = Math.round(Math.max(-50, Math.min(botDraft.platform.lengthMm + 50, (py - t.oy) / t.sc)));
+  renderBotSensors(); drawBot(); });
+$("botSide").addEventListener("pointerdown", e => { if (!botDraft) return; const v = botSideScale(); const h = botHit($("botSide"), e, sn => [v.ox + (botDraft.platform.lengthMm - sn.fromFrontMm) * v.sc, v.floorY - sn.heightMm * v.sc]); if (h.sn) { botDrag = {sn: h.sn, view: "side"}; $("botSide").setPointerCapture(e.pointerId); } });
+$("botSide").addEventListener("pointermove", e => { if (!botDrag || botDrag.view !== "side") return; const v = botSideScale(); const b = $("botSide").getBoundingClientRect();
+  const py = (e.clientY - b.top) * 220 / b.height;
+  botDrag.sn.heightMm = Math.round(Math.max(0, (v.floorY - py) / v.sc));
+  renderBotSensors(); drawBot(); });
+const botEndDrag = () => { botDrag = null; };
+["botTop", "botSide"].forEach(id => { $(id).addEventListener("pointerup", botEndDrag); $(id).addEventListener("pointercancel", botEndDrag); });
 
 // ---- maps panel ----
 let mapsOpen = false, mapsData = null;

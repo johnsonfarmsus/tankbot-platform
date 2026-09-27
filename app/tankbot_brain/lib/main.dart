@@ -16,6 +16,7 @@ import 'map_store.dart';
 import 'scan_matcher.dart';
 import 'loop_closer.dart';
 import 'planner.dart';
+import 'bot_profile.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -127,9 +128,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   bool _mapChangedSinceSend = false;
   int skippedNoPose = 0;
 
-  // Lidar position relative to the phone camera (metres, robot frame).
-  // Measured: camera directly below the lidar, 16 mm to the robot's right -> lidar is 16 mm to its left.
-  static const double lidarFwdM = 0.0, lidarLeftM = 0.016;
+  // Bot profile (size, drive type, sensor positions): the single source of truth. See docs/bot-profile.md.
+  BotProfile profile = BotProfile.tankbotDefault();
+  double get lidarFwdM => profile.lidarFwdM;
+  double get lidarLeftM => profile.lidarLeftM;
 
   @override
   void initState() {
@@ -181,6 +183,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     motion.start();
     poses.start();
     _loadCaps();
+    BotProfileStore.load().then((p) {
+      if (p != null && mounted) setState(() => profile = p);
+    });
     server.start().then((_) {
       _refreshMapList();
       _loadLastMap(); // remember the house across restarts
@@ -239,6 +244,17 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         break;
       case 'nav.cancel':
         _navCancel('Stopped');
+        break;
+      case 'bot.get':
+        server.broadcast({'type': 'bot', 'profile': profile.toJson()});
+        break;
+      case 'bot.set':
+        final np = BotProfile.fromJson(m['profile']);
+        if (np != null) {
+          profile = np;
+          BotProfileStore.save(np);
+          server.broadcast({'type': 'bot', 'profile': profile.toJson()});
+        }
         break;
       case 'set':
         if (m['maxSpeed'] is num) maxSpeed = (m['maxSpeed'] as num).toDouble().clamp(0.2, 1.0);
@@ -333,6 +349,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
                 [(sc.points[i].angleDeg * 10).round() / 10, (sc.points[i].distMm).round() / 1000]
             ],
       'lidarOffset': {'fwd': lidarFwdM, 'left': lidarLeftM},
+      'bot': {'name': profile.name, 'drive': profile.drive, 'bodyRadiusM': profile.bodyRadiusM, 'sensors': profile.sensors.length},
       'mapInfo': _mapInfo(),
       'loc': {'state': locState, 'note': locNote},
       'tracking': {'source': poseSource, 'matchHits': matchHits, 'matchMisses': matchMisses, 'lastCorrCm': lastCorrCm},
@@ -493,6 +510,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _lastMapSentMs = -1e9;
     if (grid.scansIntegrated > 0) grid.dirty = true;
     _broadcastMaps();
+    server.broadcast({'type': 'bot', 'profile': profile.toJson()});
   }
 
   Future<void> _saveActive() async {
@@ -750,7 +768,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (p == null || goal == null || _rebuilding) return false;
     _navLastPlanMs = appClockMs();
     navReplans++;
-    final r = Planner.plan(grid, _nogoLines, _liveObstacles(), p.x, p.y, goal.dx, goal.dy);
+    final r = Planner.plan(grid, _nogoLines, _liveObstacles(), p.x, p.y, goal.dx, goal.dy,
+        robotRadius: profile.inflationRadiusM);
     if (r.error != null || r.path.length < 2) {
       navState = 'blocked';
       navNote = r.error ?? 'No route';
@@ -808,7 +827,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     for (final o in live) {
       if ((o - pos).distance > 2.0) continue;
       for (final sg in segs) {
-        if (_segDist(o, sg[0], sg[1]) < Planner.robotRadiusM - 0.03) return true;
+        if (_segDist(o, sg[0], sg[1]) < profile.bodyRadiusM - 0.03) return true;
       }
     }
     return false;
