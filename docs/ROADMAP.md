@@ -35,28 +35,28 @@ that a newcomer can follow.
 
 ## Phases
 
-### Phase 1: Bot profile + Bot tab  (in progress)
+### Phase 1: Bot profile + Bot tab  (done, 3D preview pending)
 - Profile format and storage on the brain; default TankBot profile.
 - Bot tab in the controller: platform size, drag-and-drop sensor placement (top-down), side view for
   heights, 3D preview later.
 - Migrate hard-coded values (lidar offset, footprint, phone position) to the profile.
 - Deliverable: the TankBot profile, entered through the tab, driving mapping and navigation.
 
-### Phase 2: Modular firmware
+### Phase 2: Modular firmware  (done; awaiting sensors to test)
 - ESP32 config page: pins, drive type, attached sensors, stored in flash; starter wiring as default.
 - Capability announce + generic sensor feed (bumpers, ToF, IMU, encoders).
 - On-board reflexes: bumper stop/back-off, ToF close-range stop, cliff stop.
 - Home Wi-Fi retry while in fallback access-point mode.
 - Deliverable: bumper and ToF wired on the TankBot and protecting it with no phone attached.
 
-### Phase 3: App redesign around roles
+### Phase 3: App redesign around roles  (core done)
 - Controller / Brain / Mounted-brain modes in one app; web controller kept for laptops.
 - Guardian: one safety layer fusing every present sensor using its profile position.
 - Planner uses the real footprint and rotation centre from the profile.
 - Capability tiers shown plainly ("add a lidar to unlock mapping").
 - Multiple robots: profile and maps per robot.
 
-### Phase 4: Boosters
+### Phase 4: Boosters  (depth camera done; IMU/encoders and ARKit place memory pending)
 - Phone depth camera for low obstacles and drop-offs.
 - IMU + encoder fusion; ARKit place memory as a relocalisation speed-up.
 - Map polish: multi-scan relocalisation, better loop closing.

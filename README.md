@@ -1,40 +1,102 @@
 # TankBot Platform
 
-A phone-brained robot platform, developed at small scale on the TankBot and designed to move up to a larger sidewalk robot (a wheelchair-based base with two arms) later.
+A robot platform that scales with what you plug into it. The bare minimum (an ESP32, a motor
+driver and a chassis) is a drivable robot. Add bumpers and distance sensors and it protects itself.
+Add a phone and it gains a brain. Add a lidar and it maps, remembers your house and drives itself to
+where you tap. Any chassis, any sensor layout, one setup flow.
 
-The phone (iPhone or Android, via a Flutter app) is the brain. Small ESP32 boards handle hardware: motors, safety, and sensors. Everything talks over Wi-Fi using simple UDP messages defined in [`docs/protocol.md`](docs/protocol.md).
+Developed on the [TankBot](https://github.com/johnsonfarmsus/tank-bot-esp32) (TP101 tracked chassis);
+designed to move to a larger wheelchair-based robot next.
 
-## Layout
+## How it fits together
 
-| Folder | What it is |
+```
+ Robot (ESP32)                         Brain (phone/tablet running the app)         Controllers
+ motors + watchdog                 --->  tracking: camera + lidar scan matching  <---  web browser
+ reflexes: bumper / cliff / range        map: keyframes, loop closing, edits           (any laptop)
+ lidar bridge                            guardian: is forward clear, and why?    <---  the app in
+ sensor feed + capability announce       navigator: plan a route, drive it             Controller role
+ own web page (drive + setup)            control server (web pages + live data)
+```
+
+Every part reads the robot's geometry from a **bot profile** (size, drive type, where each sensor
+sits). Nothing about a specific robot is hard-coded.
+
+## Capability tiers
+
+| Tier | Hardware | You get |
+|---|---|---|
+| Drive | ESP32 + motor driver + chassis | manual driving from the ESP32's own web page |
+| Reflexes | + bumpers, ToF, ultrasonic | bump stop and back-off, cliff stop, close-obstacle stop, on the ESP32 itself |
+| Brain | + a phone or tablet running the app | full controller, position tracking (mounted), the robot's status face |
+| Mapping | + RPLidar | maps, remembering places, relocalisation, tap-to-go |
+| 3D awareness | + a phone with a depth camera (LiDAR iPhone) | low obstacles and drop-offs the lidar can't see |
+
+The controller's Settings page shows the current tier and what would unlock the next.
+
+## Repository layout
+
+| Folder | Contents |
 |---|---|
-| `firmware/motion/` | Motor control ESP32. Started from [tank-bot-esp32](https://github.com/johnsonfarmsus/tank-bot-esp32); gaining speed commands, a command watchdog, and a UDP API |
-| `firmware/lidar-bridge/` | ESP32 that reads a Slamtec RPLidar C1 and streams full rotations over UDP |
-| `app/` | Flutter brain app (coming next) |
-| `tools/` | Desktop helpers, e.g. `lidar_client.py` live plot |
-| `docs/` | Protocol and architecture notes |
+| `firmware/tankbot/` | ESP32 firmware v2: configurable pins and sensors, reflexes, lidar bridge, web page, OTA |
+| `firmware/motion/` | the original TankBot firmware, kept for reference |
+| `app/tankbot_brain/` | the Flutter app: Mounted brain / Brain in hand / Controller roles |
+| `docs/` | [wiring](docs/wiring.md), [protocol](docs/protocol.md), [bot profile](docs/bot-profile.md), [app architecture](docs/app-architecture.md), [roadmap](docs/ROADMAP.md) |
+| `tools/` | desktop helpers (`lidar_client.py` live lidar plot) |
 
-## Current hardware (TankBot scale)
+## Setting up a robot
 
-- ESP32 DevKit (38-pin, CP2102) + L298N + TP101 tank chassis
-- Slamtec RPLidar C1 on UART2: lidar TX -> GPIO4, lidar RX -> GPIO27, 460800 baud, 5 V power
-- iPhone 12 Pro as the brain
+1. **Wire it** following [docs/wiring.md](docs/wiring.md). Start with the motor driver; add sensors
+   any time.
+2. **Flash the firmware.** Copy `firmware/tankbot/src/secrets.example.h` to `secrets.h`, enter your
+   2.4 GHz Wi-Fi and an OTA password, then `cd firmware/tankbot && pio run -t upload` over USB once.
+   From then on `pio run -e ota -t upload` updates it over Wi-Fi.
+3. **Drive it.** Open `http://tankbot.local/` on any device on your Wi-Fi (away from home the robot
+   broadcasts its own `TankBot` network instead). Speed levels and steering trim live here too.
+4. **Tell it what's attached** at `http://tankbot.local/setup`: name, drive type, sensors, pins.
+   If you followed the standard wiring the pins are already right. Pointing the ToF at the floor?
+   Press "Calibrate ToF floor" once.
 
-Note: on the TankBot a single ESP32 currently carries both the motors and the lidar. The firmware keeps them as separate modules so they can move to separate boards later.
+## Adding a brain
 
-## Quick start: lidar bridge
+1. Install the app on a phone (iOS today; Android when ARCore support lands) and choose a role:
+   - **Mounted brain**: the phone rides on the robot; camera tracking, mount detection, status face.
+   - **Brain in hand**: same brain off the robot, tracking with the lidar alone.
+   - **Controller**: a remote for a brain on the network.
+2. On the brain phone's screen, note the **controller address** (e.g. `http://192.168.1.199:8080`)
+   and open it in a browser, or in the app in Controller role.
+3. Controller pages: **Drive** (joystick, arrow keys, radar and map views, Go to...), **Maps**
+   (save, load, edit, no-go lines, map quality), **Bot** (the profile: platform size, sensor
+   positions and heights), **Settings** (trim, power levels, obstacle stop and pass distances,
+   what the robot and the phone can do).
 
-1. `cp firmware/lidar-bridge/src/secrets.example.h firmware/lidar-bridge/src/secrets.h` and fill in your 2.4 GHz Wi-Fi.
-2. `cd firmware/lidar-bridge && pio run -t upload`
-3. Live plot from a computer on the same network:
-   ```
-   python3 -m venv venv && venv/bin/pip install matplotlib
-   venv/bin/python tools/lidar_client.py --plot
-   ```
+### Mounting the phone
 
-## Safety
+Mount it upright with the back camera facing forward. Enter its position and height in the Bot page.
+In Robot mode the brain waits until the phone has sat still in its cradle for 3 s before mapping, so
+handling the phone never smears a map. If the phone gets knocked, mapping pauses until it settles.
 
-The motion firmware must stop the motors on its own if commands stop arriving (watchdog). Keep the robot where it cannot drive off a table while testing.
+## Mapping and driving
+
+- Drive a room with the joystick or arrow keys; the map builds live. Turns are fine; the brain skips
+  scans taken while spinning fast and corrects camera drift against the map ten times a second.
+- Loops close automatically when the robot returns somewhere it mapped earlier.
+- Maps autosave every 20 s and reload on startup; the robot finds itself on the saved map with the
+  lidar (checking where it last was and the home spot first).
+- **Go to...**: tap a spot on the map. The robot plans around walls, no-go lines and anything it sees
+  live, drives there, and re-plans when something is in the way. Space, an arrow key, the joystick,
+  the Stop button, or leaving the page stops it immediately.
+- Safety is layered: ESP32 watchdog (commands must repeat every 300 ms) -> on-board reflexes -> the
+  brain's guardian (lidar around the body's front, depth camera, reflexes) -> the controller's own
+  watchdog. Autonomous driving always runs its own obstacle checks regardless of manual settings.
+
+## Developing
+
+- Firmware: PlatformIO. `pio run -e esp32dev` builds; `pio run -e ota -t upload` deploys over Wi-Fi.
+- App: Flutter 3.32+. `flutter test` runs the mapping, matching, planning and guardian tests;
+  `flutter build ios` / Xcode for the phone.
+- The wire protocols are in [docs/protocol.md](docs/protocol.md); `tools/lidar_client.py` is a
+  minimal reference client.
 
 ## License
 
