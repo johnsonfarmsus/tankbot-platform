@@ -131,6 +131,24 @@ class OccupancyGrid {
   int toCell(double m) => _c(m);
   double cellLo(int cx, int cy) => _lo[cy * size + cx];
 
+  /// Mark a small circle as occupied (bumper hits, edits).
+  void markCircle(double x, double y, double r) {
+    final cr = (r / resolution).ceil();
+    final cx0 = _c(x), cy0 = _c(y);
+    final r2 = (r / resolution) * (r / resolution);
+    for (var dy = -cr; dy <= cr; dy++) {
+      for (var dx = -cr; dx <= cr; dx++) {
+        if (dx * dx + dy * dy > r2) continue;
+        final cx = cx0 + dx, cy = cy0 + dy;
+        if (cx < 0 || cy < 0 || cx >= size || cy >= size) continue;
+        _lo[cy * size + cx] = 2.0;
+        _touch(cx, cy);
+      }
+    }
+    _fieldScans = -1000;
+    dirty = true;
+  }
+
   /// Map edit: wipe a circle back to open floor (ghost walls, junk).
   void eraseCircle(double x, double y, double r) {
     final cr = (r / resolution).ceil();

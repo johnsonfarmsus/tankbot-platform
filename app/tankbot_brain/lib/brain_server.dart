@@ -184,7 +184,7 @@ input[type=range]{width:100%}
   </div>
   <div style="font-weight:600">Sensors</div>
   <div id="botSensors" style="display:flex;flex-direction:column;gap:4px"></div>
-  <div class="row"><select id="botAddType"><option value="lidar">Lidar</option><option value="camera">Phone camera</option><option value="bumper">Bumper</option><option value="tof">ToF distance</option><option value="imu">IMU</option><option value="depth">Depth camera</option></select><button id="botAdd">Add sensor</button></div>
+  <div class="row"><select id="botAddType"><option value="lidar">Lidar</option><option value="camera">Phone camera</option><option value="bumper">Bumper</option><option value="tof">ToF distance</option><option value="ultrasonic">Ultrasonic</option><option value="imu">IMU</option><option value="depth">Depth camera</option></select><button id="botAdd">Add sensor</button></div>
   <div style="color:#9fb3bb;font-size:12px">Positions are from the front and left edges of the platform; heights are above the floor. The phone camera is where the robot's tracked position sits; the lidar offset and the planning footprint are worked out from these.</div>
   <div class="row"><button id="botSave">Save to robot</button><button id="botCancel">Back to Drive (discards unsaved changes)</button><span id="botInfo" style="color:#9fb3bb"></span></div>
  </div>
@@ -382,8 +382,8 @@ function capsText(c, tr) {
 
 // ---- Bot tab: the bot profile editor ----
 let botProfile = null, botDraft = null, botOpen = false, botDrag = null;
-const SENSOR_LABEL = {lidar: "Lidar", camera: "Phone camera", bumper: "Bumper", tof: "ToF", imu: "IMU", depth: "Depth cam"};
-const SENSOR_COLOR = {lidar: "#64ffda", camera: "#ffab40", bumper: "#ff5252", tof: "#448aff", imu: "#ce93d8", depth: "#ffd54f"};
+const SENSOR_LABEL = {lidar: "Lidar", camera: "Phone camera", bumper: "Bumper", tof: "ToF", ultrasonic: "Ultrasonic", imu: "IMU", depth: "Depth cam"};
+const SENSOR_COLOR = {lidar: "#64ffda", camera: "#ffab40", bumper: "#ff5252", tof: "#448aff", ultrasonic: "#80cbc4", imu: "#ce93d8", depth: "#ffd54f"};
 function openBot() {
   if (!botProfile) { send({type: "bot.get"}); return; }
   botDraft = JSON.parse(JSON.stringify(botProfile));

@@ -89,7 +89,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   int _navIdx = 1, _navFails = 0;
   double _navLastPlanMs = 0;
   bool _navRotating = false;
-  double _navTurnStartMs = 0, _navTurnDir = 1;
+  double _navTurnStartMs = 0;
   Timer? _navTimer;
   double _cmdF = 0, _cmdT = 0, _navLastBlockReplanMs = 0;
   int navReplans = 0, navFrontBlocks = 0;
@@ -182,6 +182,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     });
     _telemTimer = Timer.periodic(const Duration(milliseconds: 200), (_) => _sendTelemetry());
     WidgetsBinding.instance.addObserver(this);
+    _subs.add(sensors.readings.listen(_onRobotSensors));
     client.start();
     motion.start();
     sensors.start();
@@ -324,14 +325,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       case 'map.undo':
         if (active.edits.isNotEmpty) {
           final stroke = active.edits.last['stroke'];
-          final wasErase = active.edits.last['type'] == 'erase';
           if (stroke != null) {
             active.edits.removeWhere((e) => e['stroke'] == stroke);
           } else {
             active.edits.removeLast();
           }
           active.edited = true;
-          if (wasErase) _rebuildGrid(); // erasing changed the grid: redraw without it
+          _rebuildGrid(); // grid edits (erase / obstacle): redraw without it
         }
         break;
       case 'maps.list':
@@ -546,6 +546,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     for (final e in active.edits) {
       if (e['type'] == 'erase') {
         grid.eraseCircle((e['x'] as num).toDouble(), (e['y'] as num).toDouble(), (e['r'] as num).toDouble());
+      } else if (e['type'] == 'obstacle') {
+        grid.markCircle((e['x'] as num).toDouble(), (e['y'] as num).toDouble(), (e['r'] as num).toDouble());
       }
     }
   }
@@ -782,6 +784,84 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
+  // ---------- robot sensors (ESP32 feed) ----------
+  bool _capsApplied = false;
+  int _prevBumpL = 0, _prevBumpR = 0;
+
+  /// Where a profile sensor is in map coordinates right now.
+  Offset? _sensorWorld(BotSensor sn) {
+    final p = robotPose;
+    if (p == null) return null;
+    final (fwd, left) = profile.sensorOffset(sn);
+    final c = math.cos(p.heading), sd = math.sin(p.heading);
+    return Offset(p.x + c * fwd - sd * left, p.y + sd * fwd + c * left);
+  }
+
+  /// Sensors the ESP32 says are attached appear in the profile at a default spot (front edge).
+  void _prefillProfileFromCaps() {
+    final caps = sensors.caps;
+    if (caps == null || _capsApplied) return;
+    _capsApplied = true;
+    final sn = (caps['sensors'] as Map?) ?? {};
+    final w = profile.widthMm, defaults = <String, (String, String, double, double, double)>{
+      'lidar': ('lidar', 'RPLidar', w / 2, 40, 260),
+      'tof': ('tof', 'ToF (floor)', w / 2, 10, 40),
+      'ultrasonic': ('us', 'Ultrasonic', w / 2, 5, 40),
+      'bumperL': ('bumpL', 'Left bumper', w * 0.25, 0, 30),
+      'bumperR': ('bumpR', 'Right bumper', w * 0.75, 0, 30),
+    };
+    var changed = false;
+    defaults.forEach((capKey, d) {
+      if (sn[capKey] == true && profile.byId(d.$1) == null && (d.$1 == 'lidar' ? profile.byType('lidar') == null : true)) {
+        final type = capKey.startsWith('bumper') ? 'bumper' : capKey;
+        profile.sensors.add(BotSensor(d.$1, type, d.$2, fromLeftMm: d.$3, fromFrontMm: d.$4, heightMm: d.$5));
+        changed = true;
+      }
+    });
+    if (changed) {
+      BotProfileStore.save(profile);
+      server.broadcast({'type': 'bot', 'profile': profile.toJson()});
+    }
+  }
+
+  void _onRobotSensors(Map<String, dynamic> r) {
+    _prefillProfileFromCaps();
+    final bl = (r['bumpL'] as num?)?.toInt() ?? -1, br = (r['bumpR'] as num?)?.toInt() ?? -1;
+    if (bl == 1 && _prevBumpL != 1) _bumpObstacle('bumpL');
+    if (br == 1 && _prevBumpR != 1) _bumpObstacle('bumpR');
+    _prevBumpL = bl;
+    _prevBumpR = br;
+  }
+
+  /// A bumper hit: something is there that the lidar didn't see. Put it on the map, permanently.
+  void _bumpObstacle(String sensorId) {
+    if (locState != 'tracking' || _loadingMap) return;
+    final sn = profile.byId(sensorId);
+    final w = sn == null ? null : _sensorWorld(sn);
+    if (w == null) return;
+    // a little ahead of the bumper face
+    final p = robotPose!;
+    final ox = w.dx + math.cos(p.heading) * 0.05, oy = w.dy + math.sin(p.heading) * 0.05;
+    active.edits.add({'type': 'obstacle', 'id': active.nextEditId++, 'stroke': 'bump${active.nextEditId}', 'x': ox, 'y': oy, 'r': 0.07});
+    grid.markCircle(ox, oy, 0.07);
+    active.edited = true;
+    navNote = 'Bumped something - marked it on the map';
+  }
+
+  /// The ultrasonic's current reading as a point on the map (low obstacles the lidar misses).
+  Offset? _ultrasonicPoint() {
+    final live = sensors.fresh ? sensors.latest : null;
+    final mm = (live?['usMm'] as num?)?.toDouble() ?? -1;
+    if (mm < 30 || mm > 800) return null;
+    final sn = profile.byId('us') ?? profile.byType('ultrasonic');
+    if (sn == null) return null;
+    final w = _sensorWorld(sn);
+    final p = robotPose;
+    if (w == null || p == null) return null;
+    final a = p.heading + sn.yawDeg * math.pi / 180;
+    return Offset(w.dx + math.cos(a) * mm / 1000, w.dy + math.sin(a) * mm / 1000);
+  }
+
   // ---------- tap-to-go navigation ----------
   List<List<double>> get _nogoLines => [
         for (final e in active.edits)
@@ -794,9 +874,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final p = robotPose, sc = scan;
     if (p == null || sc == null || stale) return const [];
     final c = math.cos(p.heading), sn = math.sin(p.heading);
+    final us = _ultrasonicPoint();
     return [
       for (final q in ScanMatcher.robotFrame(sc.points, fwdM: lidarFwdM, leftM: lidarLeftM, stride: 2, maxR: 2.5))
-        Offset(p.x + c * q.dx - sn * q.dy, p.y + sn * q.dx + c * q.dy)
+        Offset(p.x + c * q.dx - sn * q.dy, p.y + sn * q.dx + c * q.dy),
+      if (us != null) us,
     ];
   }
 
@@ -949,16 +1031,27 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     // Straight runs at cruise power; when off course, stop and turn on the spot (no steering blend,
     // which would starve one track below its threshold and just make it whine).
     final cruise = profile.cruisePower;
-    const turnP = 1.0; // turning on the spot needs everything the tracks have
+    final turnP = math.max(profile.minPower, 0.9); // turning on the spot needs nearly everything
     double f = 0, t = 0;
-    // start turning when 20 deg off, keep turning until within 4 deg, and never for less than 200 ms
-    final keepTurning = _navRotating && (alpha.abs() > 0.07 || now - _navTurnStartMs < 200);
-    if (keepTurning || (!_navRotating && alpha.abs() > 0.35)) {
-      if (!_navRotating) { _navTurnStartMs = now; _navTurnDir = alpha > 0 ? -1 : 1; }
-      _navRotating = true; // turn command: positive = clockwise/right
-      t = _navTurnDir * turnP;
+    // Turn on the spot when more than 20 deg off; keep going until within 4 deg. The direction is
+    // re-checked every tick (an overshoot turns back), and for the last 20 deg the turn is pulsed:
+    // 120 ms on, 200 ms settle, so full-power turns can't spin past the target.
+    final dir = alpha > 0 ? -1.0 : 1.0; // turn command: positive = clockwise/right
+    if (_navRotating) {
+      if (alpha.abs() <= 0.07 && now - _navTurnStartMs >= 150) {
+        _navRotating = false;
+        f = cruise;
+      } else if (alpha.abs() > 0.35) {
+        t = dir * turnP;
+      } else {
+        final phase = ((now - _navTurnStartMs) % 320).toInt();
+        t = phase < 120 ? dir * turnP : 0;
+      }
+    } else if (alpha.abs() > 0.35) {
+      _navRotating = true;
+      _navTurnStartMs = now;
+      t = dir * turnP;
     } else {
-      _navRotating = false;
       f = cruise;
     }
     // the ESP32's own reflexes (bumper, cliff, ultrasonic) veto forward motion: treat as blocked

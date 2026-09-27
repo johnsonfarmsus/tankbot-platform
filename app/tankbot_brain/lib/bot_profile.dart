@@ -11,7 +11,7 @@ class BotSensor {
   BotSensor(this.id, this.type, this.name,
       {required this.fromLeftMm, required this.fromFrontMm, this.heightMm = 0, this.yawDeg = 0});
 
-  static const types = ['lidar', 'camera', 'bumper', 'tof', 'imu', 'depth'];
+  static const types = ['lidar', 'camera', 'bumper', 'tof', 'ultrasonic', 'imu', 'depth'];
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -107,6 +107,19 @@ class BotProfile {
     final l = byType('lidar');
     if (l == null) return 0;
     return leftM(l) - trackedPoint.$2;
+  }
+
+  BotSensor? byId(String id) {
+    for (final s in sensors) {
+      if (s.id == id) return s;
+    }
+    return null;
+  }
+
+  /// A sensor's position relative to the tracked point (metres, forward / left).
+  (double, double) sensorOffset(BotSensor s) {
+    final (tx, ty) = trackedPoint;
+    return (fwdM(s) - tx, leftM(s) - ty);
   }
 
   /// Farthest platform corner from the tracked point: the circle the body sweeps when turning.
