@@ -17,6 +17,7 @@ import 'scan_matcher.dart';
 import 'loop_closer.dart';
 import 'planner.dart';
 import 'bot_profile.dart';
+import 'sensor_client.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -49,6 +50,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   final client = LidarClient();
   final motion = MotionClient();
+  final sensors = SensorClient();
   final poses = PoseClient();
   final grid = OccupancyGrid();
   final store = MapStore();
@@ -87,6 +89,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   int _navIdx = 1, _navFails = 0;
   double _navLastPlanMs = 0;
   bool _navRotating = false;
+  double _navTurnStartMs = 0, _navTurnDir = 1;
   Timer? _navTimer;
   double _cmdF = 0, _cmdT = 0, _navLastBlockReplanMs = 0;
   int navReplans = 0, navFrontBlocks = 0;
@@ -101,7 +104,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   double rangeMm = 6000;
   double maxSpeed = 0.6;
   bool obstacleStop = true; // on by default; can be turned off in the controller's Settings
-  double stopDistMm = 300;
+  double get stopDistMm => profile.stopDistMm;
   static const double selfMaskMm = 150, frontHalfAngle = 25;
   double _wantF = 0, _wantT = 0;
   bool _blocked = false;
@@ -181,6 +184,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     client.start();
     motion.start();
+    sensors.start();
     poses.start();
     _loadCaps();
     BotProfileStore.load().then((p) {
@@ -210,6 +214,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     server.stop();
     motion.dispose();
+    sensors.dispose();
     client.dispose();
     poses.dispose();
     super.dispose();
@@ -266,7 +271,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (m['maxSpeed'] is num) maxSpeed = (m['maxSpeed'] as num).toDouble().clamp(0.2, 1.0);
         if (m['obstacleStop'] is bool) obstacleStop = m['obstacleStop'] as bool;
         if (m['mapping'] is bool) mapping = m['mapping'] as bool;
-        if (m['stopDistMm'] is num) stopDistMm = (m['stopDistMm'] as num).toDouble().clamp(150.0, 1000.0);
+        if (m['stopDistMm'] is num || m['passDistMm'] is num) {
+          if (m['stopDistMm'] is num) profile.stopDistMm = (m['stopDistMm'] as num).toDouble().clamp(100.0, 2000.0);
+          if (m['passDistMm'] is num) profile.passDistMm = (m['passDistMm'] as num).toDouble().clamp(0.0, 1000.0);
+          BotProfileStore.save(profile);
+        }
         if (m['trim'] is num) _setTrim((m['trim'] as num).round().clamp(-20, 20));
         if (m['minPower'] is num || m['cruisePower'] is num) {
           if (m['minPower'] is num) profile.minPower = (m['minPower'] as num).toDouble().clamp(0.3, 1.0);
@@ -348,6 +357,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   void _sendTelemetry() {
+    _ensureFullPower();
     if (server.clientCount == 0) return;
     final p = robotPose;
     final sc = scan;
@@ -373,6 +383,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'goal': navGoal == null ? null : [navGoal!.dx, navGoal!.dy],
         'path': [for (final q in navPath) [(q.dx * 100).round() / 100, (q.dy * 100).round() / 100]],
       },
+      'robot': {'caps': sensors.caps, 'live': sensors.fresh ? sensors.latest : null},
       'nogo': [
         for (final e in active.edits)
           if (e['type'] == 'nogo') [e['x1'], e['y1'], e['x2'], e['y2'], e['id']]
@@ -395,6 +406,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'obstacleStop': obstacleStop,
         'mapping': mapping,
         'stopDistMm': stopDistMm,
+        'passDistMm': profile.passDistMm,
         'trim': motionStatus?['trim'],
         'minPower': profile.minPower,
         'cruisePower': profile.cruisePower,
@@ -424,6 +436,25 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       'top': img.topM,
       'res': img.resolution,
     });
+  }
+
+  /// Ask the ESP32 for its full power range (speed level 3 = PWM 255), so the brain's
+  /// percentages mean what they say. Sent once the robot's address is known.
+  bool _speedLevelSet = false;
+  Future<void> _ensureFullPower() async {
+    final ip = motion.address;
+    if (ip == null || _speedLevelSet) return;
+    _speedLevelSet = true;
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+    try {
+      final req = await c.getUrl(Uri.parse('http://$ip/speed?value=3'));
+      final res = await req.close();
+      await res.drain<void>();
+    } catch (_) {
+      _speedLevelSet = false;
+    } finally {
+      c.close();
+    }
   }
 
   /// Steering trim lives on the robot (saved in its flash); the brain just forwards it.
@@ -715,6 +746,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   void _relocFailed(String why) {
     locState = 'lost';
+    if (why == 'no lidar data') {
+      locNote = 'Waiting for the robot\'s lidar...';
+      Future<void>.delayed(const Duration(seconds: 3), () {
+        if (locState == 'lost') _relocalize();
+      });
+      if (mounted) setState(() {});
+      return;
+    }
     _relocAttempts++;
     locNote = "Can't find myself yet ($why). Drive a little and I'll keep trying, or put me on the home spot and press I'm at home.";
     if (_relocAttempts < 8) {
@@ -909,15 +948,25 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     // Only power levels this robot can act on: zero, or at least its minimum-to-move.
     // Straight runs at cruise power; when off course, stop and turn on the spot (no steering blend,
     // which would starve one track below its threshold and just make it whine).
-    final minP = profile.minPower, cruise = profile.cruisePower;
-    final turnP = math.max(minP, 0.85).clamp(minP, 1.0).toDouble();
+    final cruise = profile.cruisePower;
+    const turnP = 1.0; // turning on the spot needs everything the tracks have
     double f = 0, t = 0;
-    if (_navRotating ? alpha.abs() > 0.09 : alpha.abs() > 0.2) {
+    // start turning when 20 deg off, keep turning until within 4 deg, and never for less than 200 ms
+    final keepTurning = _navRotating && (alpha.abs() > 0.07 || now - _navTurnStartMs < 200);
+    if (keepTurning || (!_navRotating && alpha.abs() > 0.35)) {
+      if (!_navRotating) { _navTurnStartMs = now; _navTurnDir = alpha > 0 ? -1 : 1; }
       _navRotating = true; // turn command: positive = clockwise/right
-      t = alpha > 0 ? -turnP : turnP;
+      t = _navTurnDir * turnP;
     } else {
       _navRotating = false;
       f = cruise;
+    }
+    // the ESP32's own reflexes (bumper, cliff, ultrasonic) veto forward motion: treat as blocked
+    final reflex = sensors.block;
+    if (f > 0 && reflex != 'none') {
+      navFrontBlocks++;
+      f = 0;
+      navNote = 'Robot reflex: $reflex - going around';
     }
     // something right in front: no forward motion; re-plan around it now (turning is still fine)
     final clear = frontClearanceMm;
@@ -1237,6 +1286,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (ip != null) {
       client.start(manualIp: ip);
       motion.start(manualIp: ip);
+      sensors.start(manualIp: ip);
     }
   }
 
@@ -1295,6 +1345,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
             onPressed: () {
               client.start();
               motion.start();
+              sensors.start();
             },
           ),
         ],

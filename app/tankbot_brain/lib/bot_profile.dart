@@ -44,6 +44,9 @@ class BotProfile {
   double trackMm, axleFromFrontMm; // rotation centre for tank / wheelchair
   /// Fraction of full power below which this robot does not move, and the power it drives best at.
   double minPower, cruisePower;
+  /// Obstacle handling (mm): never drive forward closer than stopDistMm to something ahead;
+  /// plan routes that keep at least passDistMm of clearance around the body.
+  double stopDistMm, passDistMm;
   final List<BotSensor> sensors;
 
   BotProfile({
@@ -56,6 +59,8 @@ class BotProfile {
     required this.sensors,
     this.minPower = 0.8,
     this.cruisePower = 0.9,
+    this.stopDistMm = 300,
+    this.passDistMm = 100,
   });
 
   static const drives = ['tank', 'wheelchair', 'mecanum'];
@@ -117,8 +122,8 @@ class BotProfile {
     return r;
   }
 
-  /// Planning clearance: body radius plus a safety margin.
-  double get inflationRadiusM => bodyRadiusM + 0.05;
+  /// Planning clearance: body radius plus the pass distance.
+  double get inflationRadiusM => bodyRadiusM + passDistMm / 1000.0;
 
   Map<String, dynamic> toJson() => {
         'version': 1,
@@ -127,6 +132,7 @@ class BotProfile {
         'platform': {'widthMm': widthMm, 'lengthMm': lengthMm},
         'wheels': {'trackMm': trackMm, 'axleFromFrontMm': axleFromFrontMm},
         'power': {'min': minPower, 'cruise': cruisePower},
+        'obstacles': {'stopMm': stopDistMm, 'passMm': passDistMm},
         'sensors': [for (final s in sensors) s.toJson()],
       };
 
@@ -145,6 +151,9 @@ class BotProfile {
     final pw = j['power'];
     final minP = num_(pw is Map ? pw['min'] : null, 0.8).clamp(0.3, 1.0).toDouble();
     final cruise = num_(pw is Map ? pw['cruise'] : null, 0.9).clamp(minP, 1.0).toDouble();
+    final ob = j['obstacles'];
+    final stopMm = num_(ob is Map ? ob['stopMm'] : null, 300).clamp(100, 2000).toDouble();
+    final passMm = num_(ob is Map ? ob['passMm'] : null, 100).clamp(0, 1000).toDouble();
     final width = num_(pf is Map ? pf['widthMm'] : null, 185).clamp(50, 3000).toDouble();
     final length = num_(pf is Map ? pf['lengthMm'] : null, 170).clamp(50, 3000).toDouble();
     return BotProfile(
@@ -157,6 +166,8 @@ class BotProfile {
       sensors: sensors,
       minPower: minP,
       cruisePower: cruise,
+      stopDistMm: stopMm,
+      passDistMm: passMm,
     );
   }
 }

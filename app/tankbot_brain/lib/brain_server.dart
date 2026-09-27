@@ -156,8 +156,13 @@ input[type=range]{width:100%}
    <input id="cruise" type="range" min="30" max="100" step="5"></label>
   <div style="color:#9fb3bb;font-size:12px">The power it drives best at. Autonomous driving uses this for straight runs; the manual max-speed slider defaults to it.</div>
   <label style="display:flex;align-items:center;gap:8px"><input id="obs" type="checkbox"> Obstacle stop (recommended: on)</label>
-  <label>Obstacle stop distance: <span id="sdv">-</span>
-   <input id="sd" type="range" min="150" max="1000" step="25" value="300"></label>
+  <div class="row">
+   <label>Obstacle stop distance <input id="sd" type="number" min="100" max="2000" step="10" style="width:70px"> mm</label>
+   <label>Obstacle pass distance <input id="pd" type="number" min="0" max="1000" step="10" style="width:70px"> mm</label>
+  </div>
+  <div style="color:#9fb3bb;font-size:12px">Stop: never drive forward with something closer than this ahead. Pass: routes keep at least this much clearance around the robot's body (from the Bot page dimensions).</div>
+  <div style="font-weight:600;margin-top:4px">Robot</div>
+  <div id="robotInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
   <div style="font-weight:600;margin-top:4px">This brain</div>
   <div id="capsInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
   <button id="setclose">Back to Drive</button>
@@ -330,7 +335,8 @@ function syncSettings() {
   if (!telem) return;
   const s = telem.settings;
   if (typeof s.trim === "number") { $("trim").value = -s.trim; $("trimv").textContent = -s.trim; }
-  if (typeof s.stopDistMm === "number") { $("sd").value = s.stopDistMm; $("sdv").textContent = Math.round(s.stopDistMm / 10) + " cm"; }
+  if (typeof s.stopDistMm === "number" && document.activeElement !== $("sd")) $("sd").value = Math.round(s.stopDistMm);
+  if (typeof s.passDistMm === "number" && document.activeElement !== $("pd")) $("pd").value = Math.round(s.passDistMm);
   if (typeof s.minPower === "number") { $("minp").value = Math.round(s.minPower * 100); $("minpv").textContent = Math.round(s.minPower * 100) + "%"; }
   if (typeof s.cruisePower === "number") { $("cruise").value = Math.round(s.cruisePower * 100); $("cruisev").textContent = Math.round(s.cruisePower * 100) + "%"; }
 }
@@ -342,8 +348,23 @@ $("cruise").onchange = e => send({type: "set", cruisePower: parseFloat(e.target.
 $("setclose").onclick = () => showPage("drive");
 $("trim").oninput = e => { $("trimv").textContent = e.target.value; };
 $("trim").onchange = e => send({type: "set", trim: -parseInt(e.target.value, 10)});
-$("sd").oninput = e => { $("sdv").textContent = Math.round(e.target.value / 10) + " cm"; };
 $("sd").onchange = e => send({type: "set", stopDistMm: parseFloat(e.target.value)});
+$("pd").onchange = e => send({type: "set", passDistMm: parseFloat(e.target.value)});
+function robotText(r) {
+  if (!r || !r.caps) return "Robot: no capability report yet (is the robot on firmware v2?)";
+  const c = r.caps, sn = c.sensors || {}, on = [];
+  for (const k of ["lidar", "tof", "ultrasonic", "bumperL", "bumperR"]) if (sn[k]) on.push(k);
+  let tier = "Drive";
+  if (sn.bumperL || sn.bumperR || sn.tof || sn.ultrasonic) tier = "Reflexes";
+  if (sn.lidar) tier = "Mapping";
+  let t = "Robot: " + c.name + " (firmware " + c.fw + ", " + c.drive + ")\nAttached: " + (on.length ? on.join(", ") : "none") + "\nTier: " + tier;
+  const l = r.live;
+  if (l) t += "\nLive: bumpers " + (l.bumpL < 0 ? "-" : l.bumpL ? "HIT" : "ok") + " / " + (l.bumpR < 0 ? "-" : l.bumpR ? "HIT" : "ok") +
+    ", ToF " + (l.tofMm < 0 ? "-" : l.tofMm + " mm") + ", ultrasonic " + (l.usMm < 0 ? "-" : l.usMm + " mm") +
+    ", forward block: " + l.block + ", reflex events " + l.reflexEvents;
+  else t += "\nLive readings: not arriving";
+  return t;
+}
 
 // ---- localisation + capabilities ----
 $("locRetry").onclick = () => send({type: "reloc"});
@@ -562,7 +583,7 @@ function updateUi() {
   const lb = $("locbar");
   if (t.loc && t.loc.state !== "tracking") { lb.style.display = "flex"; $("loctext").textContent = t.loc.note; }
   else lb.style.display = "none";
-  if (settingsOpen) $("capsInfo").textContent = capsText(t.caps, t.tracking);
+  if (settingsOpen) { $("capsInfo").textContent = capsText(t.caps, t.tracking); $("robotInfo").textContent = robotText(t.robot); }
   $("motors").textContent = m ? "Motors L " + m.left.toFixed(2) + "  R " + m.right.toFixed(2) + " (" + m.src + ")" : "Motors: -";
 }
 
