@@ -87,6 +87,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   double _navLastPlanMs = 0;
   bool _navRotating = false;
   Timer? _navTimer;
+  double _cmdF = 0, _cmdT = 0, _navLastBlockReplanMs = 0;
+  int navReplans = 0, navFrontBlocks = 0;
   bool get navActive => navState == 'driving' || navState == 'blocked';
   int _kfSinceLoopCheck = 0, _kfSinceClosure = 999;
   late final BrainServer server;
@@ -353,6 +355,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'lastLoopCm': lastLoopCm,
         'lastLoopDeg': lastLoopDeg,
         'rebuilding': _rebuilding,
+        'navReplans': navReplans,
+        'navFrontBlocks': navFrontBlocks,
       },
       'blocked': _blocked,
       'mount': {'state': mountState, 'note': mountNote, 'robotMode': robotMode, 'disturbances': disturbances},
@@ -502,6 +506,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   Future<void> _autosaveIfDue() async {
     if (appClockMs() - _lastAutosaveMs < 20000) return;
     _lastAutosaveMs = appClockMs();
+    final lp = _lastRobotPose;
+    if (lp != null && locState == 'tracking') {
+      final old = active.lastPose;
+      if (old == null || math.sqrt(_sq(old[0] - lp.x) + _sq(old[1] - lp.y)) > 0.2 || _angDiff(old[2], lp.heading).abs() > 0.2) {
+        active.lastPose = [lp.x, lp.y, lp.heading];
+        active.edited = true;
+      }
+    }
     await _saveActive();
   }
 
@@ -604,6 +616,31 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final t = s.appMs;
     final raw = t == null ? null : (poses.at(t) ?? poses.latest);
     final pts = ScanMatcher.robotFrame(s.points, fwdM: lidarFwdM, leftM: lidarLeftM);
+    // 1) quick checks: where I last was on this map, and the home spot
+    MatchResult? quick;
+    String quickNote = '';
+    final guesses = <(List<double>, String)>[
+      if (active.lastPose != null) (active.lastPose!, 'picked up where I left off'),
+      (<double>[0, 0, math.pi / 2], 'at the home spot'),
+    ];
+    final coarsePts = [for (var i = 0; i < pts.length; i += 2) pts[i]];
+    for (final gss in guesses) {
+      final g0 = gss.$1;
+      var r = matcher.local(coarsePts, g0[0], g0[1], g0[2], lin: 0.5, linStep: 0.05, ang: 0.35, angStep: 0.035);
+      if (r.atEdge) continue;
+      r = matcher.local(pts, r.x, r.y, r.h, lin: 0.05, linStep: 0.01, ang: 0.035, angStep: 0.007);
+      if (r.hitRatio >= 0.75 && (quick == null || r.score > quick.score * 1.03)) {
+        quick = r;
+        quickNote = gss.$2;
+      }
+      await Future<void>.delayed(Duration.zero);
+    }
+    if (quick != null) {
+      _relocRunning = false;
+      _acceptReloc(quick, raw, 'Found myself on "${active.name}" - $quickNote (${(quick.hitRatio * 100).round()}% of the scan fits)');
+      return;
+    }
+    // 2) search the whole map
     final res = await matcher.global(pts);
     _relocRunning = false;
     if (res.isEmpty) {
@@ -619,11 +656,15 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         break;
       }
     }
-    final ambiguous = rival != null && rival.score > best.score * 0.93;
+    final ambiguous = rival != null && rival.score > best.score * 0.95;
     if (best.hitRatio < 0.5 || ambiguous) {
       _relocFailed(ambiguous ? 'two places look alike' : 'no good match');
       return;
     }
+    _acceptReloc(best, raw, 'Found myself on "${active.name}" (${(best.hitRatio * 100).round()}% of the scan fits)');
+  }
+
+  void _acceptReloc(MatchResult best, Pose? raw, String note) {
     if (_mode == 'ar' && raw != null && raw.good) {
       _corr.setSoThat(raw, best.x, best.y, best.h);
     } else {
@@ -632,7 +673,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     _lastRobotPose = Pose(appClockMs(), best.x, best.y, best.h, true);
     locState = 'tracking';
-    locNote = 'Found myself on "${active.name}" (${(best.hitRatio * 100).round()}% of the scan fits)';
+    locNote = note;
     _relocAttempts = 0;
     trail.clear();
     _sigs.clear();
@@ -708,6 +749,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final p = robotPose, goal = navGoal;
     if (p == null || goal == null || _rebuilding) return false;
     _navLastPlanMs = appClockMs();
+    navReplans++;
     final r = Planner.plan(grid, _nogoLines, _liveObstacles(), p.x, p.y, goal.dx, goal.dy);
     if (r.error != null || r.path.length < 2) {
       navState = 'blocked';
@@ -721,7 +763,18 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     return true;
   }
 
+  void _navStopMotors() {
+    _cmdF = 0;
+    _cmdT = 0;
+    motion.release();
+  }
+
+  static double _approach(double cur, double target, double step) =>
+      cur < target ? math.min(target, cur + step) : math.max(target, cur - step);
+
   void _navCancel(String why) {
+    _cmdF = 0;
+    _cmdT = 0;
     navState = 'idle';
     navNote = why;
     navPath = [];
@@ -732,6 +785,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   void _navFinish(String msg, {bool failed = false}) {
+    _cmdF = 0;
+    _cmdT = 0;
     navState = failed ? 'failed' : 'arrived';
     navNote = msg;
     navPath = [];
@@ -776,7 +831,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       return;
     }
     if (locState != 'tracking' || _rebuilding) {
-      motion.release();
+      _navStopMotors();
       navNote = _rebuilding ? 'Updating the map...' : 'Lost my position - waiting';
       return;
     }
@@ -790,51 +845,66 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final live = _liveObstacles();
 
     if (navState == 'blocked') {
-      motion.release();
-      if (now - _navLastPlanMs > 2000) {
+      _navStopMotors();
+      if (now - _navLastPlanMs > 1500) {
         if (_navReplan()) {
           navNote = 'Found a way - driving';
           _navFails = 0;
-        } else if (++_navFails >= 10) {
+        } else if (++_navFails >= 12) {
           _navFinish("Couldn't find a way there: ${navNote.toLowerCase()}", failed: true);
         }
       }
       return;
     }
-    if (now - _navLastPlanMs > 3000 || _pathBlocked(pos, live)) {
-      if (!_navReplan()) {
-        motion.release();
-        return;
-      }
+    // re-plan now and then (the map changes), and when the lidar sees something on the route
+    // (at most once a second, so it doesn't thrash)
+    var replan = now - _navLastPlanMs > 4000;
+    if (!replan && now - _navLastBlockReplanMs > 1000 && _pathBlocked(pos, live)) {
+      replan = true;
+      _navLastBlockReplanMs = now;
+    }
+    if (replan && !_navReplan()) {
+      _navStopMotors();
+      return;
     }
 
-    // next waypoint: move on once we are close to the current one
-    while (_navIdx < navPath.length - 1 && (navPath[_navIdx] - pos).distance < 0.2) {
+    // next waypoint: move on only once we are really at the current one (less corner cutting)
+    while (_navIdx < navPath.length - 1 && (navPath[_navIdx] - pos).distance < 0.08) {
       _navIdx++;
     }
     final target = navPath[math.min(_navIdx, navPath.length - 1)];
     final alpha = _angDiff(math.atan2(target.dy - p.y, target.dx - p.x), p.heading);
 
     double f, t;
-    if (_navRotating ? alpha.abs() > 0.25 : alpha.abs() > 0.7) {
-      _navRotating = true; // turn on the spot (turn command: positive = clockwise/right)
+    // turn on the spot when far off course; keep turning until nearly lined up (hysteresis)
+    if (_navRotating ? alpha.abs() > 0.15 : alpha.abs() > 0.6) {
+      _navRotating = true;
       f = 0;
-      t = alpha > 0 ? -0.8 : 0.8;
+      t = alpha > 0 ? -0.8 : 0.8; // turn command: positive = clockwise/right
     } else {
       _navRotating = false;
       f = (goal - pos).distance < 0.4 ? 0.75 : 0.85;
-      t = (-1.2 * alpha).clamp(-0.5, 0.5);
+      t = (-0.9 * alpha).clamp(-0.45, 0.45);
     }
-    // autonomy always checks the path ahead, whatever the manual obstacle-stop setting
+    // something right in front: no forward motion; re-plan around it now (turning is still fine)
     final clear = frontClearanceMm;
     if (f > 0 && (stale || (clear != null && clear < math.max(stopDistMm, 250)))) {
-      motion.release();
-      navState = 'blocked';
-      navNote = 'Something is in the way - looking for another route';
-      _navLastPlanMs = now;
-      return;
+      navFrontBlocks++;
+      f = 0;
+      t = 0;
+      if (now - _navLastBlockReplanMs > 1000) {
+        _navLastBlockReplanMs = now;
+        if (!_navReplan()) {
+          _navStopMotors();
+          return;
+        }
+        navNote = 'Something is in the way - going around';
+      }
     }
-    motion.drive(f, t);
+    // smooth the commands: no sudden jumps (forward stops immediately, though)
+    _cmdT = _approach(_cmdT, t, 0.25);
+    _cmdF = f == 0 ? 0 : _approach(_cmdF, f, 0.2);
+    motion.drive(_cmdF, _cmdT);
     _lastDriveMs = now;
   }
 

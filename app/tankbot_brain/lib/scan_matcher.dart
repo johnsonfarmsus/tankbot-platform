@@ -138,7 +138,7 @@ class ScanMatcher {
   }
 
   /// Whole-map search. Returns refined candidates, best first.
-  Future<List<MatchResult>> global(List<Offset> pts, {double step = 0.2, int headings = 72, int keep = 6}) async {
+  Future<List<MatchResult>> global(List<Offset> pts, {double step = 0.15, int headings = 120, int keep = 12}) async {
     grid.ensureField(force: true);
     final coarse = [for (var i = 0; i < pts.length; i += 4) pts[i]];
     final cands = grid.freeCellCentres(step);

@@ -49,6 +49,8 @@ class MapSession {
   /// Map edits: {'type': 'erase', x, y, r} and {'type': 'nogo', x1, y1, x2, y2}, each with id + stroke.
   final List<Map<String, dynamic>> edits = [];
   int nextEditId = 1;
+  /// Where the robot last was on this map [x, y, heading]: first guess when the map loads.
+  List<double>? lastPose;
 
   bool get unsaved => keyframes.length != savedCount || renamed || edited;
 
@@ -83,6 +85,7 @@ class MapSession {
         'lidarFwdM': lidarFwdM,
         'lidarLeftM': lidarLeftM,
         'version': 1,
+        'lastPose': lastPose,
       };
 }
 
@@ -156,6 +159,8 @@ class MapStore {
         lidarFwdM: (meta['lidarFwdM'] as num?)?.toDouble() ?? 0,
         lidarLeftM: (meta['lidarLeftM'] as num?)?.toDouble() ?? 0,
       );
+      final lp = meta['lastPose'];
+      if (lp is List && lp.length == 3) m.lastPose = [for (final v in lp) (v as num).toDouble()];
       m.keyframes.addAll(_decode(await File('${root.path}/$id/keyframes.bin').readAsBytes()));
       final ef = File('${root.path}/$id/edits.json');
       if (await ef.exists()) {

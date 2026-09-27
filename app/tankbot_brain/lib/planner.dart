@@ -61,8 +61,9 @@ class _Heap {
 }
 
 class Planner {
-  static const double robotRadiusM = 0.17; // TankBot footprint radius plus a little
-  static const double comfortM = 0.40; // prefer at least this much clearance when there is room
+  // TankBot footprint treated as a 200 x 200 mm square: half-diagonal 14 cm + 5 cm safety margin
+  static const double robotRadiusM = 0.19;
+  static const double comfortM = 0.45; // prefer at least this much clearance when there is room
   static const double startEscapeM = 0.30; // allow leaving a tight spot near the start
 
   static PlanResult plan(OccupancyGrid g, List<List<double>> nogo, List<Offset> live,

@@ -162,6 +162,7 @@ input[type=range]{width:100%}
   <div style="font-weight:600;font-size:16px">Maps</div>
   <div id="mapActive" style="color:#9fb3bb"></div>
   <div id="mapQuality" style="color:#9fb3bb;font-size:12px"></div>
+  <div class="row"><button id="relocBtn">Find me again</button><button id="homeBtn">I'm at home</button></div>
   <div class="row"><input id="mapName" style="flex:1;min-width:0;background:#101416;color:#e6eef0;border:1px solid #3a4a55;border-radius:8px;padding:6px" placeholder="Map name"><button id="mapSave">Save</button></div>
   <div class="row"><button id="mapNew">New map here</button></div>
   <div style="font-weight:600;margin-top:6px">Saved maps</div>
@@ -374,6 +375,8 @@ $("mapsbtn").onclick = () => {
   renderActive(); send({type: "maps.list"});
 };
 $("mapsClose").onclick = () => { $("maps").style.display = "none"; mapsOpen = false; };
+$("relocBtn").onclick = () => send({type: "reloc"});
+$("homeBtn").onclick = () => { if (confirm("Is the robot on the home spot (white circle), facing along its line?")) send({type: "atHome"}); };
 $("mapSave").onclick = () => send({type: "maps.save", name: $("mapName").value});
 $("mapNew").onclick = () => { if (confirm("Start a new map here? The current map is saved first.")) send({type: "clearMap"}); };
 $("msv").textContent = Math.round($("ms").value * 100) + "%";
