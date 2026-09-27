@@ -18,6 +18,8 @@ import 'loop_closer.dart';
 import 'planner.dart';
 import 'bot_profile.dart';
 import 'sensor_client.dart';
+import 'app_settings.dart';
+import 'role_screens.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -32,15 +34,61 @@ class TankBotApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal, brightness: Brightness.dark),
         useMaterial3: true,
       ),
-      home: const LidarScreen(),
+      home: const RoleGate(),
     );
+  }
+}
+
+/// Loads the saved role and shows the chooser, the controller, or the brain.
+class RoleGate extends StatefulWidget {
+  const RoleGate({super.key});
+  @override
+  State<RoleGate> createState() => _RoleGateState();
+}
+
+class _RoleGateState extends State<RoleGate> {
+  AppSettings? settings;
+
+  @override
+  void initState() {
+    super.initState();
+    AppSettings.load().then((s) => setState(() => settings = s));
+  }
+
+  void _choose(AppRole r) {
+    settings!.role = r;
+    settings!.save();
+    setState(() {});
+  }
+
+  void _changeRole() {
+    settings!.role = null;
+    settings!.save();
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = settings;
+    if (s == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    switch (s.role) {
+      case null:
+        return RoleChooser(onChosen: _choose);
+      case AppRole.controller:
+        return ControllerScreen(settings: s, onChangeRole: _changeRole);
+      case AppRole.mounted:
+      case AppRole.brain:
+        return LidarScreen(key: ValueKey(s.role), role: s.role!, onChangeRole: _changeRole);
+    }
   }
 }
 
 enum ViewMode { radar, map }
 
 class LidarScreen extends StatefulWidget {
-  const LidarScreen({super.key});
+  const LidarScreen({super.key, this.role = AppRole.mounted, this.onChangeRole});
+  final AppRole role;
+  final VoidCallback? onChangeRole;
   @override
   State<LidarScreen> createState() => _LidarScreenState();
 }
@@ -186,7 +234,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     client.start();
     motion.start();
     sensors.start();
-    poses.start();
+    if (widget.role == AppRole.mounted) {
+      poses.start();
+      WidgetsBinding.instance.addPostFrameCallback((_) => _enterRobotMode()); // this phone rides on the robot
+    } else {
+      _mode = 'lidar';
+      poses.state = 'off (brain in hand)';
+    }
     _loadCaps();
     BotProfileStore.load().then((p) {
       if (p != null && mounted) {
@@ -1189,6 +1243,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   // ---------- mapping ----------
   bool get _arLive {
+    if (widget.role != AppRole.mounted) return false;
     final l = poses.latest;
     return l != null && l.good && appClockMs() - l.t < 600;
   }
@@ -1418,10 +1473,16 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       appBar: AppBar(
         title: const Text('TankBot'),
         actions: [
+          if (widget.role == AppRole.mounted)
+            IconButton(
+              icon: const Icon(Icons.smart_toy),
+              tooltip: 'Robot mode',
+              onPressed: _enterRobotMode,
+            ),
           IconButton(
-            icon: const Icon(Icons.smart_toy),
-            tooltip: 'Robot mode',
-            onPressed: _enterRobotMode,
+            icon: const Icon(Icons.swap_horiz),
+            tooltip: 'Change role',
+            onPressed: widget.onChangeRole,
           ),
           if (view == ViewMode.map)
             IconButton(
@@ -1543,7 +1604,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
               Row(children: [
                 Icon(Icons.smart_toy, color: ok ? Colors.tealAccent : Colors.orangeAccent, size: 36),
                 const SizedBox(width: 12),
-                Text('TankBot Brain', style: s(26, Colors.white)),
+                Text(widget.role == AppRole.mounted ? 'TankBot Brain' : 'TankBot Brain (in hand)', style: s(26, Colors.white)),
               ]),
               const SizedBox(height: 16),
               if (mountNote.isNotEmpty)
