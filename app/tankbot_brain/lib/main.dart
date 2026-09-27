@@ -184,7 +184,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     poses.start();
     _loadCaps();
     BotProfileStore.load().then((p) {
-      if (p != null && mounted) setState(() => profile = p);
+      if (p != null && mounted) {
+        setState(() {
+          profile = p;
+          maxSpeed = p.cruisePower;
+        });
+      }
     });
     server.start().then((_) {
       _refreshMapList();
@@ -252,6 +257,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         final np = BotProfile.fromJson(m['profile']);
         if (np != null) {
           profile = np;
+          maxSpeed = np.cruisePower;
           BotProfileStore.save(np);
           server.broadcast({'type': 'bot', 'profile': profile.toJson()});
         }
@@ -788,9 +794,6 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     motion.release();
   }
 
-  static double _approach(double cur, double target, double step) =>
-      cur < target ? math.min(target, cur + step) : math.max(target, cur - step);
-
   void _navCancel(String why) {
     _cmdF = 0;
     _cmdT = 0;
@@ -857,7 +860,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final p = robotPose, goal = navGoal;
     if (p == null || goal == null) return;
     final pos = Offset(p.x, p.y);
-    if ((goal - pos).distance < 0.15) {
+    if ((goal - pos).distance < 0.2) {
       _navFinish('Arrived');
       return;
     }
@@ -894,23 +897,24 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final target = navPath[math.min(_navIdx, navPath.length - 1)];
     final alpha = _angDiff(math.atan2(target.dy - p.y, target.dx - p.x), p.heading);
 
-    double f, t;
-    // turn on the spot when far off course; keep turning until nearly lined up (hysteresis)
-    if (_navRotating ? alpha.abs() > 0.15 : alpha.abs() > 0.6) {
-      _navRotating = true;
-      f = 0;
-      t = alpha > 0 ? -0.8 : 0.8; // turn command: positive = clockwise/right
+    // Only power levels this robot can act on: zero, or at least its minimum-to-move.
+    // Straight runs at cruise power; when off course, stop and turn on the spot (no steering blend,
+    // which would starve one track below its threshold and just make it whine).
+    final minP = profile.minPower, cruise = profile.cruisePower;
+    final turnP = math.max(minP, 0.85).clamp(minP, 1.0).toDouble();
+    double f = 0, t = 0;
+    if (_navRotating ? alpha.abs() > 0.09 : alpha.abs() > 0.2) {
+      _navRotating = true; // turn command: positive = clockwise/right
+      t = alpha > 0 ? -turnP : turnP;
     } else {
       _navRotating = false;
-      f = (goal - pos).distance < 0.4 ? 0.75 : 0.85;
-      t = (-0.9 * alpha).clamp(-0.45, 0.45);
+      f = cruise;
     }
     // something right in front: no forward motion; re-plan around it now (turning is still fine)
     final clear = frontClearanceMm;
     if (f > 0 && (stale || (clear != null && clear < math.max(stopDistMm, 250)))) {
       navFrontBlocks++;
       f = 0;
-      t = 0;
       if (now - _navLastBlockReplanMs > 1000) {
         _navLastBlockReplanMs = now;
         if (!_navReplan()) {
@@ -920,9 +924,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         navNote = 'Something is in the way - going around';
       }
     }
-    // smooth the commands: no sudden jumps (forward stops immediately, though)
-    _cmdT = _approach(_cmdT, t, 0.25);
-    _cmdF = f == 0 ? 0 : _approach(_cmdF, f, 0.2);
+    _cmdF = f;
+    _cmdT = t;
     motion.drive(_cmdF, _cmdT);
     _lastDriveMs = now;
   }

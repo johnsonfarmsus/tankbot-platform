@@ -166,6 +166,11 @@ input[type=range]{width:100%}
    <label>Platform width <input id="botW" type="number" min="50" max="3000" style="width:64px"> mm</label>
    <label>length <input id="botL" type="number" min="50" max="3000" style="width:64px"> mm</label>
   </div>
+  <div class="row">
+   <label>Minimum power to move <input id="botMinP" type="number" min="30" max="100" style="width:56px"> %</label>
+   <label>Cruise power <input id="botCruiseP" type="number" min="30" max="100" style="width:56px"> %</label>
+   <span style="color:#9fb3bb">Autonomous driving only uses power levels this robot can act on; the manual max-speed slider defaults to cruise.</span>
+  </div>
   <div class="row" style="align-items:flex-start">
    <div><div style="color:#9fb3bb">Top view (front is up) - drag sensors</div><canvas id="botTop" width="460" height="460" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
    <div><div style="color:#9fb3bb">Side view from the left - drag up/down for height</div><canvas id="botSide" width="460" height="320" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
@@ -355,6 +360,8 @@ function openBot() {
   botDraft = JSON.parse(JSON.stringify(botProfile));
   $("botName").value = botDraft.name; $("botDrive").value = botDraft.drive;
   $("botW").value = botDraft.platform.widthMm; $("botL").value = botDraft.platform.lengthMm;
+  $("botMinP").value = Math.round((botDraft.power ? botDraft.power.min : 0.8) * 100);
+  $("botCruiseP").value = Math.round((botDraft.power ? botDraft.power.cruise : 0.9) * 100);
   renderBotSensors(); drawBot();
 }
 
@@ -363,6 +370,7 @@ $("botSave").onclick = () => {
   if (!botDraft) return;
   botDraft.name = $("botName").value; botDraft.drive = $("botDrive").value;
   botDraft.platform.widthMm = parseFloat($("botW").value); botDraft.platform.lengthMm = parseFloat($("botL").value);
+  botDraft.power = {min: (parseFloat($("botMinP").value) || 80) / 100, cruise: (parseFloat($("botCruiseP").value) || 90) / 100};
   send({type: "bot.set", profile: botDraft});
   $("botInfo").textContent = "Saved";
   setTimeout(() => { $("botInfo").textContent = ""; }, 2000);

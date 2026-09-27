@@ -42,6 +42,8 @@ class BotProfile {
   String drive; // tank | wheelchair | mecanum
   double widthMm, lengthMm; // platform: left-right, front-back
   double trackMm, axleFromFrontMm; // rotation centre for tank / wheelchair
+  /// Fraction of full power below which this robot does not move, and the power it drives best at.
+  double minPower, cruisePower;
   final List<BotSensor> sensors;
 
   BotProfile({
@@ -52,6 +54,8 @@ class BotProfile {
     required this.trackMm,
     required this.axleFromFrontMm,
     required this.sensors,
+    this.minPower = 0.8,
+    this.cruisePower = 0.9,
   });
 
   static const drives = ['tank', 'wheelchair', 'mecanum'];
@@ -122,6 +126,7 @@ class BotProfile {
         'drive': drive,
         'platform': {'widthMm': widthMm, 'lengthMm': lengthMm},
         'wheels': {'trackMm': trackMm, 'axleFromFrontMm': axleFromFrontMm},
+        'power': {'min': minPower, 'cruise': cruisePower},
         'sensors': [for (final s in sensors) s.toJson()],
       };
 
@@ -137,6 +142,9 @@ class BotProfile {
         if (s != null && sensors.length < 32) sensors.add(s);
       }
     }
+    final pw = j['power'];
+    final minP = num_(pw is Map ? pw['min'] : null, 0.8).clamp(0.3, 1.0).toDouble();
+    final cruise = num_(pw is Map ? pw['cruise'] : null, 0.9).clamp(minP, 1.0).toDouble();
     final width = num_(pf is Map ? pf['widthMm'] : null, 185).clamp(50, 3000).toDouble();
     final length = num_(pf is Map ? pf['lengthMm'] : null, 170).clamp(50, 3000).toDouble();
     return BotProfile(
@@ -147,6 +155,8 @@ class BotProfile {
       trackMm: num_(wh is Map ? wh['trackMm'] : null, width * 0.85).clamp(20, 3000).toDouble(),
       axleFromFrontMm: num_(wh is Map ? wh['axleFromFrontMm'] : null, length / 2).clamp(-1000, 3000).toDouble(),
       sensors: sensors,
+      minPower: minP,
+      cruisePower: cruise,
     );
   }
 }
