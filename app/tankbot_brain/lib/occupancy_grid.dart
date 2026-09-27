@@ -128,6 +128,9 @@ class OccupancyGrid {
     return out;
   }
 
+  int toCell(double m) => _c(m);
+  double cellLo(int cx, int cy) => _lo[cy * size + cx];
+
   /// Map edit: wipe a circle back to open floor (ghost walls, junk).
   void eraseCircle(double x, double y, double r) {
     final cr = (r / resolution).ceil();

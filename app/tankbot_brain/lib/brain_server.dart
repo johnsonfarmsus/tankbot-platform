@@ -179,13 +179,14 @@ input[type=range]{width:100%}
 </div></div>
 <div id="banner">OBSTACLE AHEAD - forward blocked</div>
 <div id="mountbar" style="display:none;text-align:center;padding:6px;font-weight:600"></div>
+<div id="navbar" style="display:none;background:#0d47a1;padding:6px;font-weight:600;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap"><span id="navtext"></span><button id="navStop">Stop</button><button id="navDismiss">OK</button></div>
 <div id="locbar" style="display:none;background:#8d6e00;padding:6px;font-weight:600;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap"><span id="loctext"></span><button id="locRetry">Try again</button><button id="locHome">I'm at home</button></div>
 <div id="bottom"><canvas id="stick" width="340" height="340"></canvas>
 <div class="ctl">
 <div id="motors">Motors: -</div>
 <label>Max speed <span id="msv"></span><input id="ms" type="range" min="0.2" max="1" step="0.1" value="0.6"></label>
 <label>View range <span id="rgv"></span><input id="rg" type="range" min="1" max="12" step="0.5" value="4"></label>
-<div class="row"><button id="mapping">Pause mapping</button><button id="clear">New map here</button><button id="editbtn">Edit map</button></div>
+<div class="row"><button id="mapping">Pause mapping</button><button id="clear">New map here</button><button id="editbtn">Edit map</button><button id="gobtn" style="border-color:#448aff">Go to...</button></div>
 <div style="color:#9fb3bb;font-size:12px">Keyboard: arrow keys or W A S D to drive, Space to stop</div>
 </div></div>
 <script>
@@ -390,6 +391,12 @@ function updateUi() {
     mb.style.background = mt.state === "mounted" ? "#00695c" : "#8d6e00";
   } else mb.style.display = "none";
   $("stat").textContent = st.scanRate.toFixed(1) + " scans/s | " + (t.tracking ? t.tracking.source : "AR " + st.ar) + " | remotes " + st.remotes;
+  const nv = t.nav, nb = $("navbar");
+  const navActive = nv && (nv.state === "driving" || nv.state === "blocked");
+  if (goMode) { nb.style.display = "flex"; $("navtext").textContent = "Tap a spot on the map to drive there"; $("navStop").textContent = "Cancel"; $("navStop").style.display = ""; $("navDismiss").style.display = "none"; }
+  else if (navActive) { nb.style.display = "flex"; $("navtext").textContent = nv.note || nv.state; $("navStop").textContent = "Stop"; $("navStop").style.display = ""; $("navDismiss").style.display = "none"; }
+  else if (nv && nv.note && nv.note !== navDismissed) { nb.style.display = "flex"; $("navtext").textContent = nv.note; $("navStop").style.display = "none"; $("navDismiss").style.display = ""; }
+  else nb.style.display = "none";
   const lb = $("locbar");
   if (t.loc && t.loc.state !== "tracking") { lb.style.display = "flex"; $("loctext").textContent = t.loc.note; }
   else lb.style.display = "none";
@@ -463,6 +470,17 @@ function frame() {
           ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]);
         }
       }
+      if (t.nav && t.nav.path && t.nav.path.length > 1) {
+        ctx.strokeStyle = "#448aff"; ctx.lineWidth = 3; ctx.beginPath();
+        t.nav.path.forEach((q, i) => { const s2 = toS(q[0], q[1]); if (i) ctx.lineTo(s2[0], s2[1]); else ctx.moveTo(s2[0], s2[1]); });
+        ctx.stroke();
+      }
+      if (t.nav && t.nav.goal && (t.nav.state === "driving" || t.nav.state === "blocked")) {
+        const gs2 = toS(t.nav.goal[0], t.nav.goal[1]);
+        ctx.strokeStyle = "#448aff"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(gs2[0], gs2[1], 9, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(gs2[0], gs2[1], 3, 0, Math.PI * 2); ctx.fillStyle = "#448aff"; ctx.fill();
+      }
       const rs = toS(p.x, p.y);
       drawArrow(rs[0], rs[1], p.h, p.good);
     } else {
@@ -519,6 +537,21 @@ function segDist(px, py, l) {
   let t = ((px - x1) * dx + (py - y1) * dy) / L; t = Math.max(0, Math.min(1, t));
   return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
 }
+// ---- tap-to-go ----
+let goMode = false, navDismissed = null;
+$("gobtn").onclick = () => {
+  if (editMode) $("editDone").onclick();
+  if (mode !== "map") { mode = "map"; $("mode").textContent = "Radar view"; }
+  goMode = true;
+};
+$("navStop").onclick = () => { if (goMode) goMode = false; else send({type: "nav.cancel"}); };
+$("navDismiss").onclick = () => { navDismissed = telem && telem.nav ? telem.nav.note : null; };
+cv.addEventListener("pointerdown", e => {
+  if (!goMode || mode !== "map") return;
+  const w = toWorld(e); if (!w) return;
+  goMode = false; navDismissed = null;
+  send({type: "nav.goto", x: w.x, y: w.y});
+});
 cv.addEventListener("pointerdown", e => {
   if (!editMode || mode !== "map") return;
   const w = toWorld(e); if (!w) return;

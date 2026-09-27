@@ -15,6 +15,7 @@ import 'brain_server.dart';
 import 'map_store.dart';
 import 'scan_matcher.dart';
 import 'loop_closer.dart';
+import 'planner.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -76,6 +77,17 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   int skippedTurning = 0, loopClosures = 0;
   double lastLoopCm = 0, lastLoopDeg = 0;
   bool _rebuilding = false, _loopChecking = false;
+
+  // Tap-to-go navigation
+  String navState = 'idle'; // idle | driving | blocked | arrived | failed
+  String navNote = '';
+  Offset? navGoal;
+  List<Offset> navPath = [];
+  int _navIdx = 1, _navFails = 0;
+  double _navLastPlanMs = 0;
+  bool _navRotating = false;
+  Timer? _navTimer;
+  bool get navActive => navState == 'driving' || navState == 'blocked';
   int _kfSinceLoopCheck = 0, _kfSinceClosure = 999;
   late final BrainServer server;
   final List<StreamSubscription> _subs = [];
@@ -182,6 +194,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     _tick?.cancel();
     _telemTimer?.cancel();
+    _navTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     server.stop();
     motion.dispose();
@@ -199,6 +212,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) {
+      if (navActive) _navCancel('Stopped: app left the foreground');
       motion.release();
       _saveActive(); // never lose the map to backgrounding or an app update
     }
@@ -208,12 +222,21 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   void _onRemote(Map<String, dynamic> m) {
     switch (m['type']) {
       case 'drive':
+        if (navActive) _navCancel('Stopped: manual control');
         final f = (m['f'] as num?)?.toDouble() ?? 0;
         final t = (m['t'] as num?)?.toDouble() ?? 0;
         _onStick(f.clamp(-1.0, 1.0), t.clamp(-1.0, 1.0));
         break;
       case 'stop':
+        if (navActive) _navCancel('Stopped');
         _onRelease();
+        break;
+      case 'nav.goto':
+        final gxv = (m['x'] as num?)?.toDouble(), gyv = (m['y'] as num?)?.toDouble();
+        if (gxv != null && gyv != null) _navGoto(gxv, gyv);
+        break;
+      case 'nav.cancel':
+        _navCancel('Stopped');
         break;
       case 'set':
         if (m['maxSpeed'] is num) maxSpeed = (m['maxSpeed'] as num).toDouble().clamp(0.2, 1.0);
@@ -312,6 +335,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       'loc': {'state': locState, 'note': locNote},
       'tracking': {'source': poseSource, 'matchHits': matchHits, 'matchMisses': matchMisses, 'lastCorrCm': lastCorrCm},
       'caps': caps,
+      'nav': {
+        'state': navState,
+        'note': navNote,
+        'goal': navGoal == null ? null : [navGoal!.dx, navGoal!.dy],
+        'path': [for (final q in navPath) [(q.dx * 100).round() / 100, (q.dy * 100).round() / 100]],
+      },
       'nogo': [
         for (final e in active.edits)
           if (e['type'] == 'nogo') [e['x1'], e['y1'], e['x2'], e['y2'], e['id']]
@@ -640,6 +669,175 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
+  // ---------- tap-to-go navigation ----------
+  List<List<double>> get _nogoLines => [
+        for (final e in active.edits)
+          if (e['type'] == 'nogo')
+            [(e['x1'] as num).toDouble(), (e['y1'] as num).toDouble(), (e['x2'] as num).toDouble(), (e['y2'] as num).toDouble()]
+      ];
+
+  /// What the lidar sees right now, within 2.5 m, in map coordinates.
+  List<Offset> _liveObstacles() {
+    final p = robotPose, sc = scan;
+    if (p == null || sc == null || stale) return const [];
+    final c = math.cos(p.heading), sn = math.sin(p.heading);
+    return [
+      for (final q in ScanMatcher.robotFrame(sc.points, fwdM: lidarFwdM, leftM: lidarLeftM, stride: 2, maxR: 2.5))
+        Offset(p.x + c * q.dx - sn * q.dy, p.y + sn * q.dx + c * q.dy)
+    ];
+  }
+
+  void _navGoto(double x, double y) {
+    if (locState != 'tracking') {
+      navState = 'failed';
+      navNote = "I don't know where I am on the map yet";
+      return;
+    }
+    if (server.clientCount == 0) return;
+    navGoal = Offset(x, y);
+    _navFails = 0;
+    _navRotating = false;
+    _onRelease(); // start from a standstill
+    if (_navReplan()) {
+      navNote = 'Driving to the goal';
+    }
+    _navTimer ??= Timer.periodic(const Duration(milliseconds: 100), (_) => _navStep());
+  }
+
+  bool _navReplan() {
+    final p = robotPose, goal = navGoal;
+    if (p == null || goal == null || _rebuilding) return false;
+    _navLastPlanMs = appClockMs();
+    final r = Planner.plan(grid, _nogoLines, _liveObstacles(), p.x, p.y, goal.dx, goal.dy);
+    if (r.error != null || r.path.length < 2) {
+      navState = 'blocked';
+      navNote = r.error ?? 'No route';
+      navPath = [];
+      return false;
+    }
+    navPath = r.path;
+    _navIdx = 1;
+    navState = 'driving';
+    return true;
+  }
+
+  void _navCancel(String why) {
+    navState = 'idle';
+    navNote = why;
+    navPath = [];
+    navGoal = null;
+    _navRotating = false;
+    motion.release();
+    if (mounted) setState(() {});
+  }
+
+  void _navFinish(String msg, {bool failed = false}) {
+    navState = failed ? 'failed' : 'arrived';
+    navNote = msg;
+    navPath = [];
+    _navRotating = false;
+    motion.release();
+    if (mounted) setState(() {});
+  }
+
+  /// Does anything the lidar sees now sit on the next 1.5 m of the route?
+  bool _pathBlocked(Offset pos, List<Offset> live) {
+    if (navPath.length < 2 || live.isEmpty) return false;
+    final segs = <List<Offset>>[];
+    var a = pos, along = 0.0;
+    for (var i = _navIdx; i < navPath.length && along < 1.5; i++) {
+      segs.add([a, navPath[i]]);
+      along += (navPath[i] - a).distance;
+      a = navPath[i];
+    }
+    for (final o in live) {
+      if ((o - pos).distance > 2.0) continue;
+      for (final sg in segs) {
+        if (_segDist(o, sg[0], sg[1]) < Planner.robotRadiusM - 0.03) return true;
+      }
+    }
+    return false;
+  }
+
+  static double _segDist(Offset p, Offset a, Offset b) {
+    final d = b - a;
+    final len2 = d.dx * d.dx + d.dy * d.dy;
+    var t = len2 < 1e-9 ? 0.0 : ((p.dx - a.dx) * d.dx + (p.dy - a.dy) * d.dy) / len2;
+    t = t.clamp(0.0, 1.0);
+    return (p - Offset(a.dx + d.dx * t, a.dy + d.dy * t)).distance;
+  }
+
+  /// 10 times a second while navigating: steer along the route, re-plan around surprises.
+  void _navStep() {
+    if (!navActive) return;
+    final now = appClockMs();
+    if (server.clientCount == 0) {
+      _navCancel('Stopped: no controller connected (someone needs to be watching)');
+      return;
+    }
+    if (locState != 'tracking' || _rebuilding) {
+      motion.release();
+      navNote = _rebuilding ? 'Updating the map...' : 'Lost my position - waiting';
+      return;
+    }
+    final p = robotPose, goal = navGoal;
+    if (p == null || goal == null) return;
+    final pos = Offset(p.x, p.y);
+    if ((goal - pos).distance < 0.15) {
+      _navFinish('Arrived');
+      return;
+    }
+    final live = _liveObstacles();
+
+    if (navState == 'blocked') {
+      motion.release();
+      if (now - _navLastPlanMs > 2000) {
+        if (_navReplan()) {
+          navNote = 'Found a way - driving';
+          _navFails = 0;
+        } else if (++_navFails >= 10) {
+          _navFinish("Couldn't find a way there: ${navNote.toLowerCase()}", failed: true);
+        }
+      }
+      return;
+    }
+    if (now - _navLastPlanMs > 3000 || _pathBlocked(pos, live)) {
+      if (!_navReplan()) {
+        motion.release();
+        return;
+      }
+    }
+
+    // next waypoint: move on once we are close to the current one
+    while (_navIdx < navPath.length - 1 && (navPath[_navIdx] - pos).distance < 0.2) {
+      _navIdx++;
+    }
+    final target = navPath[math.min(_navIdx, navPath.length - 1)];
+    final alpha = _angDiff(math.atan2(target.dy - p.y, target.dx - p.x), p.heading);
+
+    double f, t;
+    if (_navRotating ? alpha.abs() > 0.25 : alpha.abs() > 0.7) {
+      _navRotating = true; // turn on the spot (turn command: positive = clockwise/right)
+      f = 0;
+      t = alpha > 0 ? -0.8 : 0.8;
+    } else {
+      _navRotating = false;
+      f = (goal - pos).distance < 0.4 ? 0.75 : 0.85;
+      t = (-1.2 * alpha).clamp(-0.5, 0.5);
+    }
+    // autonomy always checks the path ahead, whatever the manual obstacle-stop setting
+    final clear = frontClearanceMm;
+    if (f > 0 && (stale || (clear != null && clear < math.max(stopDistMm, 250)))) {
+      motion.release();
+      navState = 'blocked';
+      navNote = 'Something is in the way - looking for another route';
+      _navLastPlanMs = now;
+      return;
+    }
+    motion.drive(f, t);
+    _lastDriveMs = now;
+  }
+
   // ---------- mounting ----------
   bool get _mapAllowed => !robotMode || mountState == 'mounted';
   bool get _motorsIdle => !motion.driving && appClockMs() - _lastDriveMs > 700;
@@ -902,6 +1100,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   void _onStick(double f, double t) {
+    if (navActive) _navCancel('Stopped: manual control');
     _lastDriveMs = appClockMs();
     _wantF = f;
     _wantT = t;
@@ -1107,6 +1306,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
               if (locNote.isNotEmpty)
                 Text(locNote, style: s(15, locState == 'tracking' ? Colors.tealAccent : Colors.amberAccent)),
               Text('Tracking: $poseSource', style: s(14)),
+              if (navState != 'idle' || navNote.isNotEmpty)
+                Text('Navigation: ${navNote.isEmpty ? navState : navNote}', style: s(15, navActive ? Colors.lightBlueAccent : Colors.white70)),
               const SizedBox(height: 24),
               Text('Control from any browser on this Wi-Fi:', style: s(14)),
               const SizedBox(height: 6),
