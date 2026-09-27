@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -54,7 +55,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   double rangeMm = 6000;
   double maxSpeed = 0.6;
   bool obstacleStop = false;
-  static const double stopDistMm = 300, selfMaskMm = 150, frontHalfAngle = 25;
+  double stopDistMm = 300;
+  static const double selfMaskMm = 150, frontHalfAngle = 25;
   double _wantF = 0, _wantT = 0;
   bool _blocked = false;
   final List<DateTime> _recent = [];
@@ -174,6 +176,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (m['maxSpeed'] is num) maxSpeed = (m['maxSpeed'] as num).toDouble().clamp(0.2, 1.0);
         if (m['obstacleStop'] is bool) obstacleStop = m['obstacleStop'] as bool;
         if (m['mapping'] is bool) mapping = m['mapping'] as bool;
+        if (m['stopDistMm'] is num) stopDistMm = (m['stopDistMm'] as num).toDouble().clamp(150.0, 1000.0);
+        if (m['trim'] is num) _setTrim((m['trim'] as num).round().clamp(-20, 20));
         break;
       case 'clearMap':
         _startNewMap();
@@ -199,7 +203,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       'lidarOffset': {'fwd': lidarFwdM, 'left': lidarLeftM},
       'blocked': _blocked,
       'mount': {'state': mountState, 'note': mountNote, 'robotMode': robotMode, 'disturbances': disturbances},
-      'settings': {'maxSpeed': maxSpeed, 'obstacleStop': obstacleStop, 'mapping': mapping},
+      'settings': {
+        'maxSpeed': maxSpeed,
+        'obstacleStop': obstacleStop,
+        'mapping': mapping,
+        'stopDistMm': stopDistMm,
+        'trim': motionStatus?['trim'],
+      },
       'motion': m == null ? null : {'left': m['left'], 'right': m['right'], 'src': m['src']},
       'stats': {
         'scanRate': _recent.length / 2.0,
@@ -225,6 +235,21 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       'top': img.topM,
       'res': img.resolution,
     });
+  }
+
+  /// Steering trim lives on the robot (saved in its flash); the brain just forwards it.
+  Future<void> _setTrim(int trim) async {
+    final ip = motion.address;
+    if (ip == null) return;
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+    try {
+      final req = await c.getUrl(Uri.parse('http://$ip/trim?value=$trim'));
+      final res = await req.close();
+      await res.drain<void>();
+    } catch (_) {
+    } finally {
+      c.close();
+    }
   }
 
   // ---------- mounting ----------

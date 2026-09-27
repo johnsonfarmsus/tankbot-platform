@@ -139,7 +139,19 @@ button{background:#23303a;color:#e6eef0;border:1px solid #3a4a55;border-radius:8
 input[type=range]{width:100%}
 </style></head><body>
 <header><span id="conn">Connecting...</span><span id="stat"></span>
-<span style="margin-left:auto"><button id="mode">Radar view</button></span></header>
+<span style="margin-left:auto;display:flex;gap:8px"><button id="setbtn">Settings</button><button id="mode">Radar view</button></span></header>
+<div id="settings" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10;align-items:center;justify-content:center">
+ <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:min(420px,90vw);display:flex;flex-direction:column;gap:12px;font-size:14px">
+  <div style="font-weight:600;font-size:16px">Settings</div>
+  <label>Steering trim: <span id="trimv">-</span>
+   <input id="trim" type="range" min="-20" max="20" step="1" value="0"></label>
+  <div style="display:flex;justify-content:space-between;color:#9fb3bb;font-size:12px"><span>&larr; steer left</span><span>steer right &rarr;</span></div>
+  <div style="color:#9fb3bb;font-size:12px">If it drifts right when driving straight, move the slider toward left (and the other way round). Saved on the robot. You can keep driving with the arrow keys while this is open.</div>
+  <label>Obstacle stop distance: <span id="sdv">-</span>
+   <input id="sd" type="range" min="150" max="1000" step="25" value="300"></label>
+  <button id="setclose">Done</button>
+ </div>
+</div>
 <div id="view"><canvas id="map"></canvas></div>
 <div id="banner">OBSTACLE AHEAD - forward blocked</div>
 <div id="mountbar" style="display:none;text-align:center;padding:6px;font-weight:600"></div>
@@ -251,6 +263,22 @@ $("mapping").onclick = () => send({type: "set", mapping: !(telem && telem.settin
 $("clear").onclick = () => { if (confirm("Start a new map with the robot's current spot as the origin?")) send({type: "clearMap"}); };
 $("mode").onclick = () => { mode = mode === "map" ? "radar" : "map"; $("mode").textContent = mode === "map" ? "Radar view" : "Map view"; };
 $("rgv").textContent = $("rg").value + " m";
+
+// ---- settings panel ----
+// Robot trim > 0 steers left, < 0 steers right; the slider shows "steer right" as positive.
+let settingsOpen = false;
+function syncSettings() {
+  if (!telem) return;
+  const s = telem.settings;
+  if (typeof s.trim === "number") { $("trim").value = -s.trim; $("trimv").textContent = -s.trim; }
+  if (typeof s.stopDistMm === "number") { $("sd").value = s.stopDistMm; $("sdv").textContent = Math.round(s.stopDistMm / 10) + " cm"; }
+}
+$("setbtn").onclick = () => { $("settings").style.display = "flex"; settingsOpen = true; syncSettings(); };
+$("setclose").onclick = () => { $("settings").style.display = "none"; settingsOpen = false; };
+$("trim").oninput = e => { $("trimv").textContent = e.target.value; };
+$("trim").onchange = e => send({type: "set", trim: -parseInt(e.target.value, 10)});
+$("sd").oninput = e => { $("sdv").textContent = Math.round(e.target.value / 10) + " cm"; };
+$("sd").onchange = e => send({type: "set", stopDistMm: parseFloat(e.target.value)});
 $("msv").textContent = Math.round($("ms").value * 100) + "%";
 
 let settingsInit = false;

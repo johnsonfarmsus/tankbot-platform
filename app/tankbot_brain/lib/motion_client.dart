@@ -21,6 +21,7 @@ class MotionClient {
   final _statusCtrl = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get status => _statusCtrl.stream;
   bool get connected => _sock != null && _addr != null;
+  String? get address => _addr?.address;
 
   Future<void> start({String? manualIp}) async {
     stop();
