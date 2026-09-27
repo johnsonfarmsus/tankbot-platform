@@ -14,6 +14,7 @@ import 'occupancy_grid.dart';
 import 'brain_server.dart';
 import 'map_store.dart';
 import 'scan_matcher.dart';
+import 'loop_closer.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -68,6 +69,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   int matchHits = 0, matchMisses = 0;
   double lastCorrCm = 0;
   Map<String, dynamic> caps = {};
+
+  // Map quality: turn handling and loop closing
+  static const double _maxMapTurnRate = 0.35; // rad/s (~20 deg/s): faster than this, scans smear
+  double _lastPoseMs = 0;
+  int skippedTurning = 0, loopClosures = 0;
+  double lastLoopCm = 0, lastLoopDeg = 0;
+  bool _rebuilding = false, _loopChecking = false;
+  int _kfSinceLoopCheck = 0, _kfSinceClosure = 999;
   late final BrainServer server;
   final List<StreamSubscription> _subs = [];
   LidarScan? scan;
@@ -112,7 +121,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     active = MapSession.fresh(lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
-    server = BrainServer(onMessage: _onRemote, onRemoteSilent: _onRelease);
+    server = BrainServer(onMessage: _onRemote, onRemoteSilent: _onRelease, onConnect: _onRemoteConnect);
     _subs.add(client.scans.listen((s) {
       final now = DateTime.now();
       _recent.add(now);
@@ -264,6 +273,15 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       'loc': {'state': locState, 'note': locNote},
       'tracking': {'source': poseSource, 'matchHits': matchHits, 'matchMisses': matchMisses, 'lastCorrCm': lastCorrCm},
       'caps': caps,
+      'quality': {
+        'matchHits': matchHits,
+        'matchMisses': matchMisses,
+        'skippedTurning': skippedTurning,
+        'loopClosures': loopClosures,
+        'lastLoopCm': lastLoopCm,
+        'lastLoopDeg': lastLoopDeg,
+        'rebuilding': _rebuilding,
+      },
       'blocked': _blocked,
       'mount': {'state': mountState, 'note': mountNote, 'robotMode': robotMode, 'disturbances': disturbances},
       'settings': {
@@ -328,6 +346,67 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     k.add(Keyframe.fromScan(p.x, p.y, p.heading, pts));
     active.updated = DateTime.now();
+    _kfSinceLoopCheck++;
+    _kfSinceClosure++;
+    if (_kfSinceLoopCheck >= 10 && _kfSinceClosure >= 15 && !_loopChecking && !_rebuilding) {
+      _kfSinceLoopCheck = 0;
+      _checkLoop();
+    }
+  }
+
+  /// Back somewhere mapped earlier in the drive? Straighten the loop and redraw.
+  Future<void> _checkLoop() async {
+    _loopChecking = true;
+    LoopClosure? lc;
+    try {
+      lc = await LoopCloser.check(active.keyframes, lidarFwdM, lidarLeftM);
+    } catch (_) {
+      lc = null;
+    }
+    _loopChecking = false;
+    if (lc == null || _rebuilding || _loadingMap) return;
+    LoopCloser.apply(active.keyframes, lc);
+    // move the live pose by the full correction so tracking continues on the corrected map
+    final rp = robotPose;
+    if (rp != null) {
+      final t = LoopCloser.transform(lc, rp.x, rp.y, rp.heading, 1.0);
+      final raw = poses.latest;
+      if (_mode == 'ar' && raw != null && raw.good) {
+        _corr.setSoThat(raw, t.$1, t.$2, t.$3);
+      } else {
+        _lidarPose = Pose(appClockMs(), t.$1, t.$2, t.$3, true);
+      }
+      _lastRobotPose = Pose(appClockMs(), t.$1, t.$2, t.$3, true);
+    }
+    loopClosures++;
+    lastLoopCm = lc.corrCm;
+    lastLoopDeg = lc.corrDeg;
+    _kfSinceClosure = 0;
+    active.edited = true;
+    await _rebuildGrid();
+  }
+
+  /// Redraw the whole map from the (corrected) keyframes.
+  Future<void> _rebuildGrid() async {
+    _rebuilding = true;
+    grid.clear();
+    trail.clear();
+    final kfs = List<Keyframe>.from(active.keyframes);
+    for (var i = 0; i < kfs.length; i++) {
+      final k = kfs[i];
+      grid.integrate(Pose(0, k.x, k.y, k.h, true), k.points(), lidarFwdM: active.lidarFwdM, lidarLeftM: active.lidarLeftM);
+      if (i % 40 == 39) await Future<void>.delayed(Duration.zero);
+    }
+    _rebuilding = false;
+    _mapChangedSinceSend = true;
+  }
+
+  /// A controller just connected: send it the current map right away.
+  void _onRemoteConnect() {
+    _mapChangedSinceSend = true;
+    _lastMapSentMs = -1e9;
+    if (grid.scansIntegrated > 0) grid.dirty = true;
+    _broadcastMaps();
   }
 
   Future<void> _saveActive() async {
@@ -681,7 +760,17 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       if (!_mapAllowed || _loadingMap || locState != 'tracking') continue;
       final pose = _trackScan(s, raw);
       if (pose == null) continue;
+      final now = t ?? appClockMs();
+      final prev = _lastRobotPose;
+      final dt = math.max(0.05, (now - _lastPoseMs) / 1000.0);
+      final turnRate = prev == null ? 0.0 : _angDiff(pose.heading, prev.heading).abs() / dt;
       _lastRobotPose = pose;
+      _lastPoseMs = now;
+      if (_rebuilding) continue;
+      if (turnRate > _maxMapTurnRate) {
+        skippedTurning++; // the scan is smeared by the turn: track with it, but don't paint it
+        continue;
+      }
       grid.integrate(pose, s.points, lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
       _maybeKeyframe(pose, s.points);
     }
@@ -692,14 +781,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   Pose? _trackScan(LidarScan s, Pose? raw) {
     final lidarOnly = raw == null;
     final guess = lidarOnly ? (_lidarPose ?? Pose(appClockMs(), 0, 0, math.pi / 2, true)) : _corr.apply(raw);
-    if (grid.scansIntegrated < 15) {
+    if (_rebuilding || grid.scansIntegrated < 15) {
       if (lidarOnly) _lidarPose = guess;
       return guess; // not enough map yet to match against
     }
     final pts = ScanMatcher.robotFrame(s.points, fwdM: lidarFwdM, leftM: lidarLeftM, stride: 2);
     if (pts.length < 40) return lidarOnly ? null : guess;
-    final r = matcher.local(pts, guess.x, guess.y, guess.heading,
-        lin: lidarOnly ? 0.12 : 0.08, linStep: 0.02, ang: lidarOnly ? 0.14 : 0.05, angStep: 0.01);
+    final r = matcher.localCoarseFine(pts, guess.x, guess.y, guess.heading,
+        lin: lidarOnly ? 0.16 : 0.12, ang: lidarOnly ? 0.26 : 0.17);
     if (r.hitRatio < 0.35 || r.atEdge) {
       matchMisses++;
       return lidarOnly ? null : guess; // unsure: keep the camera's guess, or skip the scan

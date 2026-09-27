@@ -9,11 +9,12 @@ import 'dart:io';
 import 'pose_client.dart' show appClockMs;
 
 class BrainServer {
-  BrainServer({this.port = 8080, required this.onMessage, required this.onRemoteSilent});
+  BrainServer({this.port = 8080, required this.onMessage, required this.onRemoteSilent, this.onConnect});
 
   final int port;
   final void Function(Map<String, dynamic> msg) onMessage;
   final void Function() onRemoteSilent;
+  final void Function()? onConnect;
 
   HttpServer? _server;
   final Set<WebSocket> _clients = {};
@@ -58,6 +59,7 @@ class BrainServer {
     if (req.uri.path == '/ws' && WebSocketTransformer.isUpgradeRequest(req)) {
       final ws = await WebSocketTransformer.upgrade(req);
       _clients.add(ws);
+      onConnect?.call();
       ws.listen((data) {
         if (data is! String) return;
         Map<String, dynamic> m;
@@ -158,6 +160,7 @@ input[type=range]{width:100%}
  <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:min(520px,92vw);max-height:85vh;overflow:auto;display:flex;flex-direction:column;gap:10px;font-size:14px">
   <div style="font-weight:600;font-size:16px">Maps</div>
   <div id="mapActive" style="color:#9fb3bb"></div>
+  <div id="mapQuality" style="color:#9fb3bb;font-size:12px"></div>
   <div class="row"><input id="mapName" style="flex:1;min-width:0;background:#101416;color:#e6eef0;border:1px solid #3a4a55;border-radius:8px;padding:6px" placeholder="Map name"><button id="mapSave">Save</button></div>
   <div class="row"><button id="mapNew">New map here</button></div>
   <div style="font-weight:600;margin-top:6px">Saved maps</div>
@@ -324,6 +327,11 @@ function renderActive() {
   const a = telem && telem.mapInfo; if (!a) return;
   $("mapActive").textContent = "Current: " + a.name + " - " + a.keyframes + " keyframes - " +
     (a.loading ? "loading..." : (a.unsaved ? "unsaved changes" : "saved"));
+  const q = telem.quality;
+  if (q) $("mapQuality").textContent = "Map quality: " + q.matchHits + " lidar corrections, " + q.matchMisses +
+    " rejected, " + q.skippedTurning + " scans skipped while spinning, " + q.loopClosures + " loop closures" +
+    (q.loopClosures ? " (last one fixed " + q.lastLoopCm.toFixed(0) + " cm / " + q.lastLoopDeg.toFixed(1) + " deg)" : "") +
+    (q.rebuilding ? " - redrawing map..." : "");
 }
 function renderMaps() {
   if (!mapsData) return;

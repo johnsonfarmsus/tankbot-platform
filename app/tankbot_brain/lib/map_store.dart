@@ -15,7 +15,7 @@ import 'lidar_client.dart';
 
 class Keyframe {
   final double t; // unix ms
-  final double x, y, h; // map frame (metres, radians)
+  double x, y, h; // map frame (metres, radians); corrected by loop closing
   final Uint16List raw; // interleaved angle_q6, dist_q2
 
   Keyframe(this.t, this.x, this.y, this.h, this.raw);
@@ -45,8 +45,9 @@ class MapSession {
   int savedCount = 0;
   DateTime? savedAt;
   bool renamed = false;
+  bool edited = false; // keyframes corrected (loop closing) since the last save
 
-  bool get unsaved => keyframes.length != savedCount || renamed;
+  bool get unsaved => keyframes.length != savedCount || renamed || edited;
 
   static MapSession fresh({double lidarFwdM = 0, double lidarLeftM = 0}) {
     final now = DateTime.now();
@@ -132,6 +133,7 @@ class MapStore {
     await mTmp.rename('${d.path}/meta.json');
     m.savedCount = count;
     m.renamed = false;
+    m.edited = false;
     m.savedAt = DateTime.now();
     return true;
   }

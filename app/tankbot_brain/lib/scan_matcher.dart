@@ -129,6 +129,14 @@ class ScanMatcher {
     return MatchResult(bx, by, bh, best, hits, edge);
   }
 
+  /// Wide but fast: coarse search (4 cm / 2 deg steps) then fine (1 cm / 0.4 deg).
+  MatchResult localCoarseFine(List<Offset> pts, double x0, double y0, double h0,
+      {double lin = 0.12, double ang = 0.17}) {
+    final c = local(pts, x0, y0, h0, lin: lin, linStep: 0.04, ang: ang, angStep: 0.035);
+    final f = local(pts, c.x, c.y, c.h, lin: 0.04, linStep: 0.01, ang: 0.035, angStep: 0.007);
+    return MatchResult(f.x, f.y, f.h, f.score, f.hitRatio, c.atEdge);
+  }
+
   /// Whole-map search. Returns refined candidates, best first.
   Future<List<MatchResult>> global(List<Offset> pts, {double step = 0.2, int headings = 72, int keep = 6}) async {
     grid.ensureField(force: true);
