@@ -268,6 +268,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (m['mapping'] is bool) mapping = m['mapping'] as bool;
         if (m['stopDistMm'] is num) stopDistMm = (m['stopDistMm'] as num).toDouble().clamp(150.0, 1000.0);
         if (m['trim'] is num) _setTrim((m['trim'] as num).round().clamp(-20, 20));
+        if (m['minPower'] is num || m['cruisePower'] is num) {
+          if (m['minPower'] is num) profile.minPower = (m['minPower'] as num).toDouble().clamp(0.3, 1.0);
+          if (m['cruisePower'] is num) profile.cruisePower = (m['cruisePower'] as num).toDouble().clamp(0.3, 1.0);
+          if (profile.cruisePower < profile.minPower) profile.cruisePower = profile.minPower;
+          maxSpeed = profile.cruisePower;
+          BotProfileStore.save(profile);
+        }
         break;
       case 'clearMap':
         _startNewMap();
@@ -389,6 +396,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'mapping': mapping,
         'stopDistMm': stopDistMm,
         'trim': motionStatus?['trim'],
+        'minPower': profile.minPower,
+        'cruisePower': profile.cruisePower,
       },
       'motion': m == null ? null : {'left': m['left'], 'right': m['right'], 'src': m['src']},
       'stats': {

@@ -149,6 +149,12 @@ input[type=range]{width:100%}
    <input id="trim" type="range" min="-20" max="20" step="1" value="0"></label>
   <div style="display:flex;justify-content:space-between;color:#9fb3bb;font-size:12px"><span>&larr; steer left</span><span>steer right &rarr;</span></div>
   <div style="color:#9fb3bb;font-size:12px">If it drifts right when driving straight, move the slider toward left (and the other way round). Saved on the robot. You can keep driving with the arrow keys while this is open.</div>
+  <label>Minimum power to move: <span id="minpv">-</span>
+   <input id="minp" type="range" min="30" max="100" step="5"></label>
+  <div style="color:#9fb3bb;font-size:12px">The lowest power at which this robot actually moves. Autonomous driving never sends less than this.</div>
+  <label>Cruise power: <span id="cruisev">-</span>
+   <input id="cruise" type="range" min="30" max="100" step="5"></label>
+  <div style="color:#9fb3bb;font-size:12px">The power it drives best at. Autonomous driving uses this for straight runs; the manual max-speed slider defaults to it.</div>
   <label style="display:flex;align-items:center;gap:8px"><input id="obs" type="checkbox"> Obstacle stop (recommended: on)</label>
   <label>Obstacle stop distance: <span id="sdv">-</span>
    <input id="sd" type="range" min="150" max="1000" step="25" value="300"></label>
@@ -166,11 +172,7 @@ input[type=range]{width:100%}
    <label>Platform width <input id="botW" type="number" min="50" max="3000" style="width:64px"> mm</label>
    <label>length <input id="botL" type="number" min="50" max="3000" style="width:64px"> mm</label>
   </div>
-  <div class="row">
-   <label>Minimum power to move <input id="botMinP" type="number" min="30" max="100" style="width:56px"> %</label>
-   <label>Cruise power <input id="botCruiseP" type="number" min="30" max="100" style="width:56px"> %</label>
-   <span style="color:#9fb3bb">Autonomous driving only uses power levels this robot can act on; the manual max-speed slider defaults to cruise.</span>
-  </div>
+
   <div class="row" style="align-items:flex-start">
    <div><div style="color:#9fb3bb">Top view (front is up) - drag sensors</div><canvas id="botTop" width="460" height="460" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
    <div><div style="color:#9fb3bb">Side view from the left - drag up/down for height</div><canvas id="botSide" width="460" height="320" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
@@ -329,7 +331,13 @@ function syncSettings() {
   const s = telem.settings;
   if (typeof s.trim === "number") { $("trim").value = -s.trim; $("trimv").textContent = -s.trim; }
   if (typeof s.stopDistMm === "number") { $("sd").value = s.stopDistMm; $("sdv").textContent = Math.round(s.stopDistMm / 10) + " cm"; }
+  if (typeof s.minPower === "number") { $("minp").value = Math.round(s.minPower * 100); $("minpv").textContent = Math.round(s.minPower * 100) + "%"; }
+  if (typeof s.cruisePower === "number") { $("cruise").value = Math.round(s.cruisePower * 100); $("cruisev").textContent = Math.round(s.cruisePower * 100) + "%"; }
 }
+$("minp").oninput = e => { $("minpv").textContent = e.target.value + "%"; };
+$("minp").onchange = e => send({type: "set", minPower: parseFloat(e.target.value) / 100});
+$("cruise").oninput = e => { $("cruisev").textContent = e.target.value + "%"; };
+$("cruise").onchange = e => send({type: "set", cruisePower: parseFloat(e.target.value) / 100});
 
 $("setclose").onclick = () => showPage("drive");
 $("trim").oninput = e => { $("trimv").textContent = e.target.value; };
@@ -360,8 +368,6 @@ function openBot() {
   botDraft = JSON.parse(JSON.stringify(botProfile));
   $("botName").value = botDraft.name; $("botDrive").value = botDraft.drive;
   $("botW").value = botDraft.platform.widthMm; $("botL").value = botDraft.platform.lengthMm;
-  $("botMinP").value = Math.round((botDraft.power ? botDraft.power.min : 0.8) * 100);
-  $("botCruiseP").value = Math.round((botDraft.power ? botDraft.power.cruise : 0.9) * 100);
   renderBotSensors(); drawBot();
 }
 
@@ -370,7 +376,6 @@ $("botSave").onclick = () => {
   if (!botDraft) return;
   botDraft.name = $("botName").value; botDraft.drive = $("botDrive").value;
   botDraft.platform.widthMm = parseFloat($("botW").value); botDraft.platform.lengthMm = parseFloat($("botL").value);
-  botDraft.power = {min: (parseFloat($("botMinP").value) || 80) / 100, cruise: (parseFloat($("botCruiseP").value) || 90) / 100};
   send({type: "bot.set", profile: botDraft});
   $("botInfo").textContent = "Saved";
   setTimeout(() => { $("botInfo").textContent = ""; }, 2000);
