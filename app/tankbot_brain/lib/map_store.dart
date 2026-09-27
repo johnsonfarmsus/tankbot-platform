@@ -92,13 +92,43 @@ class MapSession {
 class MapStore {
   static const _native = MethodChannel('tankbot/arkit');
   Directory? _root;
+  String _robot = 'TankBot';
+
+  /// Maps are stored per robot: Documents/robots/NAME/maps.
+  String get robot => _robot;
+  set robot(String name) {
+    final clean = safeName(name);
+    if (clean == _robot) return;
+    _robot = clean;
+    _root = null;
+  }
+
+  static String safeName(String n) {
+    final c = n.trim().replaceAll(RegExp(r'[^A-Za-z0-9 _.-]'), '_');
+    return c.isEmpty ? 'TankBot' : (c.length > 40 ? c.substring(0, 40) : c);
+  }
+
+  /// One-time move of the old flat layout (Documents/maps, Documents/bot_profile.json) into robots/TankBot.
+  static Future<void> migrateOldLayout() async {
+    try {
+      final p = await _native.invokeMethod<String>('documentsDir');
+      if (p == null) return;
+      final robots = Directory('$p/robots');
+      if (await robots.exists()) return;
+      final oldMaps = Directory('$p/maps'), oldProfile = File('$p/bot_profile.json');
+      final target = Directory('$p/robots/TankBot');
+      await target.create(recursive: true);
+      if (await oldMaps.exists()) await oldMaps.rename('${target.path}/maps');
+      if (await oldProfile.exists()) await oldProfile.rename('${target.path}/bot_profile.json');
+    } catch (_) {}
+  }
 
   Future<Directory?> _dir() async {
     if (_root != null) return _root;
     try {
       final p = await _native.invokeMethod<String>('documentsDir');
       if (p == null) return null;
-      final d = Directory('$p/maps');
+      final d = Directory('$p/robots/$_robot/maps');
       await d.create(recursive: true);
       _root = d;
     } catch (_) {

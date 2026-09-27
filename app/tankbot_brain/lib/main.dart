@@ -79,7 +79,7 @@ class _RoleGateState extends State<RoleGate> {
         return ControllerScreen(settings: s, onChangeRole: _changeRole);
       case AppRole.mounted:
       case AppRole.brain:
-        return LidarScreen(key: ValueKey(s.role), role: s.role!, onChangeRole: _changeRole);
+        return LidarScreen(key: ValueKey(s.role), role: s.role!, settings: s, onChangeRole: _changeRole);
     }
   }
 }
@@ -87,8 +87,9 @@ class _RoleGateState extends State<RoleGate> {
 enum ViewMode { radar, map }
 
 class LidarScreen extends StatefulWidget {
-  const LidarScreen({super.key, this.role = AppRole.mounted, this.onChangeRole});
+  const LidarScreen({super.key, this.role = AppRole.mounted, this.settings, this.onChangeRole});
   final AppRole role;
+  final AppSettings? settings;
   final VoidCallback? onChangeRole;
   @override
   State<LidarScreen> createState() => _LidarScreenState();
@@ -242,19 +243,21 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       poses.state = 'off (brain in hand)';
     }
     _loadCaps();
-    BotProfileStore.load().then((p) {
+    () async {
+      await MapStore.migrateOldLayout();
+      store.robot = widget.settings?.lastRobot ?? 'TankBot';
+      final p = await BotProfileStore.load(store.robot);
       if (p != null && mounted) {
         setState(() {
           profile = p;
           maxSpeed = p.cruisePower;
         });
       }
-    });
-    server.start().then((_) {
-      _refreshMapList();
-      _loadLastMap(); // remember the house across restarts
-      setState(() {});
-    });
+      await server.start();
+      await _refreshMapList();
+      await _loadLastMap(); // remember the house across restarts
+      if (mounted) setState(() {});
+    }();
     _keepAwake(true); // the brain must never auto-lock: iOS would suspend it
   }
 
@@ -318,7 +321,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (np != null) {
           profile = np;
           maxSpeed = np.cruisePower;
-          BotProfileStore.save(np);
+          BotProfileStore.save(np, store.robot);
           server.broadcast({'type': 'bot', 'profile': profile.toJson()});
         }
         break;
@@ -329,7 +332,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (m['stopDistMm'] is num || m['passDistMm'] is num) {
           if (m['stopDistMm'] is num) profile.stopDistMm = (m['stopDistMm'] as num).toDouble().clamp(100.0, 2000.0);
           if (m['passDistMm'] is num) profile.passDistMm = (m['passDistMm'] as num).toDouble().clamp(0.0, 1000.0);
-          BotProfileStore.save(profile);
+          BotProfileStore.save(profile, store.robot);
         }
         if (m['trim'] is num) _setTrim((m['trim'] as num).round().clamp(-20, 20));
         if (m['minPower'] is num || m['cruisePower'] is num) {
@@ -337,7 +340,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           if (m['cruisePower'] is num) profile.cruisePower = (m['cruisePower'] as num).toDouble().clamp(0.3, 1.0);
           if (profile.cruisePower < profile.minPower) profile.cruisePower = profile.minPower;
           maxSpeed = profile.cruisePower;
-          BotProfileStore.save(profile);
+          BotProfileStore.save(profile, store.robot);
         }
         break;
       case 'clearMap':
@@ -437,7 +440,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'goal': navGoal == null ? null : [navGoal!.dx, navGoal!.dy],
         'path': [for (final q in navPath) [(q.dx * 100).round() / 100, (q.dy * 100).round() / 100]],
       },
-      'robot': {'caps': sensors.caps, 'live': sensors.fresh ? sensors.latest : null},
+      'robot': {'caps': sensors.caps, 'live': sensors.fresh ? sensors.latest : null, 'storage': store.robot},
       'nogo': [
         for (final e in active.edits)
           if (e['type'] == 'nogo') [e['x1'], e['y1'], e['x2'], e['y2'], e['id']]
@@ -880,12 +883,47 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       }
     });
     if (changed) {
-      BotProfileStore.save(profile);
+      BotProfileStore.save(profile, store.robot);
       server.broadcast({'type': 'bot', 'profile': profile.toJson()});
     }
   }
 
+  bool _switchingRobot = false;
+
+  /// A robot with a different name announced itself: save what we have and open its profile and maps.
+  Future<void> _switchRobotIfNeeded() async {
+    final name = sensors.caps?['name'];
+    if (name is! String || _switchingRobot) return;
+    final clean = MapStore.safeName(name);
+    if (clean == store.robot) return;
+    _switchingRobot = true;
+    try {
+      await _saveActive();
+      BotProfileStore.save(profile, store.robot);
+      store.robot = clean;
+      widget.settings?.lastRobot = clean;
+      widget.settings?.save();
+      _capsApplied = false;
+      final p = await BotProfileStore.load(clean);
+      profile = p ?? BotProfile.tankbotDefault()
+        ..name = name;
+      maxSpeed = profile.cruisePower;
+      active = MapSession.fresh(lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
+      grid.clear();
+      trail.clear();
+      mapImage = null;
+      await _refreshMapList();
+      await _loadLastMap();
+      server.broadcast({'type': 'bot', 'profile': profile.toJson()});
+      locNote = 'Switched to robot "$name"';
+    } finally {
+      _switchingRobot = false;
+    }
+    if (mounted) setState(() {});
+  }
+
   void _onRobotSensors(Map<String, dynamic> r) {
+    _switchRobotIfNeeded();
     _prefillProfileFromCaps();
     final bl = (r['bumpL'] as num?)?.toInt() ?? -1, br = (r['bumpR'] as num?)?.toInt() ?? -1;
     if (bl == 1 && _prevBumpL != 1) _bumpObstacle('bumpL');

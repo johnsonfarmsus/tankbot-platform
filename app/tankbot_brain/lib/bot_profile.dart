@@ -188,18 +188,20 @@ class BotProfile {
 class BotProfileStore {
   static const _native = MethodChannel('tankbot/arkit');
 
-  static Future<File?> _file() async {
+  static Future<File?> _file(String robot) async {
     try {
       final p = await _native.invokeMethod<String>('documentsDir');
       if (p == null) return null;
-      return File('$p/bot_profile.json');
+      final d = Directory('$p/robots/$robot');
+      await d.create(recursive: true);
+      return File('${d.path}/bot_profile.json');
     } catch (_) {
       return null;
     }
   }
 
-  static Future<BotProfile?> load() async {
-    final f = await _file();
+  static Future<BotProfile?> load(String robot) async {
+    final f = await _file(robot);
     if (f == null || !await f.exists()) return null;
     try {
       return BotProfile.fromJson(jsonDecode(await f.readAsString()));
@@ -208,8 +210,8 @@ class BotProfileStore {
     }
   }
 
-  static Future<void> save(BotProfile p) async {
-    final f = await _file();
+  static Future<void> save(BotProfile p, String robot) async {
+    final f = await _file(robot);
     if (f == null) return;
     try {
       await f.writeAsString(jsonEncode(p.toJson()), flush: true);
