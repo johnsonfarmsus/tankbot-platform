@@ -5,7 +5,7 @@ import 'dart:ui' show Offset;
 import 'bot_profile.dart';
 
 class DepthObstacles {
-  static const double floorToleranceM = 0.04; // above this counts as an obstacle
+  double floorToleranceM = 0.06; // above this counts as an obstacle (from the profile)
   static const double dropM = 0.08; // floor lower than this = drop-off
   static const double maxFwdM = 2.0, maxSideM = 1.0, cliffFwdM = 1.2;
   static const double cellM = 0.05;
@@ -28,6 +28,7 @@ class DepthObstacles {
       if (s.heightMm / 1000.0 > topM) topM = s.heightMm / 1000.0;
     }
     robotHeightM = topM + 0.05;
+    floorToleranceM = profile.depthMinHeightMm / 1000.0;
     final floorUp = -camH;
     final obs = <int, int>{}, cliff = <int, int>{};
     for (var i = 0; i + 2 < pts.length; i += 3) {

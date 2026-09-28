@@ -47,6 +47,8 @@ class BotProfile {
   /// Obstacle handling (mm): never drive forward closer than stopDistMm to something ahead;
   /// plan routes that keep at least passDistMm of clearance around the body.
   double stopDistMm, passDistMm;
+  /// Depth camera: block forward closer than depthStopMm; ignore things lower than depthMinHeightMm.
+  double depthStopMm, depthMinHeightMm;
   final List<BotSensor> sensors;
 
   BotProfile({
@@ -61,6 +63,8 @@ class BotProfile {
     this.cruisePower = 0.9,
     this.stopDistMm = 300,
     this.passDistMm = 100,
+    this.depthStopMm = 250,
+    this.depthMinHeightMm = 60,
   });
 
   static const drives = ['tank', 'wheelchair', 'mecanum'];
@@ -145,7 +149,7 @@ class BotProfile {
         'platform': {'widthMm': widthMm, 'lengthMm': lengthMm},
         'wheels': {'trackMm': trackMm, 'axleFromFrontMm': axleFromFrontMm},
         'power': {'min': minPower, 'cruise': cruisePower},
-        'obstacles': {'stopMm': stopDistMm, 'passMm': passDistMm},
+        'obstacles': {'stopMm': stopDistMm, 'passMm': passDistMm, 'depthStopMm': depthStopMm, 'depthMinHeightMm': depthMinHeightMm},
         'sensors': [for (final s in sensors) s.toJson()],
       };
 
@@ -167,6 +171,8 @@ class BotProfile {
     final ob = j['obstacles'];
     final stopMm = num_(ob is Map ? ob['stopMm'] : null, 300).clamp(100, 2000).toDouble();
     final passMm = num_(ob is Map ? ob['passMm'] : null, 100).clamp(0, 1000).toDouble();
+    final dStop = num_(ob is Map ? ob['depthStopMm'] : null, 250).clamp(50, 2000).toDouble();
+    final dMinH = num_(ob is Map ? ob['depthMinHeightMm'] : null, 60).clamp(10, 300).toDouble();
     final width = num_(pf is Map ? pf['widthMm'] : null, 185).clamp(50, 3000).toDouble();
     final length = num_(pf is Map ? pf['lengthMm'] : null, 170).clamp(50, 3000).toDouble();
     return BotProfile(
@@ -181,6 +187,8 @@ class BotProfile {
       cruisePower: cruise,
       stopDistMm: stopMm,
       passDistMm: passMm,
+      depthStopMm: dStop,
+      depthMinHeightMm: dMinH,
     );
   }
 }

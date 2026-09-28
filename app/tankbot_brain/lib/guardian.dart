@@ -27,7 +27,9 @@ class Guardian {
     bool lidarExpected = true,
     List<Offset> depthObstacles = const [], // platform frame (fwd, left)
     List<Offset> dropOffs = const [],
+    double? depthStopMm,
   }) {
+    final dStop = depthStopMm ?? stopDistMm;
     if (reflexBlock != 'none') return GuardVerdict(false, 'robot reflex: $reflexBlock', null);
     final frontEdge0 = profile.lengthMm / 2000.0, halfWidth0 = profile.widthMm / 2000.0 + sideMarginM;
     double? depthNearest;
@@ -45,7 +47,7 @@ class Guardian {
     if (dropNearest != null && dropNearest * 1000 < math.max(stopDistMm, 400)) {
       return GuardVerdict(false, 'drop-off ahead (${(dropNearest * 1000).round()} mm)', dropNearest * 1000);
     }
-    if (depthNearest != null && depthNearest * 1000 < stopDistMm) {
+    if (depthNearest != null && depthNearest * 1000 < dStop) {
       return GuardVerdict(false, 'depth camera: ${(depthNearest * 1000).round()} mm ahead', depthNearest * 1000);
     }
     if (!lidarExpected) return const GuardVerdict(true, '', null);

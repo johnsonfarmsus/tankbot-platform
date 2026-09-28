@@ -120,6 +120,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   Pose? _lastRobotPose;
   String locState = 'tracking'; // tracking | localizing | lost
   String locNote = '';
+  String flashMsg = '';
+  double flashMs = -1e9;
+  void _flash(String m) {
+    flashMsg = m;
+    flashMs = appClockMs();
+  }
   bool _relocRunning = false;
   int _relocAttempts = 0;
   int matchHits = 0, matchMisses = 0;
@@ -275,6 +281,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _tick?.cancel();
     _telemTimer?.cancel();
     _navTimer?.cancel();
+    final lp = _lastRobotPose;
+    if (lp != null && locState == 'tracking') {
+      active.lastPose = [lp.x, lp.y, lp.heading];
+      active.edited = true;
+      _saveActive(); // fire and forget: the app keeps running, the write completes
+    }
     WidgetsBinding.instance.removeObserver(this);
     server.stop();
     motion.dispose();
@@ -338,6 +350,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (m['stopDistMm'] is num || m['passDistMm'] is num) {
           if (m['stopDistMm'] is num) profile.stopDistMm = (m['stopDistMm'] as num).toDouble().clamp(100.0, 2000.0);
           if (m['passDistMm'] is num) profile.passDistMm = (m['passDistMm'] as num).toDouble().clamp(0.0, 1000.0);
+          BotProfileStore.save(profile, store.robot);
+        }
+        if (m['depthStopMm'] is num || m['depthMinHeightMm'] is num) {
+          if (m['depthStopMm'] is num) profile.depthStopMm = (m['depthStopMm'] as num).toDouble().clamp(50.0, 2000.0);
+          if (m['depthMinHeightMm'] is num) profile.depthMinHeightMm = (m['depthMinHeightMm'] as num).toDouble().clamp(10.0, 300.0);
           BotProfileStore.save(profile, store.robot);
         }
         if (m['trim'] is num) _setTrim((m['trim'] as num).round().clamp(-20, 20));
@@ -438,6 +455,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       'bot': {'name': profile.name, 'drive': profile.drive, 'bodyRadiusM': profile.bodyRadiusM, 'sensors': profile.sensors.length},
       'mapInfo': _mapInfo(),
       'loc': {'state': locState, 'note': locNote},
+      'flash': appClockMs() - flashMs < 4000 ? flashMsg : null,
       'tracking': {'source': poseSource, 'matchHits': matchHits, 'matchMisses': matchMisses, 'lastCorrCm': lastCorrCm},
       'caps': caps,
       'nav': {
@@ -487,6 +505,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'mapping': mapping,
         'stopDistMm': stopDistMm,
         'passDistMm': profile.passDistMm,
+        'depthStopMm': profile.depthStopMm,
+        'depthMinHeightMm': profile.depthMinHeightMm,
         'trim': motionStatus?['trim'],
         'minPower': profile.minPower,
         'cruisePower': profile.cruisePower,
@@ -721,6 +741,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     await store.setLast(m.id);
     locState = 'localizing';
     locNote = 'Finding myself on "${m.name}"...';
+    _flash('Loaded "${m.name}"');
     _relocAttempts = 0;
     _broadcastMaps();
     // in robot mode, wait until the phone is settled in its cradle
@@ -775,6 +796,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       var r = matcher.local(coarsePts, g0[0], g0[1], g0[2], lin: 0.5, linStep: 0.05, ang: 0.35, angStep: 0.035);
       if (r.atEdge) continue;
       r = matcher.local(pts, r.x, r.y, r.h, lin: 0.05, linStep: 0.01, ang: 0.035, angStep: 0.007);
+      // symmetric rooms: if facing the other way fits almost as well, don't trust the quick answer
+      final flipped = matcher.local(coarsePts, r.x, r.y, r.h + math.pi, lin: 0.2, linStep: 0.05, ang: 0.2, angStep: 0.035);
+      if (flipped.score > r.score * 0.85) continue;
       if (r.hitRatio >= 0.75 && (quick == null || r.score > quick.score * 1.03)) {
         quick = r;
         quickNote = gss.$2;
@@ -820,6 +844,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _lastRobotPose = Pose(appClockMs(), best.x, best.y, best.h, true);
     locState = 'tracking';
     locNote = note;
+    _flash(note);
     _relocAttempts = 0;
     trail.clear();
     _sigs.clear();
@@ -1503,6 +1528,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         lidarExpected: sensors.caps == null || (sensors.caps!['sensors'] as Map?)?['lidar'] != false,
         depthObstacles: depth.fresh(appClockMs()) ? depth.obstacles : const [],
         dropOffs: depth.fresh(appClockMs()) ? depth.cliffs : const [],
+        depthStopMm: profile.depthStopMm,
       );
   String blockReason = '';
 

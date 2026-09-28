@@ -161,6 +161,11 @@ input[type=range]{width:100%}
    <label>Obstacle pass distance <input id="pd" type="number" min="0" max="1000" step="10" style="width:70px"> mm</label>
   </div>
   <div style="color:#9fb3bb;font-size:12px">Stop: never drive forward with something closer than this ahead. Pass: routes keep at least this much clearance around the robot's body (from the Bot page dimensions).</div>
+  <div class="row">
+   <label>Depth stop distance <input id="dsd" type="number" min="50" max="2000" step="10" style="width:70px"> mm</label>
+   <label>Depth obstacle height <input id="dmh" type="number" min="10" max="300" step="5" style="width:70px"> mm</label>
+  </div>
+  <div style="color:#9fb3bb;font-size:12px">Depth camera (low obstacles the lidar can't see): block forward closer than the stop distance; only things at least this tall above the floor count. Raise the height if carpet or thresholds trigger it.</div>
   <div style="font-weight:600;margin-top:4px">Robot</div>
   <div id="robotInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
   <div style="font-weight:600;margin-top:4px">This brain</div>
@@ -349,6 +354,8 @@ function syncSettings() {
   if (typeof s.trim === "number") { $("trim").value = -s.trim; $("trimv").textContent = -s.trim; }
   if (typeof s.stopDistMm === "number" && document.activeElement !== $("sd")) $("sd").value = Math.round(s.stopDistMm);
   if (typeof s.passDistMm === "number" && document.activeElement !== $("pd")) $("pd").value = Math.round(s.passDistMm);
+  if (typeof s.depthStopMm === "number" && document.activeElement !== $("dsd")) $("dsd").value = Math.round(s.depthStopMm);
+  if (typeof s.depthMinHeightMm === "number" && document.activeElement !== $("dmh")) $("dmh").value = Math.round(s.depthMinHeightMm);
   if (typeof s.minPower === "number") { $("minp").value = Math.round(s.minPower * 100); $("minpv").textContent = Math.round(s.minPower * 100) + "%"; }
   if (typeof s.cruisePower === "number") { $("cruise").value = Math.round(s.cruisePower * 100); $("cruisev").textContent = Math.round(s.cruisePower * 100) + "%"; }
 }
@@ -362,6 +369,8 @@ $("trim").oninput = e => { $("trimv").textContent = e.target.value; };
 $("trim").onchange = e => send({type: "set", trim: -parseInt(e.target.value, 10)});
 $("sd").onchange = e => send({type: "set", stopDistMm: parseFloat(e.target.value)});
 $("pd").onchange = e => send({type: "set", passDistMm: parseFloat(e.target.value)});
+$("dsd").onchange = e => send({type: "set", depthStopMm: parseFloat(e.target.value)});
+$("dmh").onchange = e => send({type: "set", depthMinHeightMm: parseFloat(e.target.value)});
 function robotText(r) {
   if (!r || !r.caps) return "Robot: no capability report yet (is the robot on firmware v2?)";
   const c = r.caps, sn = c.sensors || {}, on = [];
@@ -592,6 +601,7 @@ function updateUi() {
   if (goMode) { nb.style.display = "flex"; $("navtext").textContent = "Tap a spot on the map to drive there"; $("navStop").textContent = "Cancel"; $("navStop").style.display = ""; $("navDismiss").style.display = "none"; }
   else if (navActive) { nb.style.display = "flex"; $("navtext").textContent = nv.note || nv.state; $("navStop").textContent = "Stop"; $("navStop").style.display = ""; $("navDismiss").style.display = "none"; }
   else if (nv && nv.note && nv.note !== navDismissed) { nb.style.display = "flex"; $("navtext").textContent = nv.note; $("navStop").style.display = "none"; $("navDismiss").style.display = ""; }
+  else if (t.flash) { nb.style.display = "flex"; $("navtext").textContent = t.flash; $("navStop").style.display = "none"; $("navDismiss").style.display = "none"; }
   else nb.style.display = "none";
   const lb = $("locbar");
   if (t.loc && t.loc.state !== "tracking") { lb.style.display = "flex"; $("loctext").textContent = t.loc.note; }
