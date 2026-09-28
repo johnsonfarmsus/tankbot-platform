@@ -225,6 +225,15 @@ input[type=range]{width:100%}
 </div></div></div>
 <script>
 const $ = id => document.getElementById(id);
+let pageErrors = 0;
+function showError(where, err) {
+  pageErrors++;
+  const c = $("conn");
+  if (c) { c.textContent = "Page error in " + where + ": " + (err && err.message ? err.message : err); c.style.color = "#ff5252"; }
+  console.error(where, err);
+}
+window.addEventListener("error", e => showError("script", e.error || e.message));
+window.addEventListener("unhandledrejection", e => showError("promise", e.reason));
 let ws = null, telem = null, mapImg = null, mapMeta = null, mode = "map", sendTimer = null;
 
 function connect() {
@@ -235,7 +244,9 @@ function connect() {
     telem = null; stopDrive(); setTimeout(connect, 1000);
   };
   ws.onmessage = ev => {
-    const m = JSON.parse(ev.data);
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { showError("message", e); return; }
+    try {
     if (m.type === "telem") { telem = m; updateUi(); if (mapsOpen) renderActive(); }
     else if (m.type === "maps") { mapsData = m; renderMaps(); }
     else if (m.type === "bot") { botProfile = m.profile; if (botOpen && !botDraft) openBot(); }
@@ -244,6 +255,7 @@ function connect() {
       img.onload = () => { mapImg = img; mapMeta = m; };
       img.src = "data:image/png;base64," + m.png;
     }
+    } catch (e) { showError("handling " + m.type, e); }
   };
 }
 function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
@@ -598,6 +610,10 @@ function drawArrow(x, y, h, good) {
   ctx.fillStyle = good ? "#ffab40" : "#888"; ctx.fill();
 }
 function frame() {
+  try { frameInner(); } catch (e) { if (pageErrors < 3) showError("drawing", e); }
+  requestAnimationFrame(frame);
+}
+function frameInner() {
   const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -689,7 +705,6 @@ function frame() {
       drawArrow(cx, cy, Math.PI / 2, true);
     }
   }
-  requestAnimationFrame(frame);
 }
 // ---- map editing ----
 let editMode = false, tool = "pan", panX = 0, panY = 0, nogoStart = null, hover = null;
