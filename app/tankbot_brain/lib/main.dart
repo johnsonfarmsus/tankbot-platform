@@ -234,7 +234,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _telemTimer = Timer.periodic(const Duration(milliseconds: 200), (_) => _sendTelemetry());
     WidgetsBinding.instance.addObserver(this);
     _subs.add(sensors.readings.listen(_onRobotSensors));
-    _subs.add(poses.depth.listen((pts) => depth.update(pts, profile, appClockMs())));
+    _subs.add(poses.depth.listen((pts) {
+      depth.update(pts, profile, appClockMs());
+      _rememberDropOffs();
+    }));
     client.start();
     motion.start();
     sensors.start();
@@ -453,6 +456,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       'nogo': [
         for (final e in active.edits)
           if (e['type'] == 'nogo') [e['x1'], e['y1'], e['x2'], e['y2'], e['id']]
+      ],
+      'dropoffs': [
+        for (final e in active.edits)
+          if (e['type'] == 'obstacle' && e['kind'] == 'dropoff') [e['x'], e['y']]
       ],
       'quality': {
         'matchHits': matchHits,
@@ -954,6 +961,44 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     grid.markCircle(ox, oy, 0.07);
     active.edited = true;
     navNote = 'Bumped something - marked it on the map';
+  }
+
+  // Drop-offs seen repeatedly become permanent map obstacles (stairs don't move).
+  final Map<int, int> _dropSeen = {};
+  double _dropSeenResetMs = 0;
+  static const int _dropConfirmFrames = 5, _maxDropEdits = 300;
+
+  void _rememberDropOffs() {
+    if (locState != 'tracking' || _loadingMap || _rebuilding || !mapping || !_mapAllowed) return;
+    final now = appClockMs();
+    if (now - _dropSeenResetMs > 10000) {
+      _dropSeen.clear();
+      _dropSeenResetMs = now;
+    }
+    final cliffs = _depthWorldSplit(true);
+    if (cliffs.isEmpty) return;
+    final existing = [
+      for (final e in active.edits)
+        if (e['type'] == 'obstacle' && e['kind'] == 'dropoff') Offset((e['x'] as num).toDouble(), (e['y'] as num).toDouble())
+    ];
+    var added = false;
+    for (final c in cliffs) {
+      final key = (c.dx / 0.1).round() * 100000 + (c.dy / 0.1).round();
+      final n = (_dropSeen[key] ?? 0) + 1;
+      _dropSeen[key] = n;
+      if (n != _dropConfirmFrames) continue;
+      if (existing.length >= _maxDropEdits) break;
+      if (existing.any((e) => (e - c).distance < 0.12)) continue;
+      final id = active.nextEditId++;
+      active.edits.add({'type': 'obstacle', 'kind': 'dropoff', 'id': id, 'stroke': 'drop$id', 'x': c.dx, 'y': c.dy, 'r': 0.08});
+      grid.markCircle(c.dx, c.dy, 0.08);
+      existing.add(c);
+      added = true;
+    }
+    if (added) {
+      active.edited = true;
+      navNote = 'Drop-off remembered on the map';
+    }
   }
 
   /// Depth-camera obstacles and drop-offs in map coordinates (platform frame -> tracked point -> world).

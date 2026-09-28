@@ -654,6 +654,10 @@ function frame() {
           ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]);
         }
       }
+      if (t.dropoffs && t.dropoffs.length) {
+        ctx.strokeStyle = "#ff5252"; ctx.lineWidth = 2;
+        for (const q of t.dropoffs) { const s3 = toS(q[0], q[1]); ctx.beginPath(); ctx.arc(s3[0], s3[1], 0.08 * ppm + 2, 0, Math.PI * 2); ctx.stroke(); }
+      }
       if (t.depth && t.depth.fresh) {
         ctx.fillStyle = "rgba(255,171,64,0.9)";
         for (const q of t.depth.obstacles) { const s3 = toS(q[0], q[1]); ctx.fillRect(s3[0] - 2, s3[1] - 2, 4, 4); }
