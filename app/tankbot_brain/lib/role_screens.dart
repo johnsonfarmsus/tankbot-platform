@@ -60,6 +60,8 @@ class _ControllerScreenState extends State<ControllerScreen> {
   WebViewController? _wv;
   late final TextEditingController _url = TextEditingController(text: widget.settings.brainUrl);
   String _error = '';
+  bool _loading = false;
+  String _loadError = '';
 
   @override
   void initState() {
@@ -83,10 +85,23 @@ class _ControllerScreenState extends State<ControllerScreen> {
     final c = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFF101416))
+      ..setNavigationDelegate(NavigationDelegate(
+        onPageStarted: (_) => setState(() {
+          _loading = true;
+          _loadError = '';
+        }),
+        onPageFinished: (_) => setState(() => _loading = false),
+        onWebResourceError: (e) => setState(() {
+          _loading = false;
+          if (e.isForMainFrame ?? true) _loadError = 'Could not load the brain page: ${e.description}';
+        }),
+      ))
       ..loadRequest(Uri.parse(u));
     setState(() {
       _wv = c;
       _error = '';
+      _loading = true;
+      _loadError = '';
     });
   }
 
@@ -129,7 +144,24 @@ class _ControllerScreenState extends State<ControllerScreen> {
           IconButton(icon: const Icon(Icons.swap_horiz), tooltip: 'Change role', onPressed: widget.onChangeRole),
         ],
       ),
-      body: WebViewWidget(controller: wv),
+      body: Stack(children: [
+        WebViewWidget(controller: wv),
+        if (_loading) const LinearProgressIndicator(),
+        if (_loadError.isNotEmpty)
+          Container(
+            color: const Color(0xFF101416),
+            padding: const EdgeInsets.all(20),
+            alignment: Alignment.center,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text(_loadError, style: const TextStyle(color: Colors.redAccent), textAlign: TextAlign.center),
+              const SizedBox(height: 12),
+              const Text('Check that this phone is on the same Wi-Fi as the brain, and that the brain app is open.',
+                  style: TextStyle(color: Colors.white70), textAlign: TextAlign.center),
+              const SizedBox(height: 12),
+              FilledButton(onPressed: () => wv.reload(), child: const Text('Try again')),
+            ]),
+          ),
+      ]),
     );
   }
 }
