@@ -909,17 +909,18 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _capsApplied = true;
     final sn = (caps['sensors'] as Map?) ?? {};
     final w = profile.widthMm, defaults = <String, (String, String, double, double, double)>{
-      'lidar': ('lidar', 'RPLidar', w / 2, 40, 260),
-      'tof': ('tof', 'ToF (floor)', w / 2, 10, 40),
-      'ultrasonic': ('us', 'Ultrasonic', w / 2, 5, 40),
-      'bumperL': ('bumpL', 'Left bumper', w * 0.25, 0, 30),
-      'bumperR': ('bumpR', 'Right bumper', w * 0.75, 0, 30),
+      'lidar': ('lidar', 'RPLidar', w / 2, 40, 200),
+      'tof': ('tof', 'ToF (floor)', w / 2, 10, -20),
+      'ultrasonic': ('us', 'Ultrasonic', w / 2, 5, -20),
+      'bumperL': ('bumpL', 'Front bumper', w / 2, -20, -30),
+      'bumperR': ('bumpR', 'Right bumper', w * 0.75, -20, -30),
     };
     var changed = false;
     defaults.forEach((capKey, d) {
       if (sn[capKey] == true && profile.byId(d.$1) == null && (d.$1 == 'lidar' ? profile.byType('lidar') == null : true)) {
         final type = capKey.startsWith('bumper') ? 'bumper' : capKey;
-        profile.sensors.add(BotSensor(d.$1, type, d.$2, fromLeftMm: d.$3, fromFrontMm: d.$4, heightMm: d.$5));
+        profile.sensors.add(BotSensor(d.$1, type, d.$2,
+            fromLeftMm: d.$3, fromFrontMm: d.$4, heightMm: d.$5, widthMm: type == 'bumper' ? w * 0.9 : 0));
         changed = true;
       }
     });

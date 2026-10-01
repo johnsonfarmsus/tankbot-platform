@@ -7,9 +7,13 @@ import 'package:flutter/services.dart';
 
 class BotSensor {
   String id, type, name;
+  /// Position from the platform's left and front edges (negative fromFrontMm = ahead of the platform).
+  /// heightMm is relative to the platform top (negative = below it).
   double fromLeftMm, fromFrontMm, heightMm, yawDeg;
+  /// Bumper bars: width of the bar (mm), centred on fromLeftMm.
+  double widthMm;
   BotSensor(this.id, this.type, this.name,
-      {required this.fromLeftMm, required this.fromFrontMm, this.heightMm = 0, this.yawDeg = 0});
+      {required this.fromLeftMm, required this.fromFrontMm, this.heightMm = 0, this.yawDeg = 0, this.widthMm = 0});
 
   static const types = ['lidar', 'camera', 'bumper', 'tof', 'ultrasonic', 'imu', 'depth'];
 
@@ -21,6 +25,7 @@ class BotSensor {
         'fromFrontMm': fromFrontMm,
         'heightMm': heightMm,
         'yawDeg': yawDeg,
+        if (widthMm > 0) 'widthMm': widthMm,
       };
 
   static BotSensor? fromJson(dynamic j) {
@@ -32,8 +37,9 @@ class BotSensor {
     return BotSensor(id, type, (j['name'] as String?) ?? type,
         fromLeftMm: num_(j['fromLeftMm'], 0).clamp(-500, 3000).toDouble(),
         fromFrontMm: num_(j['fromFrontMm'], 0).clamp(-500, 3000).toDouble(),
-        heightMm: num_(j['heightMm'], 0).clamp(0, 3000).toDouble(),
-        yawDeg: num_(j['yawDeg'], 0).clamp(-180, 180).toDouble());
+        heightMm: num_(j['heightMm'], 0).clamp(-1000, 3000).toDouble(),
+        yawDeg: num_(j['yawDeg'], 0).clamp(-180, 180).toDouble(),
+        widthMm: num_(j['widthMm'], 0).clamp(0, 3000).toDouble());
   }
 }
 
@@ -41,6 +47,7 @@ class BotProfile {
   String name;
   String drive; // tank | wheelchair | mecanum
   double widthMm, lengthMm; // platform: left-right, front-back
+  double platformHeightMm; // platform top above the floor; sensor heights are relative to it
   double trackMm, axleFromFrontMm; // rotation centre for tank / wheelchair
   /// Fraction of full power below which this robot does not move, and the power it drives best at.
   double minPower, cruisePower;
@@ -56,6 +63,7 @@ class BotProfile {
     required this.drive,
     required this.widthMm,
     required this.lengthMm,
+    this.platformHeightMm = 60,
     required this.trackMm,
     required this.axleFromFrontMm,
     required this.sensors,
@@ -78,8 +86,8 @@ class BotProfile {
         trackMm: 160,
         axleFromFrontMm: 85,
         sensors: [
-          BotSensor('lidar', 'lidar', 'RPLidar C1', fromLeftMm: 92, fromFrontMm: 40, heightMm: 300),
-          BotSensor('cam', 'camera', 'Phone camera', fromLeftMm: 108, fromFrontMm: 40, heightMm: 200),
+          BotSensor('lidar', 'lidar', 'RPLidar C1', fromLeftMm: 92, fromFrontMm: 40, heightMm: 240),
+          BotSensor('cam', 'camera', 'Phone camera', fromLeftMm: 108, fromFrontMm: 40, heightMm: 140),
         ],
       );
 
@@ -113,6 +121,19 @@ class BotProfile {
     return leftM(l) - trackedPoint.$2;
   }
 
+  /// Height above the floor (metres).
+  double absHeightM(BotSensor s) => (platformHeightMm + s.heightMm) / 1000.0;
+
+  /// Tallest point of the robot (metres above the floor), with a little margin.
+  double get robotHeightM {
+    var top = platformHeightMm / 1000.0;
+    for (final s in sensors) {
+      final h = absHeightM(s);
+      if (h > top) top = h;
+    }
+    return top + 0.05;
+  }
+
   BotSensor? byId(String id) {
     for (final s in sensors) {
       if (s.id == id) return s;
@@ -143,10 +164,10 @@ class BotProfile {
   double get inflationRadiusM => bodyRadiusM + passDistMm / 1000.0;
 
   Map<String, dynamic> toJson() => {
-        'version': 1,
+        'version': 2,
         'name': name,
         'drive': drive,
-        'platform': {'widthMm': widthMm, 'lengthMm': lengthMm},
+        'platform': {'widthMm': widthMm, 'lengthMm': lengthMm, 'heightMm': platformHeightMm},
         'wheels': {'trackMm': trackMm, 'axleFromFrontMm': axleFromFrontMm},
         'power': {'min': minPower, 'cruise': cruisePower},
         'obstacles': {'stopMm': stopDistMm, 'passMm': passDistMm, 'depthStopMm': depthStopMm, 'depthMinHeightMm': depthMinHeightMm},
@@ -175,11 +196,20 @@ class BotProfile {
     final dMinH = num_(ob is Map ? ob['depthMinHeightMm'] : null, 60).clamp(10, 300).toDouble();
     final width = num_(pf is Map ? pf['widthMm'] : null, 185).clamp(50, 3000).toDouble();
     final length = num_(pf is Map ? pf['lengthMm'] : null, 170).clamp(50, 3000).toDouble();
+    final platH = num_(pf is Map ? pf['heightMm'] : null, 60).clamp(0, 2000).toDouble();
+    // version 1 profiles stored heights above the floor: make them platform-relative
+    final version = (j['version'] as num?)?.toInt() ?? 1;
+    if (version < 2) {
+      for (final sn in sensors) {
+        sn.heightMm -= platH;
+      }
+    }
     return BotProfile(
       name: (j['name'] is String && (j['name'] as String).trim().isNotEmpty) ? (j['name'] as String).trim() : 'Bot',
       drive: drives.contains(drive) ? drive as String : 'tank',
       widthMm: width,
       lengthMm: length,
+      platformHeightMm: platH,
       trackMm: num_(wh is Map ? wh['trackMm'] : null, width * 0.85).clamp(20, 3000).toDouble(),
       axleFromFrontMm: num_(wh is Map ? wh['axleFromFrontMm'] : null, length / 2).clamp(-1000, 3000).toDouble(),
       sensors: sensors,

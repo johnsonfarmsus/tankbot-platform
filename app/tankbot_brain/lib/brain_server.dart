@@ -181,7 +181,9 @@ input[type=range]{width:100%}
    <label>Drive <select id="botDrive"><option value="tank">Tank</option><option value="wheelchair">Wheelchair</option><option value="mecanum">Mecanum</option></select></label>
    <label>Platform width <input id="botW" type="number" min="50" max="3000" style="width:64px"> mm</label>
    <label>length <input id="botL" type="number" min="50" max="3000" style="width:64px"> mm</label>
+   <label>platform height above floor <input id="botH" type="number" min="0" max="2000" style="width:64px"> mm</label>
   </div>
+  <div style="color:#9fb3bb;font-size:12px">Sensor heights are measured from the platform top (negative = below it). Positions from the front edge may be negative for things that stick out ahead, like a bumper bar.</div>
 
   <div class="row" style="align-items:flex-start">
    <div><div style="color:#9fb3bb">Top view (front is up) - drag sensors</div><canvas id="botTop" width="460" height="460" style="background:#101416;border:1px solid #2c3a44;border-radius:8px;touch-action:none"></canvas></div>
@@ -410,6 +412,7 @@ function openBot() {
   botDraft = JSON.parse(JSON.stringify(botProfile));
   $("botName").value = botDraft.name; $("botDrive").value = botDraft.drive;
   $("botW").value = botDraft.platform.widthMm; $("botL").value = botDraft.platform.lengthMm;
+  $("botH").value = botDraft.platform.heightMm == null ? 60 : botDraft.platform.heightMm;
   renderBotSensors(); drawBot();
 }
 
@@ -418,12 +421,14 @@ $("botSave").onclick = () => {
   if (!botDraft) return;
   botDraft.name = $("botName").value; botDraft.drive = $("botDrive").value;
   botDraft.platform.widthMm = parseFloat($("botW").value); botDraft.platform.lengthMm = parseFloat($("botL").value);
+  botDraft.platform.heightMm = parseFloat($("botH").value) || 0;
   send({type: "bot.set", profile: botDraft});
   $("botInfo").textContent = "Saved";
   setTimeout(() => { $("botInfo").textContent = ""; }, 2000);
 };
-["botW", "botL"].forEach(id => $(id).oninput = () => { if (!botDraft) return;
-  botDraft.platform.widthMm = parseFloat($("botW").value) || 100; botDraft.platform.lengthMm = parseFloat($("botL").value) || 100; drawBot(); });
+["botW", "botL", "botH"].forEach(id => $(id).oninput = () => { if (!botDraft) return;
+  botDraft.platform.widthMm = parseFloat($("botW").value) || 100; botDraft.platform.lengthMm = parseFloat($("botL").value) || 100;
+  botDraft.platform.heightMm = parseFloat($("botH").value) || 0; drawBot(); });
 $("botAdd").onclick = () => {
   if (!botDraft) return;
   const type = $("botAddType").value;
@@ -446,8 +451,10 @@ function renderBotSensors() {
     row.append(dot, lab(SENSOR_LABEL[sn.type]), nm,
       lab("from left"), numInput(sn.fromLeftMm, -500, 3000, 60, v => { sn.fromLeftMm = v; drawBot(); }),
       lab("from front"), numInput(sn.fromFrontMm, -500, 3000, 60, v => { sn.fromFrontMm = v; drawBot(); }),
-      lab("height"), numInput(sn.heightMm, 0, 3000, 60, v => { sn.heightMm = v; drawBot(); }),
-      lab("yaw"), numInput(sn.yawDeg, -180, 180, 50, v => { sn.yawDeg = v; drawBot(); }), del);
+      lab("height vs platform"), numInput(sn.heightMm, -1000, 3000, 60, v => { sn.heightMm = v; drawBot(); }),
+      lab("yaw"), numInput(sn.yawDeg, -180, 180, 50, v => { sn.yawDeg = v; drawBot(); }));
+    if (sn.type === "bumper") row.append(lab("bar width"), numInput(sn.widthMm || 0, 0, 3000, 60, v => { sn.widthMm = v; drawBot(); }));
+    row.append(del);
     box.append(row);
   });
 }
@@ -457,8 +464,8 @@ function botTopScale() {
   return {sc, ox: cv2.width / 2 - W * sc / 2, oy: cv2.height / 2 - L * sc / 2, cw: cv2.width, ch: cv2.height};
 }
 function botSideScale() {
-  const cv2 = $("botSide"), L = botDraft.platform.lengthMm;
-  let H = 100; for (const sn of botDraft.sensors) H = Math.max(H, sn.heightMm + 40);
+  const cv2 = $("botSide"), L = botDraft.platform.lengthMm, ph = botDraft.platform.heightMm || 0;
+  let H = ph + 100; for (const sn of botDraft.sensors) H = Math.max(H, ph + sn.heightMm + 40);
   const sc = Math.min((cv2.width - 70) / L, (cv2.height - 50) / H);
   return {sc, ox: cv2.width / 2 - L * sc / 2, floorY: cv2.height - 24, cw: cv2.width, ch: cv2.height};
 }
@@ -474,6 +481,9 @@ function drawBot() {
   c.fillText(W + " x " + L + " mm", t.ox, t.oy + L * t.sc + 16);
   for (const sn of botDraft.sensors) {
     const x = t.ox + sn.fromLeftMm * t.sc, y = t.oy + sn.fromFrontMm * t.sc;
+    if (sn.type === "bumper" && sn.widthMm > 0) {
+      c.fillStyle = "rgba(255,82,82,0.35)"; c.fillRect(x - sn.widthMm * t.sc / 2, y - 4, sn.widthMm * t.sc, 8);
+    }
     c.fillStyle = SENSOR_COLOR[sn.type]; c.beginPath(); c.arc(x, y, 10, 0, Math.PI * 2); c.fill();
     const a2 = -sn.yawDeg * Math.PI / 180 - Math.PI / 2;
     c.strokeStyle = SENSOR_COLOR[sn.type]; c.lineWidth = 2; c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a2) * 20, y + Math.sin(a2) * 20); c.stroke();
@@ -483,13 +493,14 @@ function drawBot() {
   sctx.clearRect(0, 0, v.cw, v.ch);
   sctx.strokeStyle = "#556"; sctx.beginPath(); sctx.moveTo(0, v.floorY); sctx.lineTo(v.cw, v.floorY); sctx.stroke();
   sctx.fillStyle = "#9fb3bb"; sctx.font = "12px sans-serif"; sctx.fillText("floor", 6, v.floorY - 6); sctx.fillText("front", v.cw - 44, v.floorY + 16);
-  const platY = v.floorY - 60 * v.sc;
+  const ph = botDraft.platform.heightMm || 0, platY = v.floorY - ph * v.sc;
   sctx.fillStyle = "#2a3238"; sctx.fillRect(v.ox, platY - 5, L * v.sc, 5);
+  sctx.fillStyle = "#9fb3bb"; sctx.fillText("platform " + Math.round(ph) + " mm", v.ox + L * v.sc + 6, platY);
   for (const sn of botDraft.sensors) {
-    const x = v.ox + (L - sn.fromFrontMm) * v.sc, y = v.floorY - sn.heightMm * v.sc;
+    const x = v.ox + (L - sn.fromFrontMm) * v.sc, y = v.floorY - (ph + sn.heightMm) * v.sc;
     sctx.strokeStyle = "#3a4a55"; sctx.beginPath(); sctx.moveTo(x, platY); sctx.lineTo(x, y); sctx.stroke();
     sctx.fillStyle = SENSOR_COLOR[sn.type]; sctx.beginPath(); sctx.arc(x, y, 9, 0, Math.PI * 2); sctx.fill();
-    sctx.fillStyle = "#e6eef0"; sctx.fillText(sn.name + " " + Math.round(sn.heightMm) + " mm", x + 12, y + 4);
+    sctx.fillStyle = "#e6eef0"; sctx.fillText(sn.name + " " + (sn.heightMm >= 0 ? "+" : "") + Math.round(sn.heightMm) + " mm", x + 12, y + 4);
   }
 }
 function canvasPt(canvas, e) {
@@ -518,13 +529,13 @@ $("botTop").addEventListener("pointermove", e => {
 $("botSide").addEventListener("pointerdown", e => {
   if (!botDraft) return;
   const v = botSideScale();
-  const sn = botHit($("botSide"), e, sn => [v.ox + (botDraft.platform.lengthMm - sn.fromFrontMm) * v.sc, v.floorY - sn.heightMm * v.sc]);
+  const sn = botHit($("botSide"), e, sn => [v.ox + (botDraft.platform.lengthMm - sn.fromFrontMm) * v.sc, v.floorY - ((botDraft.platform.heightMm || 0) + sn.heightMm) * v.sc]);
   if (sn) { botDrag = {sn, view: "side"}; $("botSide").setPointerCapture(e.pointerId); }
 });
 $("botSide").addEventListener("pointermove", e => {
   if (!botDrag || botDrag.view !== "side") return;
   const v = botSideScale(), [, py] = canvasPt($("botSide"), e);
-  botDrag.sn.heightMm = Math.round(Math.max(0, (v.floorY - py) / v.sc));
+  botDrag.sn.heightMm = Math.round((v.floorY - py) / v.sc - (botDraft.platform.heightMm || 0));
   renderBotSensors(); drawBot();
 });
 const botEndDrag = () => { botDrag = null; };

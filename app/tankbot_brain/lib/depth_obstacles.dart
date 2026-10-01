@@ -20,14 +20,10 @@ class DepthObstacles {
   /// pts: interleaved fwd, left, up (metres) relative to the camera, level frame.
   void update(Float32List pts, BotProfile profile, double nowMs) {
     final cam = profile.byType('camera');
-    final camH = (cam?.heightMm ?? 200) / 1000.0;
+    final camH = cam == null ? 0.2 : profile.absHeightM(cam);
     final camFwd = cam == null ? 0.0 : profile.fwdM(cam);
     final camLeft = cam == null ? 0.0 : profile.leftM(cam);
-    var topM = 0.0;
-    for (final s in profile.sensors) {
-      if (s.heightMm / 1000.0 > topM) topM = s.heightMm / 1000.0;
-    }
-    robotHeightM = topM + 0.05;
+    robotHeightM = profile.robotHeightM;
     floorToleranceM = profile.depthMinHeightMm / 1000.0;
     final floorUp = -camH;
     final obs = <int, int>{}, cliff = <int, int>{};
