@@ -953,8 +953,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       final uri = Uri.parse('http://$ip$path');
       final req = method == 'POST' ? await c.postUrl(uri) : await c.getUrl(uri);
       if (body != null) {
+        // the ESP32's web server can't read chunked bodies: send the length up front
+        final bytes = utf8.encode(body);
         req.headers.contentType = ContentType.json;
-        req.write(body);
+        req.contentLength = bytes.length;
+        req.add(bytes);
       }
       final res = await req.close();
       final text = await res.transform(utf8.decoder).join();
@@ -1045,9 +1048,15 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   final Map<String, int> _prevSensorVals = {};
 
+  double _lastHwCheckMs = 0;
+
   void _onRobotSensors(Map<String, dynamic> r) {
     _switchRobotIfNeeded();
     _mergeRobotHardware();
+    if (appClockMs() - _lastHwCheckMs > 15000) {
+      _lastHwCheckMs = appClockMs();
+      _pushHardwareIfChanged(); // retries if an earlier update didn't reach the robot
+    }
     final list = r['sensors'];
     if (list is! List) return;
     for (final e in list) {
