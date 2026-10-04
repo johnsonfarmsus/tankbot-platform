@@ -483,6 +483,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         for (final e in active.edits)
           if (e['type'] == 'nogo') [e['x1'], e['y1'], e['x2'], e['y2'], e['id']]
       ],
+      'rangers': [for (final q in _rangerPoints()) [(q.dx * 100).round() / 100, (q.dy * 100).round() / 100]],
       'dropoffs': [
         for (final e in active.edits)
           if (e['type'] == 'obstacle' && e['kind'] == 'dropoff') [e['x'], e['y']]

@@ -18,12 +18,14 @@ class BotSensor {
   String role; // obstacle | cliff | bump | orientation | mapping | none
   bool enabled, floorTilt;
   double stopMm, floorMm;
+  /// Bumpers: reverse this long after a hit (ms, 0 = just stop).
+  double backoffMs;
   /// True once this entry came from the robot's own sensor table (false = phone-side or legacy).
   bool onRobot;
   BotSensor(this.id, this.type, this.name,
       {required this.fromLeftMm, required this.fromFrontMm, this.heightMm = 0, this.yawDeg = 0, this.widthMm = 0,
       this.slot = 'NONE', this.pinA = -1, this.pinB = -1, String? role, this.enabled = true, this.floorTilt = false,
-      this.stopMm = 150, this.floorMm = 0, this.onRobot = false})
+      this.stopMm = 150, this.floorMm = 0, this.backoffMs = 150, this.onRobot = false})
       : role = role ?? defaultRole(type);
 
   static String defaultRole(String type) => switch (type) {
@@ -50,6 +52,7 @@ class BotSensor {
         'floorTilt': floorTilt,
         'stopMm': stopMm.round(),
         'floorMm': floorMm.round(),
+        'backoffMs': backoffMs.round(),
         'left': fromLeftMm,
         'front': fromFrontMm,
         'height': heightMm,
@@ -67,7 +70,7 @@ class BotSensor {
         yawDeg: n(h['yawDeg'], 0), widthMm: n(h['width'], 0),
         slot: (h['slot'] as String?) ?? 'NONE', pinA: (h['pinA'] as num?)?.toInt() ?? -1, pinB: (h['pinB'] as num?)?.toInt() ?? -1,
         role: (h['role'] as String?) ?? defaultRole(type), enabled: h['enabled'] != false, floorTilt: h['floorTilt'] == true,
-        stopMm: n(h['stopMm'], 150), floorMm: n(h['floorMm'], 0), onRobot: true);
+        stopMm: n(h['stopMm'], 150), floorMm: n(h['floorMm'], 0), backoffMs: n(h['backoffMs'], 150), onRobot: true);
   }
 
   static const types = ['lidar', 'camera', 'bumper', 'tof', 'ultrasonic', 'imu', 'depth'];
@@ -89,6 +92,7 @@ class BotSensor {
         'floorTilt': floorTilt,
         'stopMm': stopMm,
         'floorMm': floorMm,
+        'backoffMs': backoffMs,
         'onRobot': onRobot,
       };
 
@@ -112,6 +116,7 @@ class BotSensor {
         floorTilt: j['floorTilt'] == true,
         stopMm: num_(j['stopMm'], 150).clamp(20, 4000).toDouble(),
         floorMm: num_(j['floorMm'], 0).clamp(0, 8000).toDouble(),
+        backoffMs: num_(j['backoffMs'], 150).clamp(0, 1000).toDouble(),
         onRobot: j['onRobot'] == true);
   }
 }

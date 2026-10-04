@@ -528,6 +528,7 @@ function renderBotSensors() {
       if (!isStd) r2.append(numInput(sn.yawDeg, -180, 180, 54, v => { sn.yawDeg = v; drawBot(); }), lab("deg (+ = left)"));
       if (sn.type === "tof" || sn.type === "ultrasonic") r2.append(check(sn.floorTilt, "aimed at the floor", v => { sn.floorTilt = v; }));
       if (sn.role === "obstacle") r2.append(lab("stop closer than"), numInput(sn.stopMm, 20, 4000, 60, v => { sn.stopMm = v; }), lab("mm"));
+      if (sn.role === "bump") r2.append(lab("after a hit, back off for"), numInput(sn.backoffMs == null ? 150 : sn.backoffMs, 0, 1000, 60, v => { sn.backoffMs = v; }), lab("ms (0 = just stop)"));
       if (sn.role === "cliff") {
         r2.append(lab("normal floor reading"), numInput(sn.floorMm, 0, 8000, 60, v => { sn.floorMm = v; }), lab("mm"));
         const cal = document.createElement("button"); cal.textContent = "Calibrate now";
@@ -793,6 +794,10 @@ function frameInner() {
           ctx.strokeStyle = "#ff5252"; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
           ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]);
         }
+      }
+      if (t.rangers && t.rangers.length) {   // ultrasonic / ToF readings: teal
+        ctx.fillStyle = "#80cbc4";
+        for (const q of t.rangers) { const s3 = toS(q[0], q[1]); ctx.beginPath(); ctx.arc(s3[0], s3[1], 5, 0, Math.PI * 2); ctx.fill(); }
       }
       if (t.dropoffs && t.dropoffs.length) {
         ctx.strokeStyle = "#ff5252"; ctx.lineWidth = 2;

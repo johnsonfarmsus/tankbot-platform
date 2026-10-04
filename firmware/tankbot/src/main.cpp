@@ -42,6 +42,7 @@ struct Sensor {
   bool floorTilt = false;    // pointed at the floor (cliff sensing)
   int stopMm = 150;          // obstacle role: block when closer
   int floorMm = 0;           // cliff role: calibrated floor reading (0 = not calibrated)
+  int backoffMs = 150;       // bump role: reverse this long after a hit (0 = just stop)
   float left = 0, front = 0, height = 0, width = 0; // placement for the brain (mm)
   // live
   int value = -1;            // mm, or 1/0 for bumpers
@@ -134,6 +135,7 @@ bool loadSensorsJson(const String &json) {
     s.floorTilt = o["floorTilt"] | false;
     s.stopMm = o["stopMm"] | 150;
     s.floorMm = o["floorMm"] | 0;
+    s.backoffMs = constrain((int)(o["backoffMs"] | 150), 0, 1000);
     s.left = o["left"] | 0.0f; s.front = o["front"] | 0.0f; s.height = o["height"] | 0.0f; s.width = o["width"] | 0.0f;
     if (strcmp(s.slot, "CUSTOM")) resolveSlot(s);
     nSensors++;
@@ -195,7 +197,7 @@ String hardwareJson(bool withLive) {
     JsonObject o = arr.add<JsonObject>();
     o["id"] = s.id; o["name"] = s.name; o["type"] = typeName(s.type); o["slot"] = s.slot;
     o["pinA"] = s.pinA; o["pinB"] = s.pinB; o["role"] = roleName(s.role); o["enabled"] = s.enabled;
-    o["yawDeg"] = s.yawDeg; o["floorTilt"] = s.floorTilt; o["stopMm"] = s.stopMm; o["floorMm"] = s.floorMm;
+    o["yawDeg"] = s.yawDeg; o["floorTilt"] = s.floorTilt; o["stopMm"] = s.stopMm; o["floorMm"] = s.floorMm; o["backoffMs"] = s.backoffMs;
     o["left"] = s.left; o["front"] = s.front; o["height"] = s.height; o["width"] = s.width;
     if (withLive) { o["value"] = s.value; o["ok"] = s.ok; }
   }
@@ -576,7 +578,7 @@ void reflexUpdate() {
   uint32_t now = millis();
   bool nb[4] = {false, false, false, false};
   char nr[4][24] = {"", "", "", ""};
-  bool newBump = false; int bumpDir = DIR_FRONT;
+  bool newBump = false; int bumpDir = DIR_FRONT, bumpBackoffMs = 150;
   for (int i = 0; i < nSensors; i++) {
     Sensor &s = sensors[i];
     if (!s.enabled) continue;
@@ -588,16 +590,19 @@ void reflexUpdate() {
     if (hit) {
       nb[d] = true;
       if (!nr[d][0]) snprintf(nr[d], sizeof(nr[d]), "%s", s.role == ROLE_BUMP ? "bumper" : s.role == ROLE_CLIFF ? "cliff" : typeName(s.type));
-      if (s.role == ROLE_BUMP && !wasBlocked[d]) { newBump = true; bumpDir = d; }
+      if (s.role == ROLE_BUMP && !wasBlocked[d]) { newBump = true; bumpDir = d; bumpBackoffMs = s.backoffMs; }
     }
   }
   if (newBump && (bumpDir == DIR_FRONT || bumpDir == DIR_BACK)) {
     reflexEvents++;
-    float v = bumpDir == DIR_FRONT ? -0.9f : 0.9f;
-    Serial.printf("[reflex] bumper hit at the %s: backing off\n", dirName((Dir)bumpDir));
-    applyMotors(v, v);
-    cmdSrc = SRC_REFLEX;
-    backoffUntilMs = now + 350;
+    stopAll();
+    Serial.printf("[reflex] bumper hit at the %s: %s\n", dirName((Dir)bumpDir), bumpBackoffMs > 0 ? "short back-off" : "stop");
+    if (bumpBackoffMs > 0) {               // a short, firm nudge away from the hit
+      float v = bumpDir == DIR_FRONT ? -0.85f : 0.85f;
+      applyMotors(v, v);
+      cmdSrc = SRC_REFLEX;
+      backoffUntilMs = now + bumpBackoffMs;
+    }
   }
   if (backoffUntilMs && now >= backoffUntilMs) { backoffUntilMs = 0; stopAll(); }
   for (int d = 0; d < 4; d++) {
