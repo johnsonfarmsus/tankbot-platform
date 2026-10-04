@@ -127,6 +127,8 @@ class BotProfile {
   /// Obstacle handling (mm): never drive forward closer than stopDistMm to something ahead;
   /// plan routes that keep at least passDistMm of clearance around the body.
   double stopDistMm, passDistMm;
+  /// Robot-side sensor edits made here that the robot has not confirmed yet (keep retrying; don't overwrite).
+  bool hardwareDirty;
   /// Depth camera: block forward closer than depthStopMm; ignore things lower than depthMinHeightMm.
   double depthStopMm, depthMinHeightMm;
   final List<BotSensor> sensors;
@@ -144,6 +146,7 @@ class BotProfile {
     this.cruisePower = 0.9,
     this.stopDistMm = 300,
     this.passDistMm = 100,
+    this.hardwareDirty = false,
     this.depthStopMm = 250,
     this.depthMinHeightMm = 60,
   });
@@ -245,6 +248,7 @@ class BotProfile {
         'power': {'min': minPower, 'cruise': cruisePower},
         'obstacles': {'stopMm': stopDistMm, 'passMm': passDistMm, 'depthStopMm': depthStopMm, 'depthMinHeightMm': depthMinHeightMm},
         'sensors': [for (final s in sensors) s.toJson()],
+        'hardwareDirty': hardwareDirty,
       };
 
   static BotProfile? fromJson(dynamic j) {
@@ -290,6 +294,7 @@ class BotProfile {
       cruisePower: cruise,
       stopDistMm: stopMm,
       passDistMm: passMm,
+      hardwareDirty: j['hardwareDirty'] == true,
       depthStopMm: dStop,
       depthMinHeightMm: dMinH,
     );

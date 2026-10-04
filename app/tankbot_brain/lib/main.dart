@@ -340,6 +340,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           for (final x in np.sensors) {
             if (!x.onPhone) x.onRobot = true; // edited here: belongs to the robot's table
           }
+          np.hardwareDirty = true; // cleared once the robot confirms (or already matches)
           profile = np;
           maxSpeed = np.cruisePower;
           BotProfileStore.save(np, store.robot);
@@ -918,6 +919,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final key = jsonEncode(list);
     if (key == _appliedHardware) return;
     _appliedHardware = key;
+    // our own edits haven't reached the robot yet: keep them (the periodic sync retries the push)
+    if (profile.hardwareDirty) return;
     final robotSensors = [
       for (final h in list)
         if (h is Map) BotSensor.fromHardware(h)
@@ -939,6 +942,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       ..removeWhere((x) => !x.onPhone)
       ..addAll(robotSensors);
     if (caps!['drive'] is String) profile.drive = caps['drive'] as String;
+    if (carried) profile.hardwareDirty = true;
     BotProfileStore.save(profile, store.robot);
     server.broadcast({'type': 'bot', 'profile': profile.toJson()});
     if (carried) _pushHardwareIfChanged(); // write the measured placements back to the robot
@@ -978,10 +982,18 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       for (final h in caps['sensors'] as List)
         if (h is Map) BotSensor.fromHardware(h)?.toHardware()
     ].whereType<Map<String, dynamic>>().toList();
-    if (jsonEncode(mine) == jsonEncode(theirs)) return;
+    if (jsonEncode(mine) == jsonEncode(theirs)) {
+      if (profile.hardwareDirty) {
+        profile.hardwareDirty = false; // the robot has it
+        BotProfileStore.save(profile, store.robot);
+      }
+      return;
+    }
     final body = jsonEncode({'name': caps['name'], 'drive': profile.drive, 'pins': caps['pins'], 'sensors': mine});
     final (code, text) = await _robotHttp('POST', '/api/hardware', body);
     if (code == 200) {
+      profile.hardwareDirty = false;
+      BotProfileStore.save(profile, store.robot);
       _appliedHardware = null;
       sensors.caps = null; // a fresh announce arrives after the restart
       _flash('Sensor setup sent to the robot - it restarts to apply (about 10 s)');
