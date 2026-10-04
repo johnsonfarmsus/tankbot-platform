@@ -325,6 +325,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           maxSpeed = p.cruisePower;
         });
       }
+      _profileReady = true; // only now may the robot's table be merged or the profile saved
       await server.start();
       await _refreshMapList();
       await _loadLastMap(); // remember the house across restarts
@@ -460,6 +461,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         final ex = (m['x'] as num?)?.toDouble(), ey = (m['y'] as num?)?.toDouble();
         final er = ((m['r'] as num?)?.toDouble() ?? 0.2).clamp(0.05, 1.0);
         if (ex != null && ey != null) {
+          // remembered marks (drop-offs, bumps) under the eraser go for good
+          active.edits.removeWhere((e) => e['type'] == 'obstacle' &&
+              math.sqrt(math.pow((e['x'] as num) - ex, 2) + math.pow((e['y'] as num) - ey, 2)) < er + ((e['r'] as num?) ?? 0.08));
           active.edits.add({'type': 'erase', 'id': active.nextEditId++, 'stroke': m['stroke'], 'x': ex, 'y': ey, 'r': er});
           grid.eraseCircle(ex, ey, er);
           active.edited = true;
@@ -481,6 +485,15 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         final did = m['id'];
         active.edits.removeWhere((e) => e['type'] == 'nogo' && e['id'] == did);
         active.edited = true;
+        break;
+      case 'map.clearDropoffs':
+        final before = active.edits.length;
+        active.edits.removeWhere((e) => e['type'] == 'obstacle' && e['kind'] == 'dropoff');
+        if (active.edits.length != before) {
+          active.edited = true;
+          _rebuildGrid();
+          _flash('Cleared ${before - active.edits.length} remembered drop-offs');
+        }
         break;
       case 'map.undo':
         if (active.edits.isNotEmpty) {
@@ -532,6 +545,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
                 [(sc.points[i].angleDeg * 10).round() / 10, (sc.points[i].distMm).round() / 1000]
             ],
       'lidarOffset': {'fwd': lidarFwdM, 'left': lidarLeftM},
+      'robotIp': motion.address,
       'bot': {'name': profile.name, 'drive': profile.drive, 'bodyRadiusM': profile.bodyRadiusM, 'sensors': profile.sensors.length},
       'mapInfo': _mapInfo(),
       'loc': {'state': locState, 'note': locNote},
@@ -588,6 +602,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'wallAligned': wallAligned,
         'gpsUsed': gpsUsed,
         'geoTags': active.geoTags.length,
+        'dropoffMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] == 'dropoff').length,
       },
       'blocked': _blocked,
       'blockReason': blockReason,
@@ -1155,10 +1170,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   String? _appliedHardware;
+  bool _profileReady = false;
 
   /// The robot's own sensor table is the truth for robot-side hardware; phone sensors stay in the
   /// profile. Placements measured in the profile before sensors lived on the robot carry over once.
   void _mergeRobotHardware() {
+    if (!_profileReady) return; // never merge into the built-in default while the saved profile loads
     final caps = sensors.caps;
     final list = caps?['sensors'];
     if (list is! List) return; // older firmware: nothing to merge
@@ -1171,7 +1188,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       for (final h in list)
         if (h is Map) BotSensor.fromHardware(h)
     ].whereType<BotSensor>().toList();
-    final legacy = [for (final x in profile.sensors) if (!x.onPhone && !x.onRobot) x];
+    final legacy = profile.hardwareMigrated ? <BotSensor>[] : [for (final x in profile.sensors) if (!x.onPhone && !x.onRobot) x];
+    profile.hardwareMigrated = true;
     var carried = false;
     for (final r in robotSensors) {
       final i = legacy.indexWhere((l) => l.type == r.type);
@@ -1221,6 +1239,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   /// Send the robot-side sensors to the ESP32 if they differ from what it has (it restarts to apply).
   Future<void> _pushHardwareIfChanged() async {
+    if (!_profileReady) return;
     final caps = sensors.caps;
     if (caps == null || caps['sensors'] is! List) return;
     final mine = [for (final x in profile.sensors) if (!x.onPhone) x.toHardware()];
@@ -1346,13 +1365,16 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   // Drop-offs seen repeatedly become permanent map obstacles (stairs don't move).
   final Map<int, int> _dropSeen = {};
   double _dropSeenResetMs = 0;
-  static const int _dropConfirmFrames = 5, _maxDropEdits = 300;
+  static const int _dropConfirmFrames = 15, _maxDropEdits = 300;
+  // where each candidate drop-off was first seen: it must also be seen from 30 cm away
+  final Map<int, Offset> _dropFirstSeenFrom = {};
 
   void _rememberDropOffs() {
     if (locState != 'tracking' || _loadingMap || _rebuilding || !mapping || !_mapAllowed) return;
     final now = appClockMs();
-    if (now - _dropSeenResetMs > 10000) {
+    if (now - _dropSeenResetMs > 20000) {
       _dropSeen.clear();
+      _dropFirstSeenFrom.clear();
       _dropSeenResetMs = now;
     }
     final cliffs = _depthWorldSplit(true);
@@ -1366,7 +1388,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       final key = (c.dx / 0.1).round() * 100000 + (c.dy / 0.1).round();
       final n = (_dropSeen[key] ?? 0) + 1;
       _dropSeen[key] = n;
-      if (n != _dropConfirmFrames) continue;
+      final here = robotPose == null ? Offset.zero : Offset(robotPose!.x, robotPose!.y);
+      final from = _dropFirstSeenFrom.putIfAbsent(key, () => here);
+      if (n < _dropConfirmFrames || (here - from).distance < 0.3) continue;
+      _dropSeen[key] = -100000; // remember once
       if (existing.length >= _maxDropEdits) break;
       if (existing.any((e) => (e - c).distance < 0.12)) continue;
       final id = active.nextEditId++;

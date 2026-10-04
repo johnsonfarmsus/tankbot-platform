@@ -1,0 +1,1205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>TankBot</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0d1215; --panel: #141b1f; --card: #1a2328; --card2: #202b31; --line: #2a373e;
+  --text: #e8eef0; --muted: #94a7ae; --faint: #64777e;
+  --accent: #2dd4bf; --accent-ink: #032420;
+  --info: #4f8cff; --warn: #f5a524; --danger: #f2555a; --ok: #34c38f;
+  --radius: 12px; --gap: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; font-size: 14px; }
+a { color: var(--accent); }
+button, select, input { font: inherit; color: var(--text); }
+button { background: var(--card2); border: 1px solid var(--line); border-radius: 9px; padding: 7px 12px; cursor: pointer; }
+button:hover { border-color: #3d4d55; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.danger { background: var(--danger); color: #fff; border-color: var(--danger); font-weight: 600; }
+button.active { outline: 2px solid var(--accent); outline-offset: 1px; }
+input[type=number], input[type=text], input:not([type]), select {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
+label { color: var(--text); }
+.muted { color: var(--muted); }
+.small { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+label.row { flex-wrap: nowrap; align-items: flex-start; }
+label.row input[type=checkbox] { flex: none; margin-top: 2px; }
+
+/* ---- header ---- */
+header { display: flex; align-items: center; gap: 14px; padding: 8px 14px; background: var(--panel);
+  border-bottom: 1px solid var(--line); flex-wrap: wrap; min-height: 52px; }
+.brand { display: flex; align-items: baseline; gap: 8px; font-weight: 700; font-size: 16px; }
+.brand small { font-weight: 400; color: var(--muted); font-size: 12px; }
+.pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.pill { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--card2); color: var(--muted); border: 1px solid var(--line); }
+.pill::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--faint); vertical-align: 1px; }
+.pill.ok::before { background: var(--ok); } .pill.warn::before { background: var(--warn); } .pill.bad::before { background: var(--danger); }
+nav.tabs { display: flex; gap: 4px; margin-left: auto; background: var(--bg); padding: 3px; border-radius: 10px; border: 1px solid var(--line); }
+nav.tabs button { background: transparent; border: none; padding: 6px 14px; border-radius: 8px; color: var(--muted); }
+nav.tabs button.active { background: var(--card2); color: var(--text); outline: none; }
+.extlink { font-size: 12px; color: var(--muted); text-decoration: none; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; }
+
+/* ---- pages ---- */
+main { flex: 1; min-height: 0; position: relative; }
+.page { display: none; height: 100%; }
+.page.active { display: flex; }
+.scroll { overflow: auto; width: 100%; padding: 18px; }
+.content { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--gap); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.card h2 { margin: 0; font-size: 15px; }
+.card h3 { margin: 4px 0 0; font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--gap); }
+
+/* ---- drive page ---- */
+#drive { flex-direction: row; }
+.mapwrap { flex: 1; position: relative; min-width: 0; background: #0b1013; }
+canvas#map { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+canvas#map.aiming { cursor: crosshair; }
+.panel { width: 290px; flex: none; background: var(--panel); border-left: 1px solid var(--line); padding: 14px;
+  display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+#stick { width: 180px; height: 180px; align-self: center; touch-action: none; }
+.bigstop { font-size: 16px; padding: 12px; }
+.btnrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.panel .grow { display: flex; flex-direction: column; gap: 10px; }
+.panel .grow > button.bigstop { width: 100%; }
+
+/* map overlays */
+.tray { position: absolute; top: 12px; left: 12px; display: flex; flex-direction: column; gap: 8px; max-width: min(380px, calc(100% - 90px)); pointer-events: none; }
+.tcard { pointer-events: auto; background: rgba(20, 27, 31, 0.94); border: 1px solid var(--line); border-left: 4px solid var(--info);
+  border-radius: 10px; padding: 9px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.35); }
+.tcard b { display: block; font-size: 14px; margin-bottom: 2px; }
+.tcard .tx { color: #c9d6da; font-size: 13px; line-height: 1.35; }
+.tcard .acts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.tcard .acts button { padding: 4px 10px; font-size: 13px; }
+.sev-info { border-left-color: var(--info); } .sev-warn { border-left-color: var(--warn); }
+.sev-danger { border-left-color: var(--danger); } .sev-ok { border-left-color: var(--ok); }
+.mapctl { position: absolute; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 6px; }
+.mapctl button { width: 42px; height: 42px; padding: 0; font-size: 18px; background: rgba(20, 27, 31, 0.92); }
+.mapctl button.wide { font-size: 12px; }
+.legend { position: absolute; left: 12px; bottom: 12px; background: rgba(20, 27, 31, 0.92); border: 1px solid var(--line);
+  border-radius: 10px; padding: 8px 10px; font-size: 12px; color: #c9d6da; display: none; }
+.legend.show { display: block; }
+.legend div { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
+.sw { width: 14px; height: 10px; border-radius: 3px; display: inline-block; }
+.edittools { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: rgba(20, 27, 31, 0.96);
+  border: 1px solid var(--line); border-radius: 12px; padding: 8px; display: none; flex-wrap: wrap; gap: 6px; align-items: center;
+  max-width: calc(100% - 120px); }
+.edittools.show { display: flex; }
+.edittools .hint { width: 100%; color: var(--muted); font-size: 12px; padding: 0 2px; }
+.toasts { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none; }
+.toast { background: rgba(26, 35, 40, 0.97); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 10px;
+  padding: 8px 14px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.4); transition: opacity .35s; max-width: 80vw; }
+.toast.sev-danger { border-left-color: var(--danger); }
+.toast.out { opacity: 0; }
+
+/* maps / bot */
+.maprow { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; touch-action: none; max-width: 100%; height: auto; }
+
+@media (max-width: 820px) {
+  header { gap: 8px; padding: 6px 10px; }
+  nav.tabs { margin-left: 0; width: 100%; justify-content: space-between; }
+  nav.tabs button { flex: 1; padding: 6px 4px; }
+  .extlink { display: none; }
+  #drive { flex-direction: column; }
+  .panel { width: 100%; border-left: none; border-top: 1px solid var(--line); flex-direction: row; flex-wrap: wrap; padding: 10px; gap: 10px; }
+  #stick { width: 140px; height: 140px; }
+  .panel .grow { flex: 1; min-width: 160px; }
+  .panel .hidesmall { display: none; }
+  .scroll { padding: 10px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span id="robotName">TankBot</span><small>controller</small></div>
+  <div class="pills">
+    <span class="pill" id="pConn">Brain</span>
+    <span class="pill" id="pRobot">Robot</span>
+    <span class="pill" id="pLidar">Lidar</span>
+    <span class="pill" id="pTrack">Position</span>
+    <span class="pill" id="pMap">Mapping</span>
+  </div>
+  <nav class="tabs">
+    <button class="tab" data-page="drive">Drive</button>
+    <button class="tab" data-page="maps">Maps</button>
+    <button class="tab" data-page="bot">Bot</button>
+    <button class="tab" data-page="settings">Settings</button>
+  </nav>
+  <a class="extlink" id="robotPageLink" href="http://tankbot.local/" target="_blank" title="The robot's own page: simple driving, works without a brain">Robot page &#8599;</a>
+</header>
+
+<main>
+<!-- ================= DRIVE ================= -->
+<section class="page" id="drive">
+  <div class="mapwrap" id="view">
+    <canvas id="map"></canvas>
+    <div class="tray" id="tray"></div>
+    <div class="mapctl">
+      <button id="zoomIn" title="Zoom in">+</button>
+      <button id="zoomOut" title="Zoom out">&minus;</button>
+      <button id="follow" title="Follow the robot" class="active">&#9678;</button>
+      <button id="mode" class="wide" title="Switch between the map and the robot's-eye radar view">Radar</button>
+      <button id="legendBtn" class="wide" title="What the colours mean">Key</button>
+    </div>
+    <div class="legend" id="legend">
+      <div><span class="sw" style="background:#5ee6d0"></span>Walls (map)</div>
+      <div><span class="sw" style="background:#3b464c"></span>Open floor (map)</div>
+      <div><span class="sw" style="background:#ffd54f"></span>Lidar, right now</div>
+      <div><span class="sw" style="background:#ffab40"></span>Low obstacles (depth camera)</div>
+      <div><span class="sw" style="background:#80cbc4;border-radius:50%"></span>Ultrasonic / ToF readings</div>
+      <div><span class="sw" style="background:#f2555a"></span>Drop-offs, no-go lines</div>
+      <div><span class="sw" style="background:#4f8cff"></span>Route and goal</div>
+      <div><span class="sw" style="border:2px solid #fff;border-radius:50%;width:12px;height:12px"></span>Home spot (map start)</div>
+    </div>
+    <div class="edittools" id="edittools">
+      <button data-tool="pan">Move map</button>
+      <button data-tool="erase">Eraser</button>
+      <select id="eraseR" title="Eraser size"><option value="0.1">10 cm</option><option value="0.2" selected>20 cm</option><option value="0.4">40 cm</option></select>
+      <button data-tool="nogo">No-go line</button>
+      <button data-tool="unnogo">Remove no-go</button>
+      <button id="undoEdit">Undo</button>
+      <button id="editDone" class="primary">Done</button>
+      <div class="hint" id="edithint"></div>
+    </div>
+    <div class="toasts" id="toasts"></div>
+  </div>
+  <aside class="panel">
+    <canvas id="stick" width="180" height="180"></canvas>
+    <div class="grow">
+      <button class="danger bigstop" id="stopBtn">Stop</button>
+      <label>Max speed <span id="msv" class="muted"></span><input id="ms" type="range" min="0.2" max="1" step="0.05" value="0.9"></label>
+      <div class="btnrow">
+        <button id="gobtn" class="primary">Go to&hellip;</button>
+        <button id="editbtn">Edit map</button>
+        <button id="mapping">Pause mapping</button>
+        <button id="clear">New map here</button>
+      </div>
+      <div class="small hidesmall">Keys: arrows or W A S D to drive, Space stops, Esc cancels. Drag the map to look around, scroll or pinch to zoom, &#9678; to follow the robot again.</div>
+      <div class="small hidesmall" id="motors"></div>
+      <div class="small hidesmall" id="stat"></div>
+    </div>
+  </aside>
+</section>
+
+<!-- ================= MAPS ================= -->
+<section class="page" id="maps"><div class="scroll"><div class="content">
+  <div class="card">
+    <h2>Current map</h2>
+    <div id="mapActive" class="muted"></div>
+    <div id="mapQuality" class="small" style="white-space:pre-line"></div>
+    <div class="row"><input id="mapName" placeholder="Map name" style="flex:1;min-width:180px"><button id="mapSave" class="primary">Save</button><button id="mapNew">New map here</button></div>
+    <div class="row"><button id="relocBtn">Find me again</button><button id="homeBtn">I'm at home</button><button id="clearDrops">Clear remembered drop-offs</button></div>
+    <div class="small">Maps autosave every 20 s, and the last map loads when the brain starts. To edit walls or draw no-go lines, use <b>Edit map</b> on the Drive page.</div>
+  </div>
+  <div class="card">
+    <h2>Saved maps</h2>
+    <div id="mapList" style="display:flex;flex-direction:column;gap:8px"></div>
+    <div class="small">Load switches to a saved map; the robot finds itself on it with the lidar. If it can't, drive a little, or put it on the home spot (white circle, facing along its line) and press I'm at home.</div>
+  </div>
+  <div class="row"><button id="mapsClose">Back to Drive</button></div>
+</div></div></section>
+
+<!-- ================= BOT ================= -->
+<section class="page" id="bot"><div class="scroll"><div class="content">
+  <div class="card">
+    <h2>Robot</h2>
+    <div class="row">
+      <label>Name <input id="botName" style="width:140px"></label>
+      <label>Drive <select id="botDrive"><option value="tank">Tank</option><option value="wheelchair">Wheelchair</option><option value="mecanum">Mecanum</option></select></label>
+    </div>
+    <div class="row">
+      <label>Platform width <input id="botW" type="number" min="50" max="3000" style="width:72px"> mm</label>
+      <label>length <input id="botL" type="number" min="50" max="3000" style="width:72px"> mm</label>
+      <label>height above floor <input id="botH" type="number" min="0" max="2000" style="width:72px"> mm</label>
+    </div>
+    <div class="small">One place for the whole robot: for each sensor, what it is plugged into, what it is used for, which way it faces, and where it sits. Positions are from the platform's front and left edges (negative = sticking out ahead); heights are from the platform top (negative = below it). Saving stores the layout and sends sensor changes to the robot (it restarts once to apply them).</div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3>Top view &middot; front is up &middot; drag sensors</h3><canvas id="botTop" class="botcanvas" width="460" height="460"></canvas></div>
+    <div class="card"><h3>Side view from the left &middot; drag up or down for height</h3><canvas id="botSide" class="botcanvas" width="460" height="320"></canvas></div>
+  </div>
+  <div class="card">
+    <h2>Sensors</h2>
+    <div id="botSensors" style="display:flex;flex-direction:column;gap:8px"></div>
+    <div class="row"><select id="botAddType"><option value="lidar">Lidar</option><option value="camera">Phone camera</option><option value="bumper">Bumper</option><option value="tof">ToF distance</option><option value="ultrasonic">Ultrasonic</option><option value="imu">IMU</option><option value="depth">Depth camera</option></select><button id="botAdd">Add sensor</button></div>
+  </div>
+  <div class="row"><button id="botSave" class="primary">Save to robot</button><button id="botCancel">Back to Drive (discards unsaved changes)</button><span id="botInfo" class="muted"></span></div>
+</div></div></section>
+
+<!-- ================= SETTINGS ================= -->
+<section class="page" id="settings"><div class="scroll"><div class="content">
+  <div class="grid2">
+    <div class="card">
+      <h2>Driving</h2>
+      <label>Steering trim <span id="trimv" class="muted">-</span><input id="trim" type="range" min="-20" max="20" step="1" value="0"></label>
+      <div class="row small" style="justify-content:space-between"><span>&larr; steer left</span><span>steer right &rarr;</span></div>
+      <div class="small">If it drifts right when driving straight, move the slider toward left (and the other way round). Saved on the robot.</div>
+      <label>Minimum power to move <span id="minpv" class="muted">-</span><input id="minp" type="range" min="30" max="100" step="5"></label>
+      <div class="small">The lowest power at which this robot actually moves. Autonomous driving never sends less.</div>
+      <label>Cruise power <span id="cruisev" class="muted">-</span><input id="cruise" type="range" min="30" max="100" step="5"></label>
+      <div class="small">The power it drives best at; the max-speed slider starts here.</div>
+    </div>
+    <div class="card">
+      <h2>Safety</h2>
+      <label class="row"><input id="obs" type="checkbox"> Obstacle stop (recommended: on)</label>
+      <div class="row">
+        <label>Stop distance <input id="sd" type="number" min="100" max="2000" step="10" style="width:76px"> mm</label>
+        <label>Pass distance <input id="pd" type="number" min="0" max="1000" step="10" style="width:76px"> mm</label>
+      </div>
+      <div class="small">Stop: never drive forward with something closer than this. Pass: routes keep at least this much clearance around the robot's body.</div>
+      <div class="row">
+        <label>Depth stop <input id="dsd" type="number" min="50" max="2000" step="10" style="width:76px"> mm</label>
+        <label>Depth height <input id="dmh" type="number" min="10" max="300" step="5" style="width:76px"> mm</label>
+      </div>
+      <div class="small">Depth camera (low obstacles the lidar can't see): block forward closer than the depth stop; only things at least this tall count. Raise the height if carpet or thresholds trigger it.</div>
+    </div>
+    <div class="card">
+      <h2>Map straightening</h2>
+      <label class="row"><input id="wallAlign" type="checkbox"> Wall alignment (my walls are mostly square to each other)</label>
+      <label>Use GPS when its accuracy is better than <input id="gpsAcc" type="number" min="1" max="50" step="1" style="width:64px"> m</label>
+      <div id="gpsInfo" class="small"></div>
+    </div>
+    <div class="card">
+      <h2>Robot</h2>
+      <div id="robotInfo" class="small" style="white-space:pre-line"></div>
+    </div>
+    <div class="card">
+      <h2>This brain</h2>
+      <div id="capsInfo" class="small" style="white-space:pre-line"></div>
+    </div>
+    <div class="card">
+      <h2>Sensor log</h2>
+      <div class="row"><button id="logBtn">Start recording</button></div>
+      <div id="logInfo" class="small" style="white-space:pre-line"></div>
+    </div>
+    <div class="card">
+      <h2>Links</h2>
+      <div class="small"><b>tankbot.local/brain</b> always leads here from any device on this Wi-Fi: worth bookmarking.</div>
+      <div class="row"><a id="robotPageLink2" href="http://tankbot.local/" target="_blank">Robot page (simple driving)</a> &middot; <a id="robotSetupLink" href="http://tankbot.local/setup" target="_blank">Robot setup page</a></div>
+    </div>
+  </div>
+  <div class="row"><button id="setclose">Back to Drive</button></div>
+</div></div></section>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+// ================= errors: show them instead of failing silently =================
+let pageErrors = 0;
+function showError(where, err) {
+  pageErrors++;
+  toast("Page error in " + where + ": " + (err && err.message ? err.message : err), "danger", 9000);
+  console.error(where, err);
+}
+window.addEventListener("error", e => showError("script", e.error || e.message));
+window.addEventListener("unhandledrejection", e => showError("promise", e.reason));
+
+// ================= connection =================
+let ws = null, telem = null, mapImg = null, mapMeta = null, mode = "map", sendTimer = null, connected = false;
+function connect() {
+  ws = new WebSocket("ws://" + location.host + "/ws");
+  ws.onopen = () => { connected = true; updateHeader(); renderTray(); };
+  ws.onclose = () => { connected = false; updateHeader(); renderTray(); try { release(); } catch (e) {} setTimeout(connect, 1000); };
+  ws.onerror = () => {};
+  ws.onmessage = ev => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
+    try {
+      if (m.type === "telem") { telem = m; updateUi(); if (mapsOpen) renderActive(); }
+      else if (m.type === "maps") { mapsData = m; renderMaps(); }
+      else if (m.type === "bot") { botProfile = m.profile; if (botOpen && !botDraft) openBot(); }
+      else if (m.type === "map") {
+        const img = new Image();
+        img.onload = () => { mapImg = img; mapMeta = m; };
+        img.src = "data:image/png;base64," + m.png;
+      }
+    } catch (e) { showError("handling " + m.type, e); }
+  };
+}
+function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
+// ---- joystick: sends 20x per second while held; the brain stops the robot if these stop ----
+const stick = $("stick"), sctx = stick.getContext("2d");
+let knob = null, activePointer = null;
+const keys = new Set();
+const KEYMAP = {ArrowUp: "u", KeyW: "u", ArrowDown: "d", KeyS: "d", ArrowLeft: "l", KeyA: "l", ArrowRight: "r", KeyD: "r"};
+function keyVector() {
+  const f = (keys.has("u") ? 1 : 0) - (keys.has("d") ? 1 : 0);
+  let t = (keys.has("r") ? 1 : 0) - (keys.has("l") ? 1 : 0);
+  if (f !== 0) t *= 0.5;   // arc while driving; full spin when turning alone
+  return {f, t};
+}
+function currentVector() {
+  if (knob) return {f: dz(-knob.y), t: dz(knob.x)};
+  if (keys.size) return keyVector();
+  return null;
+}
+function drawStick() {
+  const w = stick.width, r = w / 2;
+  sctx.clearRect(0, 0, w, w);
+  sctx.beginPath(); sctx.arc(r, r, r - 4, 0, Math.PI * 2);
+  sctx.fillStyle = "rgba(255,255,255,0.06)"; sctx.fill();
+  sctx.lineWidth = 4; sctx.strokeStyle = (knob || keys.size) ? "#64ffda" : "#3a4a55"; sctx.stroke();
+  const kv = keys.size ? keyVector() : null;
+  const active = knob || kv;
+  const k = knob || (kv ? {x: kv.t, y: -kv.f} : {x: 0, y: 0});
+  sctx.beginPath(); sctx.arc(r + k.x * (r - 60), r + k.y * (r - 60), 52, 0, Math.PI * 2);
+  sctx.fillStyle = active ? "#64ffda" : "#55636b"; sctx.fill();
+}
+function stickPos(e) {
+  const b = stick.getBoundingClientRect();
+  let x = (e.clientX - b.left) / b.width * 2 - 1, y = (e.clientY - b.top) / b.height * 2 - 1;
+  const d = Math.hypot(x, y); if (d > 1) { x /= d; y /= d; }
+  return {x, y};
+}
+function dz(v) { return Math.abs(v) < 0.08 ? 0 : v; }
+function startDrive() {
+  if (sendTimer) return;
+  sendTimer = setInterval(() => { const v = currentVector(); if (v) send({type: "drive", f: v.f, t: v.t}); }, 50);
+}
+function stopDrive() { if (sendTimer) { clearInterval(sendTimer); sendTimer = null; } send({type: "stop"}); }
+function release() { activePointer = null; knob = null; keys.clear(); stopDrive(); drawStick(); }
+stick.addEventListener("pointerdown", e => {
+  activePointer = e.pointerId; stick.setPointerCapture(e.pointerId);
+  knob = stickPos(e); startDrive(); drawStick();
+});
+stick.addEventListener("pointermove", e => { if (e.pointerId === activePointer) { knob = stickPos(e); drawStick(); } });
+stick.addEventListener("pointerup", e => { if (e.pointerId === activePointer) release(); });
+stick.addEventListener("pointercancel", e => { if (e.pointerId === activePointer) release(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) release(); });
+const typing = e => e.target && ((e.target.tagName === "INPUT" && (e.target.type === "text" || e.target.type === "number")) || e.target.tagName === "SELECT");
+document.addEventListener("keydown", e => {
+  if (typing(e)) return;
+  if (e.code === "Space") { e.preventDefault(); release(); return; }
+  const k = KEYMAP[e.code]; if (!k) return;
+  e.preventDefault();
+  if (e.repeat || keys.has(k)) return;
+  keys.add(k); startDrive();
+  const v = currentVector(); if (v) send({type: "drive", f: v.f, t: v.t});
+  drawStick();
+});
+document.addEventListener("keyup", e => {
+  if (typing(e)) return;
+  const k = KEYMAP[e.code]; if (!k) return;
+  e.preventDefault();
+  keys.delete(k);
+  if (keys.size === 0 && !knob) stopDrive();
+  else { const v = currentVector(); if (v) send({type: "drive", f: v.f, t: v.t}); }
+  drawStick();
+});
+window.addEventListener("blur", () => { if (knob || keys.size) release(); });
+
+
+// ================= drive panel =================
+$("ms").oninput = e => { $("msv").textContent = Math.round(e.target.value * 100) + "%"; send({type: "set", maxSpeed: parseFloat(e.target.value)}); };
+$("obs").onchange = e => send({type: "set", obstacleStop: e.target.checked});
+$("mapping").onclick = () => send({type: "set", mapping: !(telem && telem.settings.mapping)});
+$("clear").onclick = () => { if (confirm("Start a new map here? The current map is saved first.")) send({type: "clearMap"}); };
+$("clearDrops").onclick = () => {
+  const n = telem && telem.quality ? telem.quality.dropoffMarks : 0;
+  if (confirm("Remove all " + n + " remembered drop-offs from this map? Real stairs will be found again as the robot drives.")) send({type: "map.clearDropoffs"});
+};
+$("stopBtn").onclick = () => { goMode = false; release(); if (telem && telem.nav && (telem.nav.state === "driving" || telem.nav.state === "blocked")) send({type: "nav.cancel"}); renderTray(); };
+$("msv").textContent = Math.round($("ms").value * 100) + "%";
+
+// ---- settings panel ----
+// Robot trim > 0 steers left, < 0 steers right; the slider shows "steer right" as positive.
+let settingsOpen = false;
+function syncSettings() {
+  if (!telem) return;
+  const s = telem.settings;
+  if (typeof s.trim === "number") { $("trim").value = -s.trim; $("trimv").textContent = -s.trim; }
+  if (typeof s.stopDistMm === "number" && document.activeElement !== $("sd")) $("sd").value = Math.round(s.stopDistMm);
+  if (typeof s.passDistMm === "number" && document.activeElement !== $("pd")) $("pd").value = Math.round(s.passDistMm);
+  if (typeof s.depthStopMm === "number" && document.activeElement !== $("dsd")) $("dsd").value = Math.round(s.depthStopMm);
+  if (typeof s.depthMinHeightMm === "number" && document.activeElement !== $("dmh")) $("dmh").value = Math.round(s.depthMinHeightMm);
+  if (typeof s.wallAlign === "boolean") $("wallAlign").checked = s.wallAlign;
+  if (typeof s.gpsMaxAccM === "number" && document.activeElement !== $("gpsAcc")) $("gpsAcc").value = Math.round(s.gpsMaxAccM);
+  if (typeof s.minPower === "number") { $("minp").value = Math.round(s.minPower * 100); $("minpv").textContent = Math.round(s.minPower * 100) + "%"; }
+  if (typeof s.cruisePower === "number") { $("cruise").value = Math.round(s.cruisePower * 100); $("cruisev").textContent = Math.round(s.cruisePower * 100) + "%"; }
+}
+$("minp").oninput = e => { $("minpv").textContent = e.target.value + "%"; };
+$("minp").onchange = e => send({type: "set", minPower: parseFloat(e.target.value) / 100});
+$("cruise").oninput = e => { $("cruisev").textContent = e.target.value + "%"; };
+$("cruise").onchange = e => send({type: "set", cruisePower: parseFloat(e.target.value) / 100});
+
+$("setclose").onclick = () => showPage("drive");
+$("trim").oninput = e => { $("trimv").textContent = e.target.value; };
+$("trim").onchange = e => send({type: "set", trim: -parseInt(e.target.value, 10)});
+$("sd").onchange = e => send({type: "set", stopDistMm: parseFloat(e.target.value)});
+$("pd").onchange = e => send({type: "set", passDistMm: parseFloat(e.target.value)});
+$("dsd").onchange = e => send({type: "set", depthStopMm: parseFloat(e.target.value)});
+$("logBtn").onclick = () => send({type: telem && telem.log && telem.log.recording ? "log.stop" : "log.start"});
+$("dmh").onchange = e => send({type: "set", depthMinHeightMm: parseFloat(e.target.value)});
+$("wallAlign").onchange = e => send({type: "set", wallAlign: e.target.checked});
+$("gpsAcc").onchange = e => send({type: "set", gpsMaxAccM: parseFloat(e.target.value)});
+function liveText(type, s) { if (!s || !s.ok) return "-"; return type === "bumper" ? (s.v === 1 ? "PRESSED" : "ok") : s.v + " mm"; }
+function robotText(r) {
+  if (!r || !r.caps) return "Robot: no hardware report yet";
+  const c = r.caps, list = Array.isArray(c.sensors) ? c.sensors : [];
+  const tr = telem && telem.tier;
+  let t = "Robot: " + c.name + " (firmware " + c.fw + ", " + c.drive + ")";
+  t += "\nAttached: " + (list.filter(x => x.enabled !== false).map(x => x.name + " (" + x.role + ")").join(", ") || "none");
+  if (tr) t += "\nTier: " + tr.name + "\nNext: " + tr.next;
+  const l = r.live;
+  if (l && Array.isArray(l.sensors)) {
+    t += "\nLive: " + (l.sensors.map(x => { const d = list.find(y => y.id === x.id); return (d ? d.name : x.id) + " " + liveText(d ? d.type : "", x); }).join(", ") || "-");
+    const bl = l.block || {}, dirs = Object.keys(bl);
+    t += "\nBlocked: " + (dirs.length ? dirs.map(k => k + " (" + bl[k] + ")").join(", ") : "none") + ", reflex events " + l.reflexEvents;
+  } else t += "\nLive readings: not arriving";
+  return t;
+}
+
+
+function capsText(c, tr) {
+  if (!c) return "";
+  const yn = v => v ? "yes" : "no";
+  let s = "Phone: " + (c.model || c.platform || "unknown") +
+    "\nCamera tracking: " + yn(c.worldTracking) + " | Depth camera: " + yn(c.sceneDepth) +
+    " | Surface labels: " + yn(c.meshClassification) + "\nPlace memory: " + yn(c.worldMaps) +
+    " | Barometer: " + yn(c.barometer) + " | GPS: " + yn(c.gps) + " | Robot lidar: " + yn(c.robotLidar);
+  if (tr) s += "\nNow tracking with: " + tr.source + " | lidar corrections: " + tr.matchHits + " used, " + tr.matchMisses + " skipped";
+  if (telem && telem.depth) s += "\nDepth camera: " + (telem.depth.fresh ? "live, " + telem.depth.obstacles.length + " low obstacles, " + telem.depth.dropoffs.length + " drop-off cells" : (telem.depth.frames ? "no recent frames" : "not available")) + " (" + telem.depth.frames + " frames)";
+  return s;
+}
+
+
+// ---- Bot tab: the bot profile editor ----
+let botProfile = null, botDraft = null, botOpen = false, botDrag = null;
+const SENSOR_LABEL = {lidar: "Lidar", camera: "Phone camera", bumper: "Bumper", tof: "ToF", ultrasonic: "Ultrasonic", imu: "IMU", depth: "Depth cam"};
+const SENSOR_COLOR = {lidar: "#64ffda", camera: "#ffab40", bumper: "#ff5252", tof: "#448aff", ultrasonic: "#80cbc4", imu: "#ce93d8", depth: "#ffd54f"};
+function openBot() {
+  if (!botProfile) { send({type: "bot.get"}); return; }
+  botDraft = JSON.parse(JSON.stringify(botProfile));
+  $("botName").value = botDraft.name; $("botDrive").value = botDraft.drive;
+  $("botW").value = botDraft.platform.widthMm; $("botL").value = botDraft.platform.lengthMm;
+  $("botH").value = botDraft.platform.heightMm == null ? 60 : botDraft.platform.heightMm;
+  renderBotSensors(); drawBot();
+}
+
+$("botCancel").onclick = () => showPage("drive");
+$("botSave").onclick = () => {
+  if (!botDraft) return;
+  botDraft.name = $("botName").value; botDraft.drive = $("botDrive").value;
+  botDraft.platform.widthMm = parseFloat($("botW").value); botDraft.platform.lengthMm = parseFloat($("botL").value);
+  botDraft.platform.heightMm = parseFloat($("botH").value) || 0;
+  const probs = Object.keys(botProblems());
+  if (probs.length) { $("botInfo").textContent = "Fix the problems marked in red first"; return; }
+  send({type: "bot.set", profile: botDraft});
+  $("botInfo").textContent = "Saved";
+  setTimeout(() => { $("botInfo").textContent = ""; }, 2000);
+};
+["botW", "botL", "botH"].forEach(id => $(id).oninput = () => { if (!botDraft) return;
+  botDraft.platform.widthMm = parseFloat($("botW").value) || 100; botDraft.platform.lengthMm = parseFloat($("botL").value) || 100;
+  botDraft.platform.heightMm = parseFloat($("botH").value) || 0; drawBot(); });
+const SLOT_INFO = {BUMP1: "Bumper 1 (pin 13)", BUMP2: "Bumper 2 (pin 23)", TOF: "ToF serial (pins 32/33)", US1: "Ultrasonic 1 (14/34)",
+  US2: "Ultrasonic 2 (2/35)", I2C: "I2C (21/22)", LIDAR: "Lidar serial", CUSTOM: "Custom pins", NONE: "On the phone"};
+const SLOT_OK = {bumper: ["BUMP1", "BUMP2", "CUSTOM"], tof: ["TOF", "CUSTOM"], ultrasonic: ["US1", "US2", "CUSTOM"],
+  imu: ["I2C", "CUSTOM"], lidar: ["LIDAR"], camera: ["NONE"], depth: ["NONE"]};
+const ROLE_OK = {bumper: ["bump", "none"], tof: ["obstacle", "cliff", "none"], ultrasonic: ["obstacle", "cliff", "none"],
+  imu: ["orientation", "none"], lidar: ["mapping"], camera: ["none"], depth: ["none"]};
+const ROLE_LABEL = {obstacle: "obstacles ahead of it", cliff: "drop-offs (aimed at the floor)", bump: "bump detection",
+  orientation: "orientation", mapping: "mapping", none: "nothing (reading only)"};
+const SENSOR_DEFAULTS = {
+  bumper: {role: "bump", heightMm: -30, fromFrontMm: -15, widthMm: 150},
+  tof: {role: "obstacle", heightMm: -20, fromFrontMm: 5, stopMm: 150},
+  ultrasonic: {role: "obstacle", heightMm: -20, fromFrontMm: 5, stopMm: 150},
+  imu: {role: "orientation", heightMm: 0, fromFrontMm: 85},
+  lidar: {role: "mapping", heightMm: 200, fromFrontMm: 40},
+  camera: {role: "none", heightMm: 135, fromFrontMm: 40},
+  depth: {role: "none", heightMm: 135, fromFrontMm: 40},
+};
+function freeSlot(type) {
+  const used = botDraft.sensors.filter(x => x.enabled !== false).map(x => x.slot);
+  return SLOT_OK[type].find(sl => sl === "NONE" || sl === "CUSTOM" || !used.includes(sl)) || SLOT_OK[type][0];
+}
+$("botAdd").onclick = () => {
+  if (!botDraft) return;
+  const type = $("botAddType").value, d = SENSOR_DEFAULTS[type] || {};
+  const n = botDraft.sensors.filter(x => x.type === type).length + 1;
+  botDraft.sensors.push(Object.assign({
+    id: type.substring(0, 4) + (Date.now() % 100000), type, name: SENSOR_LABEL[type] + (n > 1 ? " " + n : ""),
+    fromLeftMm: botDraft.platform.widthMm / 2, fromFrontMm: 20, heightMm: 0, yawDeg: 0, widthMm: 0,
+    slot: freeSlot(type), pinA: -1, pinB: -1, enabled: true, floorTilt: false, stopMm: 150, floorMm: 0,
+    onRobot: !(type === "camera" || type === "depth"),
+  }, d));
+  renderBotSensors(); drawBot();
+};
+/// Problems that would make the robot's setup not work: two sensors on one slot, wrong slot for the type.
+function botProblems() {
+  const probs = {}, seen = {};
+  for (const x of botDraft.sensors) {
+    if (x.enabled === false) continue;
+    if (!SLOT_OK[x.type].includes(x.slot)) probs[x.id] = "needs one of: " + SLOT_OK[x.type].map(k => SLOT_INFO[k]).join(", ");
+    if (x.slot !== "NONE" && x.slot !== "CUSTOM") {
+      if (seen[x.slot]) { probs[x.id] = "shares " + SLOT_INFO[x.slot] + " with " + seen[x.slot].name; probs[seen[x.slot].id] = probs[seen[x.slot].id] || "shares " + SLOT_INFO[x.slot] + " with " + x.name; }
+      else seen[x.slot] = x;
+    }
+  }
+  return probs;
+}
+function numInput(v, min, max, w, onchange) {
+  const i = document.createElement("input"); i.type = "number"; i.value = Math.round(v); i.min = min; i.max = max; i.style.width = w + "px";
+  i.oninput = () => onchange(parseFloat(i.value) || 0); return i;
+}
+function renderBotSensors() {
+  const box = $("botSensors"); box.textContent = "";
+  const probs = botProblems();
+  const lab = t => { const e = document.createElement("span"); e.textContent = t; e.style.color = "#9fb3bb"; return e; };
+  const select = (opts, cur, onchange) => {
+    const sel = document.createElement("select");
+    for (const [v, txt] of opts) { const o = document.createElement("option"); o.value = v; o.textContent = txt; if (String(v) === String(cur)) o.selected = true; sel.append(o); }
+    sel.onchange = () => onchange(sel.value); return sel;
+  };
+  const check = (cur, txt, onchange) => {
+    const l = document.createElement("label"); const c = document.createElement("input"); c.type = "checkbox"; c.checked = !!cur;
+    c.onchange = () => onchange(c.checked); l.append(c, " " + txt); return l;
+  };
+  const rerender = () => { renderBotSensors(); drawBot(); };
+  botDraft.sensors.forEach((sn, idx) => {
+    if (sn.slot == null) sn.slot = SLOT_OK[sn.type][0];
+    if (sn.role == null) sn.role = (SENSOR_DEFAULTS[sn.type] || {}).role || "none";
+    const card = document.createElement("div");
+    card.style.cssText = "border:1px solid " + (probs[sn.id] ? "#ff5252" : "#2c3a44") + ";border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:6px";
+    // line 1: identity + live reading
+    const r1 = document.createElement("div"); r1.className = "row";
+    const dot = document.createElement("span"); dot.style.cssText = "display:inline-block;width:12px;height:12px;border-radius:6px;background:" + SENSOR_COLOR[sn.type];
+    const nm = document.createElement("input"); nm.value = sn.name; nm.maxLength = 23; nm.style.width = "140px"; nm.oninput = () => { sn.name = nm.value; drawBot(); };
+    const live = document.createElement("span"); live.id = "botLive_" + sn.id; live.style.cssText = "color:#64ffda;min-width:90px";
+    const del = document.createElement("button"); del.textContent = "Remove"; del.onclick = () => { botDraft.sensors.splice(idx, 1); rerender(); };
+    r1.append(dot, nm, lab(SENSOR_LABEL[sn.type]));
+    if (sn.type !== "camera" && sn.type !== "depth") r1.append(check(sn.enabled !== false, "attached", v => { sn.enabled = v; rerender(); }));
+    r1.append(live, del);
+    card.append(r1);
+    // line 2: how it is connected and what it is for
+    const r2 = document.createElement("div"); r2.className = "row";
+    if (sn.type === "camera" || sn.type === "depth") {
+      r2.append(lab("On the phone (mounted brain): sits where the phone camera is."));
+    } else {
+      r2.append(lab("connected to"), select(SLOT_OK[sn.type].map(k => [k, SLOT_INFO[k]]), sn.slot, v => { sn.slot = v; rerender(); }));
+      if (sn.slot === "CUSTOM") r2.append(lab("pin A"), numInput(sn.pinA, -1, 39, 50, v => { sn.pinA = v; }), lab("pin B"), numInput(sn.pinB, -1, 39, 50, v => { sn.pinB = v; }));
+      r2.append(lab("used for"), select(ROLE_OK[sn.type].map(k => [k, ROLE_LABEL[k]]), sn.role, v => {
+        sn.role = v; if (v === "cliff") sn.floorTilt = true; else if (v === "obstacle") sn.floorTilt = false; rerender(); }));
+      const facings = [[0, "front"], [90, "left"], [180, "back"], [-90, "right"]];
+      const isStd = facings.some(f => f[0] === Math.round(sn.yawDeg));
+      r2.append(lab("faces"), select(facings.concat([["custom", "custom angle"]]), isStd ? Math.round(sn.yawDeg) : "custom", v => {
+        if (v !== "custom") sn.yawDeg = parseFloat(v); else sn.yawDeg = sn.yawDeg === 0 ? 45 : sn.yawDeg; rerender(); }));
+      if (!isStd) r2.append(numInput(sn.yawDeg, -180, 180, 54, v => { sn.yawDeg = v; drawBot(); }), lab("deg (+ = left)"));
+      if (sn.type === "tof" || sn.type === "ultrasonic") r2.append(check(sn.floorTilt, "aimed at the floor", v => { sn.floorTilt = v; }));
+      if (sn.role === "obstacle") r2.append(lab("stop closer than"), numInput(sn.stopMm, 20, 4000, 60, v => { sn.stopMm = v; }), lab("mm"));
+      if (sn.role === "bump") r2.append(lab("after a hit, back off for"), numInput(sn.backoffMs == null ? 150 : sn.backoffMs, 0, 1000, 60, v => { sn.backoffMs = v; }), lab("ms (0 = just stop)"));
+      if (sn.role === "cliff") {
+        r2.append(lab("normal floor reading"), numInput(sn.floorMm, 0, 8000, 60, v => { sn.floorMm = v; }), lab("mm"));
+        const cal = document.createElement("button"); cal.textContent = "Calibrate now";
+        cal.title = "Robot on flat floor: remember the current reading as normal";
+        cal.onclick = () => send({type: "bot.calibrate", id: sn.id});
+        r2.append(cal);
+      }
+    }
+    card.append(r2);
+    // line 3: where it is
+    const r3 = document.createElement("div"); r3.className = "row";
+    r3.append(lab("from left"), numInput(sn.fromLeftMm, -500, 3000, 60, v => { sn.fromLeftMm = v; drawBot(); }),
+      lab("from front"), numInput(sn.fromFrontMm, -500, 3000, 60, v => { sn.fromFrontMm = v; drawBot(); }),
+      lab("height vs platform"), numInput(sn.heightMm, -1000, 3000, 60, v => { sn.heightMm = v; drawBot(); }), lab("mm"));
+    if (sn.type === "bumper") r3.append(lab("bar width"), numInput(sn.widthMm || 0, 0, 3000, 60, v => { sn.widthMm = v; drawBot(); }), lab("mm"));
+    card.append(r3);
+    if (probs[sn.id]) { const w = document.createElement("div"); w.style.color = "#ff5252"; w.textContent = "Problem: " + probs[sn.id]; card.append(w); }
+    box.append(card);
+  });
+  updateBotLive();
+}
+function updateBotLive() {
+  if (!botDraft || !telem || !telem.robot) return;
+  const live = telem.robot.live && Array.isArray(telem.robot.live.sensors) ? telem.robot.live.sensors : [];
+  for (const sn of botDraft.sensors) {
+    const el = $("botLive_" + sn.id); if (!el) continue;
+    if (sn.type === "camera" || sn.type === "depth") { el.textContent = ""; continue; }
+    if (sn.type === "lidar") { el.textContent = telem.stats && telem.stats.scanRate > 1 ? "streaming" : "no data"; continue; }
+    const x = live.find(y => y.id === sn.id);
+    el.textContent = x ? "live: " + liveText(sn.type, x) : (sn.enabled === false ? "" : "not reporting yet");
+  }
+}
+function botTopScale() {
+  const cv2 = $("botTop"), W = botDraft.platform.widthMm, L = botDraft.platform.lengthMm;
+  const sc = (cv2.width - 70) / Math.max(W, L);
+  return {sc, ox: cv2.width / 2 - W * sc / 2, oy: cv2.height / 2 - L * sc / 2, cw: cv2.width, ch: cv2.height};
+}
+function botSideScale() {
+  const cv2 = $("botSide"), L = botDraft.platform.lengthMm, ph = botDraft.platform.heightMm || 0;
+  let H = ph + 100; for (const sn of botDraft.sensors) H = Math.max(H, ph + sn.heightMm + 40);
+  const sc = Math.min((cv2.width - 70) / L, (cv2.height - 50) / H);
+  return {sc, ox: cv2.width / 2 - L * sc / 2, floorY: cv2.height - 24, cw: cv2.width, ch: cv2.height};
+}
+function drawBot() {
+  if (!botDraft) return;
+  const W = botDraft.platform.widthMm, L = botDraft.platform.lengthMm;
+  const c = $("botTop").getContext("2d"), t = botTopScale();
+  c.clearRect(0, 0, t.cw, t.ch);
+  c.fillStyle = "#2a3238"; c.fillRect(t.ox, t.oy, W * t.sc, L * t.sc);
+  c.strokeStyle = "#64ffda"; c.lineWidth = 2; c.strokeRect(t.ox, t.oy, W * t.sc, L * t.sc);
+  c.fillStyle = "#64ffda"; c.beginPath(); c.moveTo(t.cw / 2, t.oy - 14); c.lineTo(t.cw / 2 - 8, t.oy - 3); c.lineTo(t.cw / 2 + 8, t.oy - 3); c.closePath(); c.fill();
+  c.fillStyle = "#9fb3bb"; c.font = "12px sans-serif"; c.fillText("front", t.cw / 2 + 12, t.oy - 5);
+  c.fillText(W + " x " + L + " mm", t.ox, t.oy + L * t.sc + 16);
+  for (const sn of botDraft.sensors) {
+    const x = t.ox + sn.fromLeftMm * t.sc, y = t.oy + sn.fromFrontMm * t.sc;
+    if (sn.type === "bumper" && sn.widthMm > 0) {
+      c.fillStyle = "rgba(255,82,82,0.35)"; c.fillRect(x - sn.widthMm * t.sc / 2, y - 4, sn.widthMm * t.sc, 8);
+    }
+    c.fillStyle = SENSOR_COLOR[sn.type]; c.beginPath(); c.arc(x, y, 10, 0, Math.PI * 2); c.fill();
+    const a2 = -sn.yawDeg * Math.PI / 180 - Math.PI / 2;
+    c.strokeStyle = SENSOR_COLOR[sn.type]; c.lineWidth = 2; c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a2) * 20, y + Math.sin(a2) * 20); c.stroke();
+    c.fillStyle = "#e6eef0"; c.fillText(sn.name, x + 13, y + 4);
+  }
+  const sctx = $("botSide").getContext("2d"), v = botSideScale();
+  sctx.clearRect(0, 0, v.cw, v.ch);
+  sctx.strokeStyle = "#556"; sctx.beginPath(); sctx.moveTo(0, v.floorY); sctx.lineTo(v.cw, v.floorY); sctx.stroke();
+  sctx.fillStyle = "#9fb3bb"; sctx.font = "12px sans-serif"; sctx.fillText("floor", 6, v.floorY - 6); sctx.fillText("front", v.cw - 44, v.floorY + 16);
+  const ph = botDraft.platform.heightMm || 0, platY = v.floorY - ph * v.sc;
+  sctx.fillStyle = "#2a3238"; sctx.fillRect(v.ox, platY - 5, L * v.sc, 5);
+  sctx.fillStyle = "#9fb3bb"; sctx.fillText("platform " + Math.round(ph) + " mm", v.ox + L * v.sc + 6, platY);
+  for (const sn of botDraft.sensors) {
+    const x = v.ox + (L - sn.fromFrontMm) * v.sc, y = v.floorY - (ph + sn.heightMm) * v.sc;
+    sctx.strokeStyle = "#3a4a55"; sctx.beginPath(); sctx.moveTo(x, platY); sctx.lineTo(x, y); sctx.stroke();
+    sctx.fillStyle = SENSOR_COLOR[sn.type]; sctx.beginPath(); sctx.arc(x, y, 9, 0, Math.PI * 2); sctx.fill();
+    sctx.fillStyle = "#e6eef0"; sctx.fillText(sn.name + " " + (sn.heightMm >= 0 ? "+" : "") + Math.round(sn.heightMm) + " mm", x + 12, y + 4);
+  }
+}
+function canvasPt(canvas, e) {
+  const b = canvas.getBoundingClientRect();
+  return [(e.clientX - b.left) * canvas.width / b.width, (e.clientY - b.top) * canvas.height / b.height];
+}
+function botHit(canvas, e, mapper) {
+  const [px, py] = canvasPt(canvas, e);
+  let best = null, bd = 18;
+  for (const sn of botDraft.sensors) { const q = mapper(sn); const d = Math.hypot(q[0] - px, q[1] - py); if (d < bd) { bd = d; best = sn; } }
+  return best;
+}
+$("botTop").addEventListener("pointerdown", e => {
+  if (!botDraft) return;
+  const t = botTopScale();
+  const sn = botHit($("botTop"), e, sn => [t.ox + sn.fromLeftMm * t.sc, t.oy + sn.fromFrontMm * t.sc]);
+  if (sn) { botDrag = {sn, view: "top"}; $("botTop").setPointerCapture(e.pointerId); }
+});
+$("botTop").addEventListener("pointermove", e => {
+  if (!botDrag || botDrag.view !== "top") return;
+  const t = botTopScale(), [px, py] = canvasPt($("botTop"), e);
+  botDrag.sn.fromLeftMm = Math.round(Math.max(-50, Math.min(botDraft.platform.widthMm + 50, (px - t.ox) / t.sc)));
+  botDrag.sn.fromFrontMm = Math.round(Math.max(-50, Math.min(botDraft.platform.lengthMm + 50, (py - t.oy) / t.sc)));
+  renderBotSensors(); drawBot();
+});
+$("botSide").addEventListener("pointerdown", e => {
+  if (!botDraft) return;
+  const v = botSideScale();
+  const sn = botHit($("botSide"), e, sn => [v.ox + (botDraft.platform.lengthMm - sn.fromFrontMm) * v.sc, v.floorY - ((botDraft.platform.heightMm || 0) + sn.heightMm) * v.sc]);
+  if (sn) { botDrag = {sn, view: "side"}; $("botSide").setPointerCapture(e.pointerId); }
+});
+$("botSide").addEventListener("pointermove", e => {
+  if (!botDrag || botDrag.view !== "side") return;
+  const v = botSideScale(), [, py] = canvasPt($("botSide"), e);
+  botDrag.sn.heightMm = Math.round((v.floorY - py) / v.sc - (botDraft.platform.heightMm || 0));
+  renderBotSensors(); drawBot();
+});
+const botEndDrag = () => { botDrag = null; };
+["botTop", "botSide"].forEach(id => { $(id).addEventListener("pointerup", botEndDrag); $(id).addEventListener("pointercancel", botEndDrag); });
+
+
+// ---- maps panel ----
+let mapsOpen = false, mapsData = null;
+function fmtDate(ms) {
+  const d = new Date(ms);
+  return d.toLocaleDateString() + " " + d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+}
+function renderActive() {
+  const a = telem && telem.mapInfo; if (!a) return;
+  $("mapActive").textContent = "Current: " + a.name + " - " + a.keyframes + " keyframes - " +
+    (a.loading ? "loading..." : (a.unsaved ? "unsaved changes" : "saved"));
+  const q = telem.quality;
+  if (q) $("mapQuality").textContent = "Map quality: " + q.matchHits + " lidar corrections, " + q.matchMisses +
+    " rejected, " + q.skippedTurning + " scans skipped while spinning, " + q.loopClosures + " loop closures" +
+    (q.loopClosures ? " (last one fixed " + q.lastLoopCm.toFixed(0) + " cm / " + q.lastLoopDeg.toFixed(1) + " deg)" : "") +
+    (q.rebuilding ? " - redrawing map..." : "") +
+    (q.optimizations != null ? "\nStraightened " + q.optimizations + " times (last moved up to " + q.lastOptCm.toFixed(0) + " cm / " +
+      q.lastOptDeg.toFixed(1) + " deg), " + q.wallAligned + " keyframes wall-aligned, " + q.gpsUsed + " GPS fixes used" : "");
+}
+function renderMaps() {
+  if (!mapsData) return;
+  const activeId = (telem && telem.mapInfo && telem.mapInfo.id) || (mapsData.active && mapsData.active.id);
+  const list = $("mapList"); list.textContent = "";
+  if (!mapsData.list.length) { list.textContent = "No saved maps yet."; return; }
+  for (const mp of mapsData.list) {
+    const row = document.createElement("div"); row.className = "row";
+    row.style.borderTop = "1px solid #2c3a44"; row.style.paddingTop = "6px";
+    const info = document.createElement("div"); info.style.flex = "1"; info.style.minWidth = "0";
+    const nm = document.createElement("div"); nm.style.fontWeight = "600";
+    nm.textContent = mp.name + (mp.id === activeId ? "  (current)" : "");
+    const sub = document.createElement("div"); sub.style.color = "#9fb3bb"; sub.style.fontSize = "12px";
+    sub.textContent = mp.keyframes + " keyframes" + (mp.sizeM ? " - " + mp.sizeM : "") + " - saved " + fmtDate(mp.updated);
+    info.append(nm, sub); row.append(info);
+    if (mp.id !== activeId) {
+      const lb = document.createElement("button"); lb.textContent = "Load";
+      lb.onclick = () => {
+        if (confirm("Switch to \"" + mp.name + "\"? The current map is saved first.")) {
+          send({type: "maps.load", id: mp.id});
+        }
+      };
+      const db = document.createElement("button"); db.textContent = "Delete";
+      db.onclick = () => { if (confirm("Delete \"" + mp.name + "\"? This cannot be undone.")) send({type: "maps.delete", id: mp.id}); };
+      row.append(lb, db);
+    }
+    list.append(row);
+  }
+}
+
+$("mapsClose").onclick = () => showPage("drive");
+$("relocBtn").onclick = () => send({type: "reloc"});
+$("homeBtn").onclick = () => { if (confirm("Is the robot on the home spot (white circle), facing along its line?")) send({type: "atHome"}); };
+$("mapSave").onclick = () => send({type: "maps.save", name: $("mapName").value});
+$("mapNew").onclick = () => { if (confirm("Start a new map here? The current map is saved first.")) send({type: "clearMap"}); };
+$("msv").textContent = Math.round($("ms").value * 100) + "%";
+
+
+// ================= header, status tray, toasts =================
+function pill(id, state, text) { const el = $(id); el.className = "pill " + (state === true ? "ok" : state === false ? "bad" : "warn"); el.textContent = text; }
+function updateHeader() {
+  pill("pConn", connected, connected ? "Brain" : "Brain offline");
+  const t = telem;
+  if (!t || !connected) { pill("pRobot", null, "Robot"); pill("pLidar", null, "Lidar"); pill("pTrack", null, "Position"); pill("pMap", null, "Mapping"); return; }
+  const st = t.stats || {}, rate = st.scanRate || 0;
+  pill("pRobot", !!(t.robot && t.robot.live), t.robot && t.robot.live ? "Robot" : "Robot quiet");
+  pill("pLidar", rate > 5 ? true : rate > 0 ? null : false, rate > 0 ? "Lidar " + Math.round(rate) + "/s" : "No lidar");
+  const ls = t.loc ? t.loc.state : "";
+  pill("pTrack", ls === "tracking" ? true : ls === "lost" ? false : null, ls === "tracking" ? "Position OK" : ls === "localizing" ? "Finding position" : "Position lost");
+  const mapping = t.settings && t.settings.mapping;
+  pill("pMap", mapping ? true : null, mapping ? "Mapping" : "Mapping paused");
+  if (t.bot && t.bot.name) $("robotName").textContent = t.bot.name;
+  if (t.robotIp) for (const id of ["robotPageLink", "robotPageLink2"]) $(id).href = "http://" + t.robotIp + "/";
+  if (t.robotIp) $("robotSetupLink").href = "http://" + t.robotIp + "/setup";
+}
+
+let navDismissed = null, trayKey = "", trayActions = [];
+function trayCards() {
+  const cards = [];
+  if (!connected) cards.push({sev: "danger", title: "Not connected to the brain", text: "Reconnecting... Make sure the TankBot app is open on the brain phone."});
+  const t = telem;
+  if (!t) return cards;
+  const st = t.stats || {};
+  if (connected && (st.scanRate || 0) < 1) cards.push({sev: "danger", title: "No lidar data", text: "Is the robot switched on and on this Wi-Fi?"});
+  if (goMode) cards.push({sev: "info", title: "Go to", text: "Click or tap the map where the robot should go. You can drag and zoom first.",
+    actions: [["Cancel", () => { goMode = false; renderTray(); }]]});
+  const nv = t.nav;
+  if (nv && (nv.state === "driving" || nv.state === "blocked")) {
+    cards.push({sev: nv.state === "blocked" ? "warn" : "info", title: nv.state === "blocked" ? "Finding a way" : "Driving to the goal", text: nv.note || "",
+      actions: [["Stop", () => send({type: "nav.cancel"}), "danger"]]});
+  } else if (nv && nv.note && nv.note !== navDismissed && (nv.state === "arrived" || nv.state === "failed")) {
+    cards.push({sev: nv.state === "arrived" ? "ok" : "danger", title: nv.state === "arrived" ? "Arrived" : "Couldn't get there", text: nv.note,
+      actions: [["OK", () => { navDismissed = nv.note; renderTray(); }]]});
+  }
+  if (t.blocked) cards.push({sev: "warn", title: "Forward blocked", text: t.blockReason || "Something is in the way"});
+  if (t.loc && t.loc.state !== "tracking") {
+    cards.push({sev: "warn", title: t.loc.state === "localizing" ? "Finding its position" : "Position unknown", text: t.loc.note || "",
+      actions: [["Try again", () => send({type: "reloc"})],
+                ["I'm at home", () => { if (confirm("Is the robot on the map's home spot (white circle), facing along its line?")) send({type: "atHome"}); }]]});
+  }
+  const mt = t.mount;
+  if (mt && mt.robotMode && mt.state !== "mounted" && mt.note) cards.push({sev: "warn", title: "Phone settling", text: mt.note});
+  return cards;
+}
+function renderTray() {
+  const cards = trayCards();
+  const key = JSON.stringify(cards.map(c => [c.sev, c.title, c.text, (c.actions || []).map(a => a[0])]));
+  if (key === trayKey) return;
+  trayKey = key;
+  const tray = $("tray");
+  tray.textContent = "";
+  for (const c of cards) {
+    const el = document.createElement("div"); el.className = "tcard sev-" + c.sev;
+    const b = document.createElement("b"); b.textContent = c.title; el.append(b);
+    if (c.text) { const tx = document.createElement("div"); tx.className = "tx"; tx.textContent = c.text; el.append(tx); }
+    if (c.actions && c.actions.length) {
+      const acts = document.createElement("div"); acts.className = "acts";
+      for (const [label, fn, cls] of c.actions) { const bt = document.createElement("button"); bt.textContent = label; if (cls) bt.className = cls; bt.onclick = fn; acts.append(bt); }
+      el.append(acts);
+    }
+    tray.append(el);
+  }
+}
+function toast(msg, sev, ms) {
+  const box = $("toasts"); if (!box) return;
+  const el = document.createElement("div"); el.className = "toast" + (sev === "danger" ? " sev-danger" : ""); el.textContent = msg;
+  box.append(el);
+  while (box.children.length > 3) box.firstChild.remove();
+  setTimeout(() => el.classList.add("out"), ms || 3500);
+  setTimeout(() => el.remove(), (ms || 3500) + 400);
+}
+
+// ================= telemetry -> UI =================
+let settingsInit = false, lastFlash = null, lastIdleNote = null;
+function updateUi() {
+  const t = telem, s = t.settings, st = t.stats || {}, m = t.motion;
+  if (!settingsInit && s) { $("ms").value = s.maxSpeed; $("msv").textContent = Math.round(s.maxSpeed * 100) + "%"; settingsInit = true; }
+  if (s) {
+    $("obs").checked = s.obstacleStop;
+    $("mapping").textContent = s.mapping ? "Pause mapping" : "Resume mapping";
+  }
+  updateHeader();
+  $("stat").textContent = (t.tracking ? "Tracking: " + t.tracking.source : "") + (st.remotes ? " \u00b7 " + st.remotes + " controller" + (st.remotes > 1 ? "s" : "") : "");
+  $("motors").textContent = m ? "Motors L " + m.left.toFixed(2) + "  R " + m.right.toFixed(2) + " (" + m.src + ")" : "";
+  if (t.flash && t.flash !== lastFlash) toast(t.flash);
+  lastFlash = t.flash || null;
+  const nv = t.nav;
+  if (nv && nv.state === "idle" && nv.note && nv.note !== lastIdleNote) toast(nv.note);
+  lastIdleNote = nv && nv.state === "idle" ? nv.note : null;
+  renderTray();
+  if (settingsOpen) { $("capsInfo").textContent = capsText(t.caps, t.tracking); $("robotInfo").textContent = robotText(t.robot); }
+  if (mapsOpen && t.quality) $("clearDrops").textContent = "Clear remembered drop-offs (" + (t.quality.dropoffMarks || 0) + ")";
+  if (botOpen) updateBotLive();
+  if (settingsOpen && t.log && t.settings) {
+    const lim = t.settings.gpsMaxAccM, acc = t.log.gpsAcc;
+    $("gpsInfo").textContent = acc == null ? "GPS: no fix yet" :
+      "GPS now: \u00b1" + Math.round(acc) + " m (" + t.log.gpsAgeS + " s ago) - " + (acc <= lim ? "good enough to use" : "not used (needs better than " + lim + " m)") +
+      (t.quality ? ". Fixes tagged on this map: " + t.quality.geoTags + ", used: " + t.quality.gpsUsed : "");
+  }
+  if (settingsOpen && t.log) {
+    const lg = t.log;
+    $("logBtn").textContent = lg.recording ? "Stop recording" : "Start recording";
+    $("logInfo").textContent = (lg.recording ? "Recording " + lg.name + " (" + lg.lines + " lines)" : (lg.name ? "Last log: " + lg.name : "Not recording")) +
+      "\nLocation permission: " + lg.auth +
+      "\nGPS: " + lg.gpsFixes + " fixes" + (lg.gpsAcc != null ? ", last \u00b1" + Math.round(lg.gpsAcc) + " m, " + lg.gpsAgeS + " s ago" : "") +
+      "\nCompass: " + lg.headings + " readings" + (lg.heading != null ? ", now " + Math.round(lg.heading) + "\u00b0 (\u00b1" + Math.round(lg.headingAcc) + ")" : "");
+  }
+}
+
+// ================= map view: pan, zoom, follow =================
+const cv = $("map"), ctx = cv.getContext("2d");
+const viewSt = {cx: 0, cy: 0, ppm: 70, follow: true};
+let radarPpm = 90, view = null;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function screenToWorld(sx, sy) { return {x: view.vx + (sx - view.W / 2) / view.ppm, y: view.vy - (sy - view.H / 2) / view.ppm}; }
+function updateFollowBtn() { $("follow").classList.toggle("active", viewSt.follow); }
+function zoomAt(factor, sx, sy) {
+  if (mode !== "map") { radarPpm = clamp(radarPpm * factor, 15, 500); return; }
+  if (!view) { viewSt.ppm = clamp(viewSt.ppm * factor, 4, 500); return; }
+  const before = screenToWorld(sx, sy);
+  viewSt.ppm = clamp(viewSt.ppm * factor, 4, 500);
+  if (!viewSt.follow) { // keep the point under the cursor in place
+    viewSt.cx = before.x - (sx - view.W / 2) / viewSt.ppm;
+    viewSt.cy = before.y + (sy - view.H / 2) / viewSt.ppm;
+  }
+}
+function setMode(m) { mode = m; $("mode").textContent = m === "map" ? "Radar" : "Map"; }
+$("zoomIn").onclick = () => zoomAt(1.4, cv.clientWidth / 2, cv.clientHeight / 2);
+$("zoomOut").onclick = () => zoomAt(1 / 1.4, cv.clientWidth / 2, cv.clientHeight / 2);
+$("follow").onclick = () => { viewSt.follow = true; updateFollowBtn(); };
+$("mode").onclick = () => { setMode(mode === "map" ? "radar" : "map"); if (mode === "radar") { goMode = false; if (editMode) setEdit(false); } renderTray(); };
+$("legendBtn").onclick = () => $("legend").classList.toggle("show");
+
+// ================= map editing + go-to =================
+let editMode = false, tool = "pan", nogoStart = null, hover = null, lastErase = null, strokeId = 0, goMode = false;
+const HINTS = {
+  pan: "Drag to move around the map.",
+  erase: "Drag over ghost walls or junk to wipe them back to open floor.",
+  nogo: "Click two points to draw a line the robot must never cross.",
+  unnogo: "Click a red no-go line to remove it.",
+};
+function setTool(t) {
+  tool = t; nogoStart = null;
+  document.querySelectorAll("#edittools [data-tool]").forEach(b => b.classList.toggle("active", b.dataset.tool === t));
+  $("edithint").textContent = HINTS[t];
+  cv.classList.toggle("aiming", t !== "pan");
+}
+function setEdit(on) {
+  editMode = on; nogoStart = null;
+  $("edittools").classList.toggle("show", on);
+  if (on) { goMode = false; setMode("map"); setTool("pan"); } else cv.classList.remove("aiming");
+  renderTray();
+}
+document.querySelectorAll("#edittools [data-tool]").forEach(b => b.onclick = () => setTool(b.dataset.tool));
+$("editbtn").onclick = () => setEdit(!editMode);
+$("editDone").onclick = () => setEdit(false);
+$("undoEdit").onclick = () => send({type: "map.undo"});
+$("gobtn").onclick = () => {
+  if (editMode) setEdit(false);
+  setMode("map");
+  goMode = !goMode; navDismissed = null;
+  cv.classList.toggle("aiming", goMode);
+  renderTray();
+};
+function eraseAt(w) {
+  const r = parseFloat($("eraseR").value);
+  if (lastErase && Math.hypot(w.x - lastErase.x, w.y - lastErase.y) < r * 0.5) return;
+  lastErase = w;
+  send({type: "map.erase", x: w.x, y: w.y, r: r, stroke: strokeId});
+}
+function segDist(px, py, l) {
+  const x1 = l[0], y1 = l[1], x2 = l[2], y2 = l[3], dx = x2 - x1, dy = y2 - y1;
+  const L = dx * dx + dy * dy || 1e-9;
+  let u = ((px - x1) * dx + (py - y1) * dy) / L; u = Math.max(0, Math.min(1, u));
+  return Math.hypot(px - (x1 + u * dx), py - (y1 + u * dy));
+}
+function onMapClick(w) {
+  if (goMode) {
+    goMode = false; navDismissed = null; cv.classList.remove("aiming");
+    send({type: "nav.goto", x: w.x, y: w.y});
+    renderTray();
+    return;
+  }
+  if (!editMode) return;
+  if (tool === "nogo") {
+    if (!nogoStart) nogoStart = w;
+    else { send({type: "map.nogo", x1: nogoStart.x, y1: nogoStart.y, x2: w.x, y2: w.y}); nogoStart = null; }
+  } else if (tool === "unnogo" && telem && telem.nogo) {
+    let best = null, bd = 0.3;
+    for (const l of telem.nogo) { const d = segDist(w.x, w.y, l); if (d < bd) { bd = d; best = l; } }
+    if (best) send({type: "map.nogoDelete", id: best[4]});
+  }
+}
+document.addEventListener("keydown", e => {
+  if (e.code !== "Escape") return;
+  if (goMode) { goMode = false; cv.classList.remove("aiming"); renderTray(); }
+  else if (nogoStart) nogoStart = null;
+  else if (editMode) setEdit(false);
+});
+
+// pointers on the map: drag = pan (or erase), two fingers = pinch zoom, click = act
+const pointers = new Map();
+let drag = null, pinch = null;
+function canvasXY(e) { const b = cv.getBoundingClientRect(); return {x: e.clientX - b.left, y: e.clientY - b.top}; }
+cv.addEventListener("pointerdown", e => {
+  cv.setPointerCapture(e.pointerId);
+  const q = canvasXY(e);
+  pointers.set(e.pointerId, q);
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinch = {d: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), ppm: mode === "map" ? viewSt.ppm : radarPpm};
+    drag = null;
+    return;
+  }
+  drag = {x0: q.x, y0: q.y, x: q.x, y: q.y, moved: false, erase: editMode && tool === "erase" && mode === "map"};
+  if (drag.erase && view) { strokeId = Date.now(); lastErase = null; eraseAt(screenToWorld(q.x, q.y)); }
+});
+cv.addEventListener("pointermove", e => {
+  const q = canvasXY(e);
+  hover = mode === "map" && view ? screenToWorld(q.x, q.y) : null;
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  p.x = q.x; p.y = q.y;
+  if (pinch && pointers.size >= 2) {
+    const [a, b] = [...pointers.values()];
+    const d = Math.max(10, Math.hypot(a.x - b.x, a.y - b.y));
+    const cur = mode === "map" ? viewSt.ppm : radarPpm;
+    zoomAt((pinch.ppm * d / pinch.d) / cur, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    return;
+  }
+  if (!drag) return;
+  const dx = q.x - drag.x, dy = q.y - drag.y;
+  drag.x = q.x; drag.y = q.y;
+  if (Math.hypot(q.x - drag.x0, q.y - drag.y0) > 6) drag.moved = true;
+  if (drag.erase) { if (hover) eraseAt(hover); return; }
+  if (mode === "map" && drag.moved && view) {
+    if (viewSt.follow) { viewSt.follow = false; viewSt.cx = view.vx; viewSt.cy = view.vy; updateFollowBtn(); }
+    viewSt.cx -= dx / viewSt.ppm; viewSt.cy += dy / viewSt.ppm;
+  }
+});
+function endPointer(e, cancelled) {
+  pointers.delete(e.pointerId);
+  if (pinch) { if (pointers.size < 2) pinch = null; drag = null; return; }
+  const d = drag; drag = null;
+  if (cancelled || !d || d.moved || d.erase || mode !== "map" || !view) return;
+  const q = canvasXY(e);
+  onMapClick(screenToWorld(q.x, q.y));
+}
+cv.addEventListener("pointerup", e => endPointer(e, false));
+cv.addEventListener("pointercancel", e => endPointer(e, true));
+cv.addEventListener("pointerleave", () => { if (!drag) hover = null; });
+cv.addEventListener("wheel", e => { e.preventDefault(); const q = canvasXY(e); zoomAt(Math.exp(-e.deltaY * 0.0015), q.x, q.y); }, {passive: false});
+
+// ================= drawing =================
+function drawArrow(x, y, h, good, ppm) {
+  const r = Math.max(11, Math.min(18, 0.14 * ppm));
+  ctx.save(); ctx.translate(x, y);
+  ctx.beginPath(); ctx.arc(0, 0, r * 1.75, 0, Math.PI * 2); ctx.fillStyle = "rgba(255,159,67,0.18)"; ctx.fill(); // halo
+  ctx.rotate(-h + Math.PI / 2);
+  ctx.beginPath(); ctx.moveTo(0, -r * 1.3); ctx.lineTo(r * 0.85, r); ctx.lineTo(0, r * 0.45); ctx.lineTo(-r * 0.85, r); ctx.closePath();
+  ctx.lineWidth = 4; ctx.strokeStyle = "#0b1013"; ctx.stroke();
+  ctx.lineWidth = 2; ctx.strokeStyle = "#ffffff"; ctx.stroke();
+  ctx.fillStyle = good ? "#ff9f43" : "#9aa5aa"; ctx.fill();
+  ctx.restore();
+}
+function niceStep(ppm) { for (const s of [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50]) if (s * ppm >= 60) return s; return 100; }
+function drawScale(W, H, ppm) {
+  const s = niceStep(ppm), len = s * ppm, x = W - 20 - len, y = H - 22;
+  ctx.strokeStyle = "#c9d6da"; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.moveTo(x, y - 5); ctx.lineTo(x, y); ctx.lineTo(x + len, y); ctx.lineTo(x + len, y - 5); ctx.stroke();
+  ctx.fillStyle = "#c9d6da"; ctx.font = "12px -apple-system, system-ui, sans-serif"; ctx.textAlign = "center";
+  ctx.fillText(s >= 1 ? s + " m" : Math.round(s * 100) + " cm", x + len / 2, y - 8); ctx.textAlign = "left";
+}
+function frame() {
+  try { frameInner(); } catch (e) { if (pageErrors < 3) showError("drawing", e); }
+  requestAnimationFrame(frame);
+}
+function frameInner() {
+  if (!$("drive").classList.contains("active")) return;
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#0b1013"; ctx.fillRect(0, 0, W, H);
+  const t = telem;
+  if (!t) {
+    ctx.fillStyle = "#94a7ae"; ctx.font = "15px -apple-system, system-ui, sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(connected ? "Waiting for the brain..." : "Connecting to the brain...", W / 2, H / 2); ctx.textAlign = "left";
+    return;
+  }
+  const p = t.pose || {x: 0, y: 0, h: Math.PI / 2, good: false};
+  const off = t.lidarOffset || {fwd: 0, left: 0};
+  const ch = Math.cos(p.h), sh = Math.sin(p.h);
+  if (mode === "map") {
+    if (viewSt.follow) { viewSt.cx = p.x; viewSt.cy = p.y; }
+    const ppm = viewSt.ppm, vx = viewSt.cx, vy = viewSt.cy;
+    view = {W, H, ppm, vx, vy};
+    const toS = (x, y) => [W / 2 + (x - vx) * ppm, H / 2 - (y - vy) * ppm];
+    if (mapImg && mapMeta) {
+      const tl = toS(mapMeta.left, mapMeta.top);
+      ctx.imageSmoothingEnabled = ppm < 20;
+      ctx.drawImage(mapImg, tl[0], tl[1], mapImg.width * mapMeta.res * ppm, mapImg.height * mapMeta.res * ppm);
+    }
+    // grid
+    const g = niceStep(ppm) >= 1 ? niceStep(ppm) : 1, x0 = vx - W / 2 / ppm, x1 = vx + W / 2 / ppm, y0 = vy - H / 2 / ppm, y1 = vy + H / 2 / ppm;
+    ctx.strokeStyle = "rgba(255,255,255,0.05)"; ctx.lineWidth = 1; ctx.beginPath();
+    for (let gx = Math.floor(x0 / g) * g; gx <= x1; gx += g) { const a = toS(gx, 0)[0]; ctx.moveTo(a, 0); ctx.lineTo(a, H); }
+    for (let gy = Math.floor(y0 / g) * g; gy <= y1; gy += g) { const b = toS(0, gy)[1]; ctx.moveTo(0, b); ctx.lineTo(W, b); }
+    ctx.stroke();
+    // home spot
+    const hm = toS(0, 0);
+    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(hm[0], hm[1], 7, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(hm[0], hm[1]); ctx.lineTo(hm[0], hm[1] - 16); ctx.stroke();
+    // no-go lines
+    if (t.nogo) {
+      ctx.strokeStyle = "#f2555a"; ctx.lineWidth = 3;
+      for (const l of t.nogo) { const a = toS(l[0], l[1]), b = toS(l[2], l[3]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
+    }
+    // remembered drop-offs
+    if (t.dropoffs && t.dropoffs.length) {
+      ctx.strokeStyle = "#f2555a"; ctx.lineWidth = 2;
+      for (const q of t.dropoffs) { const s3 = toS(q[0], q[1]); ctx.beginPath(); ctx.arc(s3[0], s3[1], 0.08 * ppm + 2, 0, Math.PI * 2); ctx.stroke(); }
+    }
+    // live: depth camera, rangers, lidar
+    if (t.depth && t.depth.fresh) {
+      ctx.fillStyle = "rgba(255,171,64,0.9)";
+      for (const q of t.depth.obstacles) { const s3 = toS(q[0], q[1]); ctx.fillRect(s3[0] - 2, s3[1] - 2, 4, 4); }
+      ctx.fillStyle = "rgba(242,85,90,0.95)";
+      for (const q of t.depth.dropoffs) { const s3 = toS(q[0], q[1]); ctx.fillRect(s3[0] - 3, s3[1] - 3, 6, 6); }
+    }
+    if (t.rangers && t.rangers.length) {
+      ctx.fillStyle = "#80cbc4";
+      for (const q of t.rangers) { const s3 = toS(q[0], q[1]); ctx.beginPath(); ctx.arc(s3[0], s3[1], 5, 0, Math.PI * 2); ctx.fill(); }
+    }
+    if (t.scan && p.good) {
+      const ox = p.x + ch * off.fwd - sh * off.left, oy = p.y + sh * off.fwd + ch * off.left;
+      ctx.fillStyle = "rgba(255,213,79,0.9)";
+      const sz = ppm > 60 ? 3 : 2;
+      for (const s of t.scan) {
+        const ar = s[0] * Math.PI / 180, f = s[1] * Math.cos(ar), lf = -s[1] * Math.sin(ar);
+        const q = toS(ox + ch * f - sh * lf, oy + sh * f + ch * lf);
+        ctx.fillRect(q[0] - sz / 2, q[1] - sz / 2, sz, sz);
+      }
+    }
+    // route and goal
+    if (t.nav && t.nav.path && t.nav.path.length > 1) {
+      ctx.strokeStyle = "#4f8cff"; ctx.lineWidth = 3; ctx.beginPath();
+      t.nav.path.forEach((q, i) => { const s2 = toS(q[0], q[1]); if (i) ctx.lineTo(s2[0], s2[1]); else ctx.moveTo(s2[0], s2[1]); });
+      ctx.stroke();
+    }
+    if (t.nav && t.nav.goal && (t.nav.state === "driving" || t.nav.state === "blocked")) {
+      const gs = toS(t.nav.goal[0], t.nav.goal[1]);
+      ctx.strokeStyle = "#4f8cff"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(gs[0], gs[1], 10, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(gs[0], gs[1], 3, 0, Math.PI * 2); ctx.fillStyle = "#4f8cff"; ctx.fill();
+    }
+    // editing / aiming previews
+    if (hover) {
+      const hs = toS(hover.x, hover.y);
+      if (editMode && tool === "erase") {
+        ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(hs[0], hs[1], parseFloat($("eraseR").value) * ppm, 0, Math.PI * 2); ctx.stroke();
+      }
+      if (editMode && tool === "nogo" && nogoStart) {
+        const a = toS(nogoStart.x, nogoStart.y);
+        ctx.strokeStyle = "#f2555a"; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(hs[0], hs[1]); ctx.stroke(); ctx.setLineDash([]);
+      }
+      if (goMode) {
+        ctx.strokeStyle = "rgba(79,140,255,0.8)"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(hs[0], hs[1], 10, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+    // robot: footprint circle + arrow
+    const rs = toS(p.x, p.y);
+    if (t.bot && t.bot.bodyRadiusM) {
+      ctx.strokeStyle = "rgba(255,159,67,0.35)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(rs[0], rs[1], t.bot.bodyRadiusM * ppm, 0, Math.PI * 2); ctx.stroke();
+    }
+    drawArrow(rs[0], rs[1], p.h, p.good, ppm);
+    drawScale(W, H, ppm);
+  } else {
+    // radar: the robot's point of view, front is up
+    const ppm = radarPpm, cx = W / 2, cy = H / 2;
+    view = null;
+    ctx.strokeStyle = "rgba(255,255,255,0.08)"; ctx.lineWidth = 1;
+    const step = niceStep(ppm);
+    ctx.fillStyle = "#64777e"; ctx.font = "11px -apple-system, system-ui, sans-serif";
+    for (let r = step; r * ppm < Math.max(W, H); r += step) {
+      ctx.beginPath(); ctx.arc(cx, cy, r * ppm, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillText(r >= 1 ? r + " m" : Math.round(r * 100) + " cm", cx + 4, cy - r * ppm - 3);
+    }
+    if (t.scan) {
+      ctx.fillStyle = "rgba(255,213,79,0.95)";
+      for (const s of t.scan) {
+        const ar = s[0] * Math.PI / 180, f = off.fwd + s[1] * Math.cos(ar), lf = off.left - s[1] * Math.sin(ar);
+        ctx.fillRect(cx - lf * ppm - 1.5, cy - f * ppm - 1.5, 3, 3);
+      }
+    }
+    if (t.guard && t.guard.frontMm != null) {
+      ctx.fillStyle = t.guard.clear ? "#94a7ae" : "#f5a524"; ctx.font = "13px -apple-system, system-ui, sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("ahead: " + (t.guard.frontMm / 10).toFixed(0) + " cm", cx, 22); ctx.textAlign = "left";
+    }
+    drawArrow(cx, cy, Math.PI / 2, true, ppm);
+  }
+}
+
+// ================= pages =================
+const PAGES = ["drive", "maps", "bot", "settings"];
+let page = "drive";
+function showPage(p) {
+  if (page === "drive" && p !== "drive") { release(); goMode = false; if (editMode) setEdit(false); } // never drive from another page
+  page = p;
+  for (const n of PAGES) $(n).classList.toggle("active", n === p);
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.page === p));
+  mapsOpen = p === "maps"; settingsOpen = p === "settings"; botOpen = p === "bot";
+  if (p === "maps") { if (telem && telem.mapInfo) $("mapName").value = telem.mapInfo.name; renderActive(); send({type: "maps.list"}); }
+  if (p === "settings") { syncSettings(); if (telem) { $("capsInfo").textContent = capsText(telem.caps, telem.tracking); $("robotInfo").textContent = robotText(telem.robot); } }
+  if (p === "bot") { botDraft = null; openBot(); } else botDraft = null;
+  renderTray();
+}
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => showPage(b.dataset.page));
+showPage("drive");
+updateHeader();
+updateFollowBtn();
+drawStick(); connect(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -26,7 +26,7 @@ class DepthObstacles {
     robotHeightM = profile.robotHeightM;
     floorToleranceM = profile.depthMinHeightMm / 1000.0;
     final floorUp = -camH;
-    final obs = <int, int>{}, cliff = <int, int>{};
+    final obs = <int, int>{}, cliff = <int, int>{}, floor = <int, int>{};
     for (var i = 0; i + 2 < pts.length; i += 3) {
       final fwd = pts[i], left = pts[i + 1], up = pts[i + 2];
       if (fwd < 0.1 || fwd > maxFwdM || left.abs() > maxSideM) continue;
@@ -36,11 +36,18 @@ class DepthObstacles {
         obs[key] = (obs[key] ?? 0) + 1;
       } else if (up < floorUp - dropM && fwd < cliffFwdM) {
         cliff[key] = (cliff[key] ?? 0) + 1;
+      } else if ((up - floorUp).abs() <= floorToleranceM) {
+        floor[key] = (floor[key] ?? 0) + 1;
       }
     }
     Offset unkey(int k) => Offset(((k ~/ 4000) - 2000) * cellM, ((k % 4000) - 2000) * cellM);
     obstacles = [for (final e in obs.entries) if (e.value >= minHitsPerCell) unkey(e.key)];
-    cliffs = [for (final e in cliff.entries) if (e.value >= minHitsPerCell) unkey(e.key)];
+    // A real edge: the floor is gone there. Glossy floors mirror the depth sensor and put some points
+    // "below" the floor while the floor itself is still seen in the same cell: not a drop.
+    cliffs = [
+      for (final e in cliff.entries)
+        if (e.value >= 4 && e.value > 4 * (floor[e.key] ?? 0)) unkey(e.key)
+    ];
     frames++;
     lastMs = nowMs;
   }

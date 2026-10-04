@@ -135,6 +135,9 @@ class BotProfile {
   /// Map straightening: keep walls square (houses), and use GPS only when better than this (m).
   bool wallAlign;
   double gpsMaxAccM;
+  /// The one-time carry-over of pre-hardware-table placements onto the robot's table has happened
+  /// (true for built-in defaults: they are not measurements and must never overwrite the robot).
+  bool hardwareMigrated;
   /// Robot-side sensor edits made here that the robot has not confirmed yet (keep retrying; don't overwrite).
   bool hardwareDirty;
   /// Depth camera: block forward closer than depthStopMm; ignore things lower than depthMinHeightMm.
@@ -155,6 +158,7 @@ class BotProfile {
     this.stopDistMm = 300,
     this.passDistMm = 100,
     this.hardwareDirty = false,
+    this.hardwareMigrated = true,
     this.wallAlign = true,
     this.gpsMaxAccM = 5,
     this.depthStopMm = 250,
@@ -259,6 +263,7 @@ class BotProfile {
         'obstacles': {'stopMm': stopDistMm, 'passMm': passDistMm, 'depthStopMm': depthStopMm, 'depthMinHeightMm': depthMinHeightMm},
         'sensors': [for (final s in sensors) s.toJson()],
         'hardwareDirty': hardwareDirty,
+        'hardwareMigrated': hardwareMigrated,
         'mapping': {'wallAlign': wallAlign, 'gpsMaxAccM': gpsMaxAccM},
       };
 
@@ -306,6 +311,8 @@ class BotProfile {
       stopDistMm: stopMm,
       passDistMm: passMm,
       hardwareDirty: j['hardwareDirty'] == true,
+      // profiles saved before this flag existed may still hold measured placements to carry over
+      hardwareMigrated: j['hardwareMigrated'] == true,
       wallAlign: !(j['mapping'] is Map && (j['mapping'] as Map)['wallAlign'] == false),
       gpsMaxAccM: num_(j['mapping'] is Map ? (j['mapping'] as Map)['gpsMaxAccM'] : null, 5).clamp(1, 50).toDouble(),
       depthStopMm: dStop,
