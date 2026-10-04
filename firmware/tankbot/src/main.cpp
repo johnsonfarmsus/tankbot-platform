@@ -1,13 +1,13 @@
-// TankBot firmware v2: modular and configurable.
+// TankBot firmware v3: generic sensor table + directional reflexes.
 //
-// Modules: CONFIG (flash-stored setup, /setup page), MOTION (+watchdog), LIDAR bridge,
-// SENSORS (bumpers, TOFSense UART, ultrasonic), REFLEX (on-board safety), NETWORK/OTA, WEB.
+// The robot's hardware description (name, drive type, motor/lidar pins, and a list of sensors with
+// slot, position, yaw, tilt, role and thresholds) lives in flash as JSON and is edited from the
+// brain's Bot page (or, with no brain, from /setup). Drivers are created from the table, so any
+// number of bumpers / rangers facing any direction are just entries.
 //
-// Everything about the robot's wiring lives in the config, defaulting to the standard wiring
-// (docs/wiring.md). The robot works on its own from its web page; a brain adds mapping etc.
-//
-// UDP ports: 5601 lidar (docs/protocol.md), 5602 motion, 5603 sensors:
-//   client sends "TSSUB" -> gets "TCAP1"+json once, then "TSN1"+json at 20 Hz while subscribed.
+// UDP: 5601 lidar (docs/protocol.md), 5602 motion, 5603 sensors ("TSSUB" -> "TCAP1"+hardware JSON
+// once, then "TSN1"+readings at 20 Hz). HTTP: /api/hardware (GET, POST JSON -> save + restart),
+// /api/sensors, /tof/calibrate?id=..., /setup (fallback page).
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -17,67 +17,189 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <ArduinoOTA.h>
+#include <ArduinoJson.h>
 #include <math.h>
 #include "esp_timer.h"
 #include "secrets.h"
 #include "web_ui.h"
 
-static const char *FW_VERSION = "2.0";
+static const char *FW_VERSION = "3.0";
 
-// ================= CONFIG =================
-struct Config {
+// ================= hardware description =================
+enum SType { ST_BUMPER, ST_TOF, ST_ULTRASONIC, ST_IMU, ST_LIDAR, ST_CAMERA, ST_OTHER };
+enum SRole { ROLE_OBSTACLE, ROLE_CLIFF, ROLE_BUMP, ROLE_ORIENTATION, ROLE_MAPPING, ROLE_NONE };
+enum Dir { DIR_FRONT = 0, DIR_LEFT = 1, DIR_BACK = 2, DIR_RIGHT = 3 };
+
+struct Sensor {
+  char id[16] = "";
+  char name[24] = "";
+  SType type = ST_OTHER;
+  char slot[10] = "";        // BUMP1 BUMP2 TOF US1 US2 I2C LIDAR CUSTOM NONE
+  int pinA = -1, pinB = -1;  // resolved from slot (or custom): bumper pin / trig,echo / rx,tx
+  SRole role = ROLE_NONE;
+  bool enabled = true;
+  float yawDeg = 0;          // 0 front, +left
+  bool floorTilt = false;    // pointed at the floor (cliff sensing)
+  int stopMm = 150;          // obstacle role: block when closer
+  int floorMm = 0;           // cliff role: calibrated floor reading (0 = not calibrated)
+  float left = 0, front = 0, height = 0, width = 0; // placement for the brain (mm)
+  // live
+  int value = -1;            // mm, or 1/0 for bumpers
+  bool ok = false;
+  uint32_t lastMs = 0;
+  // ultrasonic timing
+  volatile uint32_t echoStart = 0, echoUs = 0; volatile bool echoDone = false; uint32_t lastTrigMs = 0;
+};
+
+static const int MAX_SENSORS = 12;
+Sensor sensors[MAX_SENSORS];
+int nSensors = 0;
+
+struct Hardware {
   char name[24] = "TankBot";
-  char drive[12] = "tank";              // tank | wheelchair | mecanum
-  // pins (standard wiring)
+  char drive[12] = "tank";
   int in1 = 16, in2 = 17, in3 = 18, in4 = 19, ena = 25, enb = 26;
   int lidarRx = 4, lidarTx = 27;
-  int tofRx = 32, tofTx = 33;
-  int usTrig = 14, usEcho = 34;
-  int bumpL = 13, bumpR = 23;
-  // attached sensors
-  bool lidar = true, tof = false, us = false, hasBumpL = false, hasBumpR = false;
-  // reflex settings
-  int usStopMm = 150;                   // ultrasonic: no forward motion closer than this
-  int floorMm = 0;                      // TOF pointed at the floor: calibrated reading (0 = not calibrated)
-  int speed = 220;                      // max PWM (speed level)
-  int trim = 0;
-} cfg;
+  bool lidar = true;
+  int speed = 255, trim = 0;
+} hw;
+
+const char *typeName(SType t) {
+  switch (t) { case ST_BUMPER: return "bumper"; case ST_TOF: return "tof"; case ST_ULTRASONIC: return "ultrasonic";
+    case ST_IMU: return "imu"; case ST_LIDAR: return "lidar"; case ST_CAMERA: return "camera"; default: return "other"; }
+}
+SType typeFrom(const char *s) {
+  if (!strcmp(s, "bumper")) return ST_BUMPER; if (!strcmp(s, "tof")) return ST_TOF; if (!strcmp(s, "ultrasonic")) return ST_ULTRASONIC;
+  if (!strcmp(s, "imu")) return ST_IMU; if (!strcmp(s, "lidar")) return ST_LIDAR; if (!strcmp(s, "camera")) return ST_CAMERA; return ST_OTHER;
+}
+const char *roleName(SRole r) {
+  switch (r) { case ROLE_OBSTACLE: return "obstacle"; case ROLE_CLIFF: return "cliff"; case ROLE_BUMP: return "bump";
+    case ROLE_ORIENTATION: return "orientation"; case ROLE_MAPPING: return "mapping"; default: return "none"; }
+}
+SRole roleFrom(const char *s) {
+  if (!strcmp(s, "obstacle")) return ROLE_OBSTACLE; if (!strcmp(s, "cliff")) return ROLE_CLIFF; if (!strcmp(s, "bump")) return ROLE_BUMP;
+  if (!strcmp(s, "orientation")) return ROLE_ORIENTATION; if (!strcmp(s, "mapping")) return ROLE_MAPPING; return ROLE_NONE;
+}
+Dir dirOf(float yawDeg) {
+  float y = fmodf(yawDeg + 540.0f, 360.0f) - 180.0f;
+  if (fabsf(y) <= 45) return DIR_FRONT;
+  if (fabsf(y) >= 135) return DIR_BACK;
+  return y > 0 ? DIR_LEFT : DIR_RIGHT;
+}
+const char *dirName(Dir d) { return d == DIR_FRONT ? "front" : d == DIR_LEFT ? "left" : d == DIR_BACK ? "back" : "right"; }
+
+/// Standard-board slots -> pins. docs/wiring.md
+void resolveSlot(Sensor &s) {
+  if (!strcmp(s.slot, "BUMP1")) { s.pinA = 13; s.pinB = -1; }
+  else if (!strcmp(s.slot, "BUMP2")) { s.pinA = 23; s.pinB = -1; }
+  else if (!strcmp(s.slot, "TOF")) { s.pinA = 32; s.pinB = 33; }      // ToF T -> 32 (rx), R <- 33 (tx)
+  else if (!strcmp(s.slot, "US1")) { s.pinA = 14; s.pinB = 34; }      // trig, echo
+  else if (!strcmp(s.slot, "US2")) { s.pinA = 2; s.pinB = 35; }
+  else if (!strcmp(s.slot, "I2C")) { s.pinA = 21; s.pinB = 22; }
+  else if (!strcmp(s.slot, "LIDAR")) { s.pinA = hw.lidarRx; s.pinB = hw.lidarTx; }
+  // CUSTOM keeps the pins given; NONE (phone camera etc.) has no pins
+}
 
 Preferences prefs;
 
-void loadConfig() {
-  prefs.begin("tankbot", true);
-  String n = prefs.getString("name", cfg.name); n.toCharArray(cfg.name, sizeof(cfg.name));
-  String d = prefs.getString("drive", cfg.drive); d.toCharArray(cfg.drive, sizeof(cfg.drive));
-  cfg.in1 = prefs.getInt("in1", cfg.in1); cfg.in2 = prefs.getInt("in2", cfg.in2);
-  cfg.in3 = prefs.getInt("in3", cfg.in3); cfg.in4 = prefs.getInt("in4", cfg.in4);
-  cfg.ena = prefs.getInt("ena", cfg.ena); cfg.enb = prefs.getInt("enb", cfg.enb);
-  cfg.lidarRx = prefs.getInt("lidarRx", cfg.lidarRx); cfg.lidarTx = prefs.getInt("lidarTx", cfg.lidarTx);
-  cfg.tofRx = prefs.getInt("tofRx", cfg.tofRx); cfg.tofTx = prefs.getInt("tofTx", cfg.tofTx);
-  cfg.usTrig = prefs.getInt("usTrig", cfg.usTrig); cfg.usEcho = prefs.getInt("usEcho", cfg.usEcho);
-  cfg.bumpL = prefs.getInt("bumpL", cfg.bumpL); cfg.bumpR = prefs.getInt("bumpR", cfg.bumpR);
-  cfg.lidar = prefs.getBool("sLidar", cfg.lidar); cfg.tof = prefs.getBool("sTof", cfg.tof);
-  cfg.us = prefs.getBool("sUs", cfg.us);
-  cfg.hasBumpL = prefs.getBool("sBumpL", cfg.hasBumpL); cfg.hasBumpR = prefs.getBool("sBumpR", cfg.hasBumpR);
-  cfg.usStopMm = prefs.getInt("usStop", cfg.usStopMm); cfg.floorMm = prefs.getInt("floorMm", cfg.floorMm);
-  cfg.speed = prefs.getInt("speed", cfg.speed); cfg.trim = prefs.getInt("trim", cfg.trim);
+String hardwareJson(bool withLive);
+
+void defaultSensors() {
+  nSensors = 0;
+  Sensor &l = sensors[nSensors++];
+  strcpy(l.id, "lidar"); strcpy(l.name, "RPLidar"); l.type = ST_LIDAR; strcpy(l.slot, "LIDAR"); l.role = ROLE_MAPPING;
+  l.left = 92; l.front = 40; l.height = 200;
+  resolveSlot(l);
+}
+
+bool loadSensorsJson(const String &json) {
+  JsonDocument doc;
+  if (deserializeJson(doc, json)) return false;
+  JsonArray arr = doc["sensors"].as<JsonArray>();
+  if (arr.isNull()) return false;
+  nSensors = 0;
+  for (JsonObject o : arr) {
+    if (nSensors >= MAX_SENSORS) break;
+    Sensor &s = sensors[nSensors];
+    s = Sensor();
+    strlcpy(s.id, o["id"] | "", sizeof(s.id));
+    if (!s.id[0]) continue;
+    strlcpy(s.name, o["name"] | s.id, sizeof(s.name));
+    s.type = typeFrom(o["type"] | "other");
+    strlcpy(s.slot, o["slot"] | "NONE", sizeof(s.slot));
+    s.pinA = o["pinA"] | -1; s.pinB = o["pinB"] | -1;
+    s.role = roleFrom(o["role"] | "none");
+    s.enabled = o["enabled"] | true;
+    s.yawDeg = o["yawDeg"] | 0.0f;
+    s.floorTilt = o["floorTilt"] | false;
+    s.stopMm = o["stopMm"] | 150;
+    s.floorMm = o["floorMm"] | 0;
+    s.left = o["left"] | 0.0f; s.front = o["front"] | 0.0f; s.height = o["height"] | 0.0f; s.width = o["width"] | 0.0f;
+    if (strcmp(s.slot, "CUSTOM")) resolveSlot(s);
+    nSensors++;
+  }
+  if (doc["name"].is<const char *>()) strlcpy(hw.name, doc["name"], sizeof(hw.name));
+  if (doc["drive"].is<const char *>()) strlcpy(hw.drive, doc["drive"], sizeof(hw.drive));
+  JsonObject pins = doc["pins"];
+  if (!pins.isNull()) {
+    hw.in1 = pins["in1"] | hw.in1; hw.in2 = pins["in2"] | hw.in2; hw.in3 = pins["in3"] | hw.in3; hw.in4 = pins["in4"] | hw.in4;
+    hw.ena = pins["ena"] | hw.ena; hw.enb = pins["enb"] | hw.enb; hw.lidarRx = pins["lidarRx"] | hw.lidarRx; hw.lidarTx = pins["lidarTx"] | hw.lidarTx;
+  }
+  hw.lidar = false;
+  for (int i = 0; i < nSensors; i++) if (sensors[i].type == ST_LIDAR && sensors[i].enabled) hw.lidar = true;
+  return true;
+}
+
+void saveHardware() {
+  prefs.begin("tankbot", false);
+  prefs.putString("hw", hardwareJson(false));
+  prefs.putInt("speed", hw.speed); prefs.putInt("trim", hw.trim);
   prefs.end();
 }
 
-void saveConfig() {
-  prefs.begin("tankbot", false);
-  prefs.putString("name", cfg.name); prefs.putString("drive", cfg.drive);
-  prefs.putInt("in1", cfg.in1); prefs.putInt("in2", cfg.in2); prefs.putInt("in3", cfg.in3); prefs.putInt("in4", cfg.in4);
-  prefs.putInt("ena", cfg.ena); prefs.putInt("enb", cfg.enb);
-  prefs.putInt("lidarRx", cfg.lidarRx); prefs.putInt("lidarTx", cfg.lidarTx);
-  prefs.putInt("tofRx", cfg.tofRx); prefs.putInt("tofTx", cfg.tofTx);
-  prefs.putInt("usTrig", cfg.usTrig); prefs.putInt("usEcho", cfg.usEcho);
-  prefs.putInt("bumpL", cfg.bumpL); prefs.putInt("bumpR", cfg.bumpR);
-  prefs.putBool("sLidar", cfg.lidar); prefs.putBool("sTof", cfg.tof); prefs.putBool("sUs", cfg.us);
-  prefs.putBool("sBumpL", cfg.hasBumpL); prefs.putBool("sBumpR", cfg.hasBumpR);
-  prefs.putInt("usStop", cfg.usStopMm); prefs.putInt("floorMm", cfg.floorMm);
-  prefs.putInt("speed", cfg.speed); prefs.putInt("trim", cfg.trim);
+void loadHardware() {
+  prefs.begin("tankbot", true);
+  String json = prefs.getString("hw", "");
+  hw.speed = prefs.getInt("speed", 255); hw.trim = prefs.getInt("trim", 0);
+  bool ok = json.length() > 0 && loadSensorsJson(json);
+  if (!ok) {
+    // migrate v2 settings (fixed slots) into the table
+    String n = prefs.getString("name", hw.name); n.toCharArray(hw.name, sizeof(hw.name));
+    String d = prefs.getString("drive", hw.drive); d.toCharArray(hw.drive, sizeof(hw.drive));
+    hw.in1 = prefs.getInt("in1", hw.in1); hw.in2 = prefs.getInt("in2", hw.in2); hw.in3 = prefs.getInt("in3", hw.in3); hw.in4 = prefs.getInt("in4", hw.in4);
+    hw.ena = prefs.getInt("ena", hw.ena); hw.enb = prefs.getInt("enb", hw.enb);
+    hw.lidarRx = prefs.getInt("lidarRx", hw.lidarRx); hw.lidarTx = prefs.getInt("lidarTx", hw.lidarTx);
+    defaultSensors();
+    if (prefs.getBool("sTof", false)) { Sensor &s = sensors[nSensors++]; strcpy(s.id, "tof"); strcpy(s.name, "ToF (floor)"); s.type = ST_TOF; strcpy(s.slot, "TOF"); s.role = ROLE_CLIFF; s.floorTilt = true; s.floorMm = prefs.getInt("floorMm", 0); s.left = 92; s.front = 10; s.height = -20; resolveSlot(s); }
+    if (prefs.getBool("sUs", false)) { Sensor &s = sensors[nSensors++]; strcpy(s.id, "us1"); strcpy(s.name, "Ultrasonic"); s.type = ST_ULTRASONIC; strcpy(s.slot, "US1"); s.role = ROLE_OBSTACLE; s.stopMm = prefs.getInt("usStop", 150); s.left = 92; s.front = 5; s.height = -20; resolveSlot(s); }
+    if (prefs.getBool("sBumpL", false)) { Sensor &s = sensors[nSensors++]; strcpy(s.id, "bump1"); strcpy(s.name, "Front bumper"); s.type = ST_BUMPER; strcpy(s.slot, "BUMP1"); s.role = ROLE_BUMP; s.left = 92; s.front = -20; s.height = -30; s.width = 160; resolveSlot(s); }
+    if (prefs.getBool("sBumpR", false)) { Sensor &s = sensors[nSensors++]; strcpy(s.id, "bump2"); strcpy(s.name, "Right bumper"); s.type = ST_BUMPER; strcpy(s.slot, "BUMP2"); s.role = ROLE_BUMP; s.left = 140; s.front = -20; s.height = -30; resolveSlot(s); }
+    hw.lidar = prefs.getBool("sLidar", true);
+    sensors[0].enabled = hw.lidar;
+  }
   prefs.end();
+  if (!ok) saveHardware();
+}
+
+String hardwareJson(bool withLive) {
+  JsonDocument doc;
+  doc["name"] = hw.name; doc["fw"] = FW_VERSION; doc["drive"] = hw.drive;
+  JsonObject pins = doc["pins"].to<JsonObject>();
+  pins["in1"] = hw.in1; pins["in2"] = hw.in2; pins["in3"] = hw.in3; pins["in4"] = hw.in4; pins["ena"] = hw.ena; pins["enb"] = hw.enb;
+  pins["lidarRx"] = hw.lidarRx; pins["lidarTx"] = hw.lidarTx;
+  JsonArray slots = doc["slots"].to<JsonArray>();
+  for (const char *n : {"BUMP1", "BUMP2", "TOF", "US1", "US2", "I2C", "LIDAR", "CUSTOM", "NONE"}) slots.add(n);
+  JsonArray arr = doc["sensors"].to<JsonArray>();
+  for (int i = 0; i < nSensors; i++) {
+    Sensor &s = sensors[i];
+    JsonObject o = arr.add<JsonObject>();
+    o["id"] = s.id; o["name"] = s.name; o["type"] = typeName(s.type); o["slot"] = s.slot;
+    o["pinA"] = s.pinA; o["pinB"] = s.pinB; o["role"] = roleName(s.role); o["enabled"] = s.enabled;
+    o["yawDeg"] = s.yawDeg; o["floorTilt"] = s.floorTilt; o["stopMm"] = s.stopMm; o["floorMm"] = s.floorMm;
+    o["left"] = s.left; o["front"] = s.front; o["height"] = s.height; o["width"] = s.width;
+    if (withLive) { o["value"] = s.value; o["ok"] = s.ok; }
+  }
+  String out; serializeJson(doc, out); return out;
 }
 
 // ================= shared =================
@@ -97,10 +219,10 @@ WiFiUDP udpLidar, udpMotion, udpSensor;
 bool apMode = false;
 uint32_t apSinceMs = 0;
 
-// ================= REFLEX state (filled by SENSORS, used by MOTION) =================
-enum Block { BLOCK_NONE, BLOCK_BUMPER, BLOCK_CLIFF, BLOCK_ULTRASONIC };
-Block blockForward = BLOCK_NONE;
-uint32_t backoffUntilMs = 0;          // bumper reflex: reversing until this time
+// ================= REFLEX state =================
+bool blockDir[4] = {false, false, false, false};
+char blockReason[4][24] = {"", "", "", ""};
+uint32_t backoffUntilMs = 0;
 uint32_t reflexEvents = 0;
 
 // ================= MOTION =================
@@ -112,17 +234,17 @@ uint32_t lastCmdMs = 0, watchdogTrips = 0, udpCommands = 0, blockedCommands = 0;
 const char *srcName(CmdSource s) { return s == SRC_WEB ? "web" : s == SRC_UDP ? "udp" : s == SRC_REFLEX ? "reflex" : "none"; }
 
 void stopMotorsRaw() {
-  digitalWrite(cfg.in1, LOW); digitalWrite(cfg.in2, LOW); digitalWrite(cfg.in3, LOW); digitalWrite(cfg.in4, LOW);
+  digitalWrite(hw.in1, LOW); digitalWrite(hw.in2, LOW); digitalWrite(hw.in3, LOW); digitalWrite(hw.in4, LOW);
   ledcWrite(PWM_CHANNEL_A, 0); ledcWrite(PWM_CHANNEL_B, 0);
   curLeft = curRight = 0;
 }
 
 void setupMotors() {
-  pinMode(cfg.in1, OUTPUT); pinMode(cfg.in2, OUTPUT); pinMode(cfg.in3, OUTPUT); pinMode(cfg.in4, OUTPUT);
+  pinMode(hw.in1, OUTPUT); pinMode(hw.in2, OUTPUT); pinMode(hw.in3, OUTPUT); pinMode(hw.in4, OUTPUT);
   ledcSetup(PWM_CHANNEL_A, PWM_FREQ, PWM_RESOLUTION);
   ledcSetup(PWM_CHANNEL_B, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(cfg.ena, PWM_CHANNEL_A);
-  ledcAttachPin(cfg.enb, PWM_CHANNEL_B);
+  ledcAttachPin(hw.ena, PWM_CHANNEL_A);
+  ledcAttachPin(hw.enb, PWM_CHANNEL_B);
   stopMotorsRaw();
 }
 
@@ -130,14 +252,14 @@ void applyMotors(float left, float right) {
   left = constrain(left, -1.0f, 1.0f);
   right = constrain(right, -1.0f, 1.0f);
   if (fabsf(left) < 0.05f && fabsf(right) < 0.05f) { stopMotorsRaw(); return; }
-  int leftSpeed = abs((int)(left * cfg.speed));
-  int rightSpeed = abs((int)(right * cfg.speed));
-  if (cfg.trim < 0) leftSpeed = constrain(leftSpeed + (int)(cfg.trim * fabsf(left)), 0, 255);
-  else if (cfg.trim > 0) rightSpeed = constrain(rightSpeed - (int)(cfg.trim * fabsf(right)), 0, 255);
-  if (left >= 0) { digitalWrite(cfg.in1, HIGH); digitalWrite(cfg.in2, LOW); }
-  else           { digitalWrite(cfg.in1, LOW);  digitalWrite(cfg.in2, HIGH); }
-  if (right >= 0) { digitalWrite(cfg.in3, LOW);  digitalWrite(cfg.in4, HIGH); }
-  else            { digitalWrite(cfg.in3, HIGH); digitalWrite(cfg.in4, LOW); }
+  int leftSpeed = abs((int)(left * hw.speed));
+  int rightSpeed = abs((int)(right * hw.speed));
+  if (hw.trim < 0) leftSpeed = constrain(leftSpeed + (int)(hw.trim * fabsf(left)), 0, 255);
+  else if (hw.trim > 0) rightSpeed = constrain(rightSpeed - (int)(hw.trim * fabsf(right)), 0, 255);
+  if (left >= 0) { digitalWrite(hw.in1, HIGH); digitalWrite(hw.in2, LOW); }
+  else           { digitalWrite(hw.in1, LOW);  digitalWrite(hw.in2, HIGH); }
+  if (right >= 0) { digitalWrite(hw.in3, LOW);  digitalWrite(hw.in4, HIGH); }
+  else            { digitalWrite(hw.in3, HIGH); digitalWrite(hw.in4, LOW); }
   ledcWrite(PWM_CHANNEL_A, leftSpeed);
   ledcWrite(PWM_CHANNEL_B, rightSpeed);
   curLeft = left; curRight = right;
@@ -145,14 +267,25 @@ void applyMotors(float left, float right) {
 
 void stopAll() { stopMotorsRaw(); cmdSrc = SRC_NONE; }
 
-/// Every command goes through here; reflexes veto forward motion.
+/// Does this command move the robot into a blocked direction?
+bool vetoed(float l, float r, const char **why) {
+  float fwd = l + r, spin = r - l;
+  if (fwd > 0.05f && blockDir[DIR_FRONT]) { *why = blockReason[DIR_FRONT]; return true; }
+  if (fwd < -0.05f && blockDir[DIR_BACK]) { *why = blockReason[DIR_BACK]; return true; }
+  if (fabsf(fwd) < 0.1f) { // turning on the spot: the side we swing toward
+    if (spin > 0.05f && blockDir[DIR_LEFT]) { *why = blockReason[DIR_LEFT]; return true; }
+    if (spin < -0.05f && blockDir[DIR_RIGHT]) { *why = blockReason[DIR_RIGHT]; return true; }
+  }
+  return false;
+}
+
 void commandMotors(float left, float right, CmdSource src) {
   if (isnan(left) || isnan(right)) { stopAll(); return; }
-  if (src != SRC_REFLEX && millis() < backoffUntilMs) return;      // bumper back-off in progress
-  if (src != SRC_REFLEX && blockForward != BLOCK_NONE && (left + right) > 0.05f) {
-    // net-forward motion is vetoed; turning in place and reversing are still allowed
+  if (src != SRC_REFLEX && millis() < backoffUntilMs) return;
+  const char *why = "";
+  if (src != SRC_REFLEX && vetoed(left, right, &why)) {
     blockedCommands++;
-    if (curLeft + curRight > 0.05f) stopAll();
+    if (curLeft != 0 || curRight != 0) stopAll();
     lastCmdMs = millis();
     return;
   }
@@ -172,7 +305,6 @@ void motionWatchdog() {
   }
 }
 
-// ---- UDP motion API (port 5602) ----
 IPAddress motionPeer; uint16_t motionPeerPort = 0; uint32_t motionPeerSeen = 0;
 
 void handleMotionUdp() {
@@ -200,23 +332,25 @@ void handleMotionUdp() {
   }
 }
 
-const char *blockName() {
-  return blockForward == BLOCK_BUMPER ? "bumper" : blockForward == BLOCK_CLIFF ? "cliff" : blockForward == BLOCK_ULTRASONIC ? "ultrasonic" : "none";
+String blockSummary() {
+  String s;
+  for (int d = 0; d < 4; d++) if (blockDir[d]) { if (s.length()) s += ","; s += dirName((Dir)d); }
+  return s.length() ? s : "none";
 }
 
 void sendMotionStatus() {
   if (motionPeerPort == 0 || millis() - motionPeerSeen > 3000) return;
-  char body[240];
+  char body[260];
   int n = snprintf(body, sizeof(body),
     "TMH1{\"left\":%.2f,\"right\":%.2f,\"src\":\"%s\",\"wd_trips\":%lu,\"speed\":%d,\"trim\":%d,\"cmds\":%lu,\"block\":\"%s\",\"blocked_cmds\":%lu}",
-    curLeft, curRight, srcName(cmdSrc), (unsigned long)watchdogTrips, cfg.speed, cfg.trim, (unsigned long)udpCommands,
-    blockName(), (unsigned long)blockedCommands);
+    curLeft, curRight, srcName(cmdSrc), (unsigned long)watchdogTrips, hw.speed, hw.trim, (unsigned long)udpCommands,
+    blockSummary().c_str(), (unsigned long)blockedCommands);
   udpMotion.beginPacket(motionPeer, motionPeerPort);
   udpMotion.write((uint8_t *)body, n);
   udpMotion.endPacket();
 }
 
-// ================= LIDAR =================
+// ================= LIDAR (unchanged bridge) =================
 HardwareSerial Lidar(2);
 static const uint32_t LIDAR_BAUD = 460800;
 static const int MAX_PTS = 1400, PTS_PER_CHUNK = 250, MAX_SUBS = 3;
@@ -333,14 +467,12 @@ void handleLidarUdp() {
       IPAddress ip = udpLidar.remoteIP(); uint16_t port = udpLidar.remotePort();
       Sub *slot = nullptr;
       for (auto &s : subs) if (s.used && s.ip == ip && s.port == port) slot = &s;
-      if (!slot) for (auto &s : subs) if (!s.used) { slot = &s; Serial.printf("[lidar] new subscriber %s:%u\n", ip.toString().c_str(), port); break; }
+      if (!slot) for (auto &s : subs) if (!s.used) { slot = &s; break; }
       if (slot) { slot->ip = ip; slot->port = port; slot->seen = millis(); slot->used = true; }
     }
     sz = udpLidar.parsePacket();
   }
-  for (auto &s : subs) if (s.used && millis() - s.seen > SUB_TIMEOUT_MS) {
-    Serial.printf("[lidar] subscriber %s timed out\n", s.ip.toString().c_str()); s.used = false;
-  }
+  for (auto &s : subs) if (s.used && millis() - s.seen > SUB_TIMEOUT_MS) s.used = false;
 }
 
 void sendLidarStatus() {
@@ -352,15 +484,9 @@ void sendLidarStatus() {
   lidarSendToSubs((uint8_t *)body, n);
 }
 
-// ================= SENSORS =================
-// Bumpers: switch wired COM + NC to ground, internal pull-up. Closed (LOW) = untouched.
-// Open (HIGH) = pressed, and a broken wire also reads pressed: fail-safe.
-bool bumpLPressed = false, bumpRPressed = false;
-
-// TOFSense-F2 Mini on UART1, NLink frame 0 (16 bytes) streamed at 50 Hz.
+// ================= SENSOR DRIVERS =================
 HardwareSerial Tof(1);
-int tofMm = -1; bool tofValid = false; uint32_t tofLastMs = 0, tofFrames = 0;
-uint8_t tofBuf[16]; int tofN = 0;
+Sensor *tofSensor = nullptr; uint8_t tofBuf[16]; int tofN = 0;
 
 void tofByte(uint8_t b) {
   if (tofN == 0 && b != 0x57) return;
@@ -370,115 +496,140 @@ void tofByte(uint8_t b) {
   tofN = 0;
   uint8_t sum = 0;
   for (int i = 0; i < 15; i++) sum += tofBuf[i];
-  if (sum != tofBuf[15]) return;
+  if (sum != tofBuf[15] || !tofSensor) return;
   int32_t dis = tofBuf[9] | (tofBuf[10] << 8) | (tofBuf[11] << 16);
-  if (dis & 0x800000) dis |= 0xFF000000;      // signed 24-bit
+  if (dis & 0x800000) dis |= 0xFF000000;
   uint8_t status = tofBuf[12];
   uint16_t strength = tofBuf[13] | (tofBuf[14] << 8);
-  tofFrames++;
-  tofLastMs = millis();
-  tofValid = (status == 0 && strength > 0 && dis > 0);
-  tofMm = tofValid ? dis : -1;
+  tofSensor->lastMs = millis();
+  tofSensor->ok = (status == 0 && strength > 0 && dis > 0);
+  tofSensor->value = tofSensor->ok ? dis : -1;
 }
 
-// HC-SR04(P): trigger every 60 ms, time the echo with a pin interrupt (nothing blocks).
-volatile uint32_t usEchoStart = 0, usEchoUs = 0; volatile bool usEchoDone = false;
-int usMm = -1; uint32_t usLastTrigMs = 0, usLastMs = 0;
-
-void IRAM_ATTR usEchoIsr() {
-  if (digitalRead(cfg.usEcho)) usEchoStart = micros();
-  else { usEchoUs = micros() - usEchoStart; usEchoDone = true; }
+void IRAM_ATTR usIsr(void *arg) {
+  Sensor *s = (Sensor *)arg;
+  if (digitalRead(s->pinB)) s->echoStart = micros();
+  else { s->echoUs = micros() - s->echoStart; s->echoDone = true; }
 }
 
-void usTick() {
+void usTick(Sensor &s) {
   uint32_t now = millis();
-  if (usEchoDone) {
-    usEchoDone = false;
-    uint32_t us = usEchoUs;
-    usMm = (us > 100 && us < 30000) ? (int)(us * 0.1715f) : -1;   // 343 m/s, there and back
-    usLastMs = now;
+  if (s.echoDone) {
+    s.echoDone = false;
+    uint32_t us = s.echoUs;
+    s.value = (us > 100 && us < 30000) ? (int)(us * 0.1715f) : -1;
+    s.ok = s.value > 0;
+    s.lastMs = now;
   }
-  if (now - usLastTrigMs >= 60) {
-    usLastTrigMs = now;
-    if (now - usLastMs > 200) usMm = -1;   // no echo lately
-    digitalWrite(cfg.usTrig, LOW); delayMicroseconds(2);
-    digitalWrite(cfg.usTrig, HIGH); delayMicroseconds(10);
-    digitalWrite(cfg.usTrig, LOW);
+  if (now - s.lastTrigMs >= 60) {
+    s.lastTrigMs = now;
+    if (now - s.lastMs > 200) { s.value = -1; s.ok = false; }
+    digitalWrite(s.pinA, LOW); delayMicroseconds(2);
+    digitalWrite(s.pinA, HIGH); delayMicroseconds(10);
+    digitalWrite(s.pinA, LOW);
   }
 }
 
 void setupSensors() {
-  if (cfg.hasBumpL) pinMode(cfg.bumpL, INPUT_PULLUP);
-  if (cfg.hasBumpR) pinMode(cfg.bumpR, INPUT_PULLUP);
-  if (cfg.tof) { Tof.setRxBufferSize(1024); Tof.begin(921600, SERIAL_8N1, cfg.tofRx, cfg.tofTx); }
-  if (cfg.us) {
-    pinMode(cfg.usTrig, OUTPUT); digitalWrite(cfg.usTrig, LOW);
-    pinMode(cfg.usEcho, INPUT);
-    attachInterrupt(digitalPinToInterrupt(cfg.usEcho), usEchoIsr, CHANGE);
+  for (int i = 0; i < nSensors; i++) {
+    Sensor &s = sensors[i];
+    if (!s.enabled) continue;
+    switch (s.type) {
+      case ST_BUMPER: if (s.pinA >= 0) pinMode(s.pinA, INPUT_PULLUP); break;
+      case ST_TOF:
+        if (!tofSensor && s.pinA >= 0 && s.pinB >= 0) { tofSensor = &s; Tof.setRxBufferSize(1024); Tof.begin(921600, SERIAL_8N1, s.pinA, s.pinB); }
+        break;
+      case ST_ULTRASONIC:
+        if (s.pinA >= 0 && s.pinB >= 0) {
+          pinMode(s.pinA, OUTPUT); digitalWrite(s.pinA, LOW);
+          pinMode(s.pinB, INPUT);
+          attachInterruptArg(digitalPinToInterrupt(s.pinB), usIsr, &s, CHANGE);
+        }
+        break;
+      default: break;
+    }
   }
 }
 
 void readSensors() {
-  if (cfg.hasBumpL) bumpLPressed = digitalRead(cfg.bumpL) == HIGH;
-  if (cfg.hasBumpR) bumpRPressed = digitalRead(cfg.bumpR) == HIGH;
-  if (cfg.tof) {
-    while (Tof.available()) tofByte(Tof.read());
-    if (millis() - tofLastMs > 300) { tofValid = false; tofMm = -1; }
+  uint32_t now = millis();
+  for (int i = 0; i < nSensors; i++) {
+    Sensor &s = sensors[i];
+    if (!s.enabled) continue;
+    switch (s.type) {
+      case ST_BUMPER:
+        if (s.pinA >= 0) { s.value = digitalRead(s.pinA) == HIGH ? 1 : 0; s.ok = true; s.lastMs = now; } // NC wiring: HIGH = pressed
+        break;
+      case ST_TOF:
+        if (&s == tofSensor) { while (Tof.available()) tofByte(Tof.read()); if (now - s.lastMs > 300) { s.ok = false; s.value = -1; } }
+        break;
+      case ST_ULTRASONIC: if (s.pinA >= 0) usTick(s); break;
+      default: break;
+    }
   }
-  if (cfg.us) usTick();
 }
 
 // ================= REFLEX =================
-// Decides blockForward from the sensors and runs the bumper back-off. Runs with no brain attached.
-Block lastBlock = BLOCK_NONE;
+bool wasBlocked[4] = {false, false, false, false};
 
 void reflexUpdate() {
   uint32_t now = millis();
-  Block b = BLOCK_NONE;
-  bool bump = (cfg.hasBumpL && bumpLPressed) || (cfg.hasBumpR && bumpRPressed);
-  if (bump) {
-    b = BLOCK_BUMPER;
-    if (lastBlock != BLOCK_BUMPER) {              // fresh hit: stop, then back off briefly
-      reflexEvents++;
-      Serial.println("[reflex] bumper hit: backing off");
-      applyMotors(-0.9f, -0.9f);
-      cmdSrc = SRC_REFLEX;
-      backoffUntilMs = now + 350;
+  bool nb[4] = {false, false, false, false};
+  char nr[4][24] = {"", "", "", ""};
+  bool newBump = false; int bumpDir = DIR_FRONT;
+  for (int i = 0; i < nSensors; i++) {
+    Sensor &s = sensors[i];
+    if (!s.enabled) continue;
+    Dir d = dirOf(s.yawDeg);
+    bool hit = false;
+    if (s.role == ROLE_BUMP && s.type == ST_BUMPER) hit = s.ok && s.value == 1;
+    else if (s.role == ROLE_CLIFF && s.floorMm > 0) hit = !s.ok || s.value > s.floorMm * 3 / 2;
+    else if (s.role == ROLE_OBSTACLE) hit = s.ok && s.value > 0 && s.value < s.stopMm;
+    if (hit) {
+      nb[d] = true;
+      if (!nr[d][0]) snprintf(nr[d], sizeof(nr[d]), "%s", s.role == ROLE_BUMP ? "bumper" : s.role == ROLE_CLIFF ? "cliff" : typeName(s.type));
+      if (s.role == ROLE_BUMP && !wasBlocked[d]) { newBump = true; bumpDir = d; }
     }
-  } else if (cfg.tof && cfg.floorMm > 0 && (!tofValid || tofMm > cfg.floorMm * 3 / 2)) {
-    b = BLOCK_CLIFF;                              // floor is not where it should be: a drop
-  } else if (cfg.us && usMm > 0 && usMm < cfg.usStopMm) {
-    b = BLOCK_ULTRASONIC;
+  }
+  if (newBump && (bumpDir == DIR_FRONT || bumpDir == DIR_BACK)) {
+    reflexEvents++;
+    float v = bumpDir == DIR_FRONT ? -0.9f : 0.9f;
+    Serial.printf("[reflex] bumper hit at the %s: backing off\n", dirName((Dir)bumpDir));
+    applyMotors(v, v);
+    cmdSrc = SRC_REFLEX;
+    backoffUntilMs = now + 350;
   }
   if (backoffUntilMs && now >= backoffUntilMs) { backoffUntilMs = 0; stopAll(); }
-  if (b != BLOCK_NONE && b != lastBlock && b != BLOCK_BUMPER) {
-    reflexEvents++;
-    Serial.printf("[reflex] forward blocked: %s\n", b == BLOCK_CLIFF ? "cliff" : "ultrasonic");
-    if (curLeft + curRight > 0.05f) stopAll();
+  for (int d = 0; d < 4; d++) {
+    if (nb[d] && !wasBlocked[d] && !(newBump && d == bumpDir)) {
+      reflexEvents++;
+      Serial.printf("[reflex] %s blocked: %s\n", dirName((Dir)d), nr[d]);
+      if (curLeft != 0 || curRight != 0) { // moving into it right now?
+        float fwd = curLeft + curRight;
+        if ((d == DIR_FRONT && fwd > 0.05f) || (d == DIR_BACK && fwd < -0.05f)) stopAll();
+      }
+    }
+    blockDir[d] = nb[d]; strlcpy(blockReason[d], nr[d], sizeof(blockReason[d])); wasBlocked[d] = nb[d];
   }
-  blockForward = b;
-  lastBlock = b;
 }
 
 // ---- sensor feed + capabilities (UDP 5603) ----
 Sub sensorSubs[MAX_SUBS];
 
-void capabilitiesJson(char *out, size_t n) {
-  snprintf(out, n,
-    "{\"name\":\"%s\",\"fw\":\"%s\",\"drive\":\"%s\",\"sensors\":{\"lidar\":%s,\"tof\":%s,\"ultrasonic\":%s,\"bumperL\":%s,\"bumperR\":%s},"
-    "\"reflex\":{\"usStopMm\":%d,\"floorMm\":%d},\"pins\":{\"in1\":%d,\"in2\":%d,\"in3\":%d,\"in4\":%d,\"ena\":%d,\"enb\":%d,"
-    "\"lidarRx\":%d,\"lidarTx\":%d,\"tofRx\":%d,\"tofTx\":%d,\"usTrig\":%d,\"usEcho\":%d,\"bumpL\":%d,\"bumpR\":%d}}",
-    cfg.name, FW_VERSION, cfg.drive, cfg.lidar ? "true" : "false", cfg.tof ? "true" : "false", cfg.us ? "true" : "false",
-    cfg.hasBumpL ? "true" : "false", cfg.hasBumpR ? "true" : "false", cfg.usStopMm, cfg.floorMm,
-    cfg.in1, cfg.in2, cfg.in3, cfg.in4, cfg.ena, cfg.enb, cfg.lidarRx, cfg.lidarTx, cfg.tofRx, cfg.tofTx,
-    cfg.usTrig, cfg.usEcho, cfg.bumpL, cfg.bumpR);
-}
-
-void sensorsJson(char *out, size_t n) {
-  snprintf(out, n,
-    "{\"t\":%lu,\"bumpL\":%d,\"bumpR\":%d,\"tofMm\":%d,\"tofOk\":%s,\"usMm\":%d,\"block\":\"%s\",\"floorMm\":%d,\"reflexEvents\":%lu}",
-    (unsigned long)millis(), cfg.hasBumpL ? (bumpLPressed ? 1 : 0) : -1, cfg.hasBumpR ? (bumpRPressed ? 1 : 0) : -1,
-    tofMm, tofValid ? "true" : "false", usMm, blockName(), cfg.floorMm, (unsigned long)reflexEvents);
+String sensorsJson() {
+  JsonDocument doc;
+  doc["t"] = millis();
+  JsonArray arr = doc["sensors"].to<JsonArray>();
+  for (int i = 0; i < nSensors; i++) {
+    Sensor &s = sensors[i];
+    if (!s.enabled || s.type == ST_LIDAR || s.type == ST_CAMERA) continue;
+    JsonObject o = arr.add<JsonObject>();
+    o["id"] = s.id; o["v"] = s.value; o["ok"] = s.ok;
+  }
+  JsonObject blk = doc["block"].to<JsonObject>();
+  for (int d = 0; d < 4; d++) if (blockDir[d]) blk[dirName((Dir)d)] = blockReason[d];
+  doc["reflexEvents"] = reflexEvents;
+  String out; serializeJson(doc, out); return out;
 }
 
 void handleSensorUdp() {
@@ -493,9 +644,9 @@ void handleSensorUdp() {
       if (!slot) for (auto &s : sensorSubs) if (!s.used) { slot = &s; fresh = true; break; }
       if (slot) {
         slot->ip = ip; slot->port = port; slot->seen = millis(); slot->used = true;
-        if (fresh) {                                    // announce what this robot has
-          char body[600]; memcpy(body, "TCAP1", 5); capabilitiesJson(body + 5, sizeof(body) - 5);
-          udpSensor.beginPacket(ip, port); udpSensor.write((uint8_t *)body, strlen(body)); udpSensor.endPacket();
+        if (fresh) {
+          String body = "TCAP1" + hardwareJson(false);
+          udpSensor.beginPacket(ip, port); udpSensor.write((const uint8_t *)body.c_str(), body.length()); udpSensor.endPacket();
         }
       }
     }
@@ -505,11 +656,12 @@ void handleSensorUdp() {
 }
 
 void sendSensorFeed() {
-  char body[300]; memcpy(body, "TSN1", 4); sensorsJson(body + 4, sizeof(body) - 4);
-  size_t len = strlen(body);
+  bool any = false; for (auto &s : sensorSubs) if (s.used) any = true;
+  if (!any) return;
+  String body = "TSN1" + sensorsJson();
   for (auto &s : sensorSubs) {
     if (!s.used) continue;
-    udpSensor.beginPacket(s.ip, s.port); udpSensor.write((uint8_t *)body, len); udpSensor.endPacket();
+    udpSensor.beginPacket(s.ip, s.port); udpSensor.write((const uint8_t *)body.c_str(), body.length()); udpSensor.endPacket();
   }
 }
 
@@ -537,88 +689,79 @@ void handleJoystick() {
 void handleSpeed() {
   if (!server.hasArg("value")) { server.send(400, "text/plain", "Missing speed parameter"); return; }
   switch (server.arg("value").toInt()) {
-    case 1: cfg.speed = 160; break;
-    case 2: cfg.speed = 220; break;
-    case 3: cfg.speed = 255; break;
+    case 1: hw.speed = 160; break; case 2: hw.speed = 220; break; case 3: hw.speed = 255; break;
     default: server.send(400, "text/plain", "Invalid speed level"); return;
   }
-  saveConfig();
-  server.send(200, "text/plain", "Speed: " + String(cfg.speed));
+  prefs.begin("tankbot", false); prefs.putInt("speed", hw.speed); prefs.end();
+  server.send(200, "text/plain", "Speed: " + String(hw.speed));
 }
 
 void handleTrim() {
   if (!server.hasArg("value")) { server.send(400, "text/plain", "Missing trim parameter"); return; }
-  cfg.trim = constrain(server.arg("value").toInt(), -20, 20);
-  saveConfig();
-  server.send(200, "text/plain", "Trim: " + String(cfg.trim));
+  hw.trim = constrain(server.arg("value").toInt(), -20, 20);
+  prefs.begin("tankbot", false); prefs.putInt("trim", hw.trim); prefs.end();
+  server.send(200, "text/plain", "Trim: " + String(hw.trim));
 }
+void handleGetTrim() { server.send(200, "text/plain", String(hw.trim)); }
 
-void handleGetTrim() { server.send(200, "text/plain", String(cfg.trim)); }
-
-void handleCaps() { char b[600]; capabilitiesJson(b, sizeof(b)); server.send(200, "application/json", b); }
-void handleSensors() { char b[300]; sensorsJson(b, sizeof(b)); server.send(200, "application/json", b); }
-
-/// TOF pointed at the floor: remember today's floor reading as "normal".
-void handleTofCalibrate() {
-  if (!cfg.tof || !tofValid) { server.send(400, "text/plain", "No valid TOF reading"); return; }
-  cfg.floorMm = tofMm; saveConfig();
-  server.send(200, "text/plain", "Floor distance set to " + String(cfg.floorMm) + " mm");
-}
-
-// Setup page: plain form, works from any browser, no brain needed.
-String setupPage() {
-  String h = "<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>TankBot setup</title>"
-    "<style>body{font-family:sans-serif;background:#101416;color:#e6eef0;padding:16px;max-width:560px;margin:auto}"
-    "label{display:block;margin:8px 0}input[type=number]{width:70px}input,select{background:#1b2227;color:#e6eef0;border:1px solid #3a4a55;border-radius:6px;padding:4px}"
-    "h3{margin:18px 0 6px;color:#64ffda}button{background:#23303a;color:#e6eef0;border:1px solid #3a4a55;border-radius:8px;padding:8px 14px;font-size:14px}"
-    ".g{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}</style></head><body>"
-    "<h2>TankBot setup</h2><p>Firmware " + String(FW_VERSION) + ". Saving restarts the robot. <a href='/' style='color:#64ffda'>Drive page</a></p>"
-    "<form method='POST' action='/setup'>";
-  h += "<label>Name <input name=name value='" + String(cfg.name) + "'></label>";
-  h += "<label>Drive type <select name=drive>";
-  for (const char *d : {"tank", "wheelchair", "mecanum"}) h += String("<option") + (strcmp(cfg.drive, d) == 0 ? " selected" : "") + ">" + d + "</option>";
-  h += "</select></label>";
-  h += "<h3>Attached sensors</h3>";
-  auto cb = [&](const char *n, const char *label, bool v) { h += String("<label><input type=checkbox name=") + n + (v ? " checked" : "") + "> " + label + "</label>"; };
-  cb("lidar", "RPLidar", cfg.lidar); cb("tof", "TOFSense ToF (pointed at the floor: cliff sensor)", cfg.tof);
-  cb("us", "Ultrasonic HC-SR04(P) (low obstacles ahead)", cfg.us); cb("bumpL", "Left bumper", cfg.hasBumpL); cb("bumpR", "Right bumper", cfg.hasBumpR);
-  h += "<h3>Reflexes</h3><label>Ultrasonic stop distance <input type=number name=usStop value=" + String(cfg.usStopMm) + "> mm</label>";
-  h += "<label>ToF floor reading <input type=number name=floorMm value=" + String(cfg.floorMm) + "> mm (0 = not calibrated; current ToF: " + String(tofMm) + " mm)</label>";
-  h += "<h3>Pins (standard wiring by default)</h3><div class=g>";
-  auto pin = [&](const char *n, const char *label, int v) { h += String("<label>") + label + " <input type=number name=" + n + " value=" + v + "></label>"; };
-  pin("in1", "IN1", cfg.in1); pin("in2", "IN2", cfg.in2); pin("in3", "IN3", cfg.in3); pin("in4", "IN4", cfg.in4);
-  pin("ena", "ENA", cfg.ena); pin("enb", "ENB", cfg.enb); pin("lidarRx", "Lidar RX", cfg.lidarRx); pin("lidarTx", "Lidar TX", cfg.lidarTx);
-  pin("tofRx", "ToF RX", cfg.tofRx); pin("tofTx", "ToF TX", cfg.tofTx); pin("usTrig", "US TRIG", cfg.usTrig); pin("usEcho", "US ECHO", cfg.usEcho);
-  pin("bumpL", "Bumper L", cfg.bumpL); pin("bumpR", "Bumper R", cfg.bumpR);
-  h += "</div><p><button type=submit>Save and restart</button> <a href='/tof/calibrate' style='margin-left:12px;color:#64ffda'>Calibrate ToF floor now</a></p></form>";
-  h += "<p style='color:#9fb3bb;font-size:13px'>Live: bumper L " + String(cfg.hasBumpL ? (bumpLPressed ? "PRESSED" : "ok") : "-") +
-       ", bumper R " + String(cfg.hasBumpR ? (bumpRPressed ? "PRESSED" : "ok") : "-") + ", ToF " + String(tofMm) + " mm, ultrasonic " + String(usMm) +
-       " mm, forward block: " + blockName() + ". <a href='/api/sensors' style='color:#64ffda'>JSON</a></p></body></html>";
-  return h;
-}
-
-int argPin(const char *n, int cur) { return server.hasArg(n) ? constrain(server.arg(n).toInt(), 0, 39) : cur; }
-
-void handleSetup() {
+void handleHardware() {
   if (server.method() == HTTP_POST) {
-    if (server.hasArg("name")) server.arg("name").substring(0, 23).toCharArray(cfg.name, sizeof(cfg.name));
-    if (server.hasArg("drive")) server.arg("drive").substring(0, 11).toCharArray(cfg.drive, sizeof(cfg.drive));
-    cfg.lidar = server.hasArg("lidar"); cfg.tof = server.hasArg("tof"); cfg.us = server.hasArg("us");
-    cfg.hasBumpL = server.hasArg("bumpL"); cfg.hasBumpR = server.hasArg("bumpR");
-    if (server.hasArg("usStop")) cfg.usStopMm = constrain(server.arg("usStop").toInt(), 30, 2000);
-    if (server.hasArg("floorMm")) cfg.floorMm = constrain(server.arg("floorMm").toInt(), 0, 5000);
-    cfg.in1 = argPin("in1", cfg.in1); cfg.in2 = argPin("in2", cfg.in2); cfg.in3 = argPin("in3", cfg.in3); cfg.in4 = argPin("in4", cfg.in4);
-    cfg.ena = argPin("ena", cfg.ena); cfg.enb = argPin("enb", cfg.enb);
-    cfg.lidarRx = argPin("lidarRx", cfg.lidarRx); cfg.lidarTx = argPin("lidarTx", cfg.lidarTx);
-    cfg.tofRx = argPin("tofRx", cfg.tofRx); cfg.tofTx = argPin("tofTx", cfg.tofTx);
-    cfg.usTrig = argPin("usTrig", cfg.usTrig); cfg.usEcho = argPin("usEcho", cfg.usEcho);
-    cfg.bumpL = argPin("bumpL", cfg.bumpL); cfg.bumpR = argPin("bumpR", cfg.bumpR);
-    saveConfig();
+    String body = server.arg("plain");
+    if (!loadSensorsJson(body)) { server.send(400, "application/json", "{\"error\":\"invalid hardware JSON\"}"); return; }
+    saveHardware();
     stopAll();
-    server.send(200, "text/html", "<html><body style='font-family:sans-serif;background:#101416;color:#e6eef0;padding:16px'>Saved. Restarting... <a href='/setup' style='color:#64ffda'>back to setup</a> in a few seconds.</body></html>");
+    server.send(200, "application/json", "{\"ok\":true,\"restarting\":true}");
     delay(300);
     ESP.restart();
     return;
+  }
+  server.send(200, "application/json", hardwareJson(true));
+}
+void handleSensors() { server.send(200, "application/json", sensorsJson()); }
+
+/// Cliff sensor pointed at the floor: remember today's floor reading as normal. /tof/calibrate?id=tof
+void handleTofCalibrate() {
+  String id = server.hasArg("id") ? server.arg("id") : "";
+  for (int i = 0; i < nSensors; i++) {
+    Sensor &s = sensors[i];
+    if ((id.length() == 0 && s.role == ROLE_CLIFF) || id == s.id) {
+      if (!s.ok || s.value <= 0) { server.send(400, "text/plain", "No valid reading on " + String(s.id)); return; }
+      s.floorMm = s.value; saveHardware();
+      server.send(200, "text/plain", "Floor reading for " + String(s.id) + " set to " + String(s.floorMm) + " mm");
+      return;
+    }
+  }
+  server.send(404, "text/plain", "No cliff sensor with that id");
+}
+
+// Fallback page: works with no brain. The Bot page in the controller is the real editor.
+String setupPage() {
+  String h = "<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>TankBot setup</title>"
+    "<style>body{font-family:sans-serif;background:#101416;color:#e6eef0;padding:16px;max-width:720px;margin:auto}"
+    "textarea{width:100%;height:280px;background:#1b2227;color:#e6eef0;border:1px solid #3a4a55;border-radius:6px;font-family:monospace;font-size:12px}"
+    "button{background:#23303a;color:#e6eef0;border:1px solid #3a4a55;border-radius:8px;padding:8px 14px;font-size:14px}"
+    "h3{color:#64ffda}td{padding:2px 10px 2px 0}</style></head><body><h2>" + String(hw.name) + " setup (firmware " + FW_VERSION + ")</h2>"
+    "<p>With a brain connected, use the controller's <b>Bot</b> page instead. This page is the no-brain fallback. <a href='/' style='color:#64ffda'>Drive page</a></p>"
+    "<h3>Attached sensors (live)</h3><table>";
+  for (int i = 0; i < nSensors; i++) {
+    Sensor &s = sensors[i];
+    h += "<tr><td>" + String(s.name) + "</td><td>" + typeName(s.type) + " / " + roleName(s.role) + " / " + dirName(dirOf(s.yawDeg)) + "</td><td>slot " + s.slot +
+         "</td><td>" + (s.enabled ? (s.type == ST_BUMPER ? (s.value == 1 ? "PRESSED" : "ok") : (s.type == ST_LIDAR ? "streaming" : (s.ok ? String(s.value) + " mm" : "-"))) : "disabled") + "</td></tr>";
+  }
+  h += "</table><p>Blocked directions: " + blockSummary() + ". Reflex events: " + String(reflexEvents) + ".</p>";
+  h += "<h3>Hardware description (JSON)</h3><form method='POST' action='/setup'><textarea name='hw'>" + hardwareJson(false) + "</textarea>"
+       "<p><button type=submit>Save and restart</button> <a href='/tof/calibrate' style='margin-left:12px;color:#64ffda'>Calibrate cliff sensor floor now</a></p></form>"
+       "<p style='color:#9fb3bb;font-size:13px'>Slots on the standard board: BUMP1 (13), BUMP2 (23), TOF (32/33), US1 (14/34), US2 (2/35), I2C (21/22), LIDAR, CUSTOM (set pinA/pinB), NONE. "
+       "Roles: obstacle, cliff, bump, orientation, mapping. yawDeg: 0 = forward, 90 = left, 180 = back, -90 = right.</p></body></html>";
+  return h;
+}
+
+void handleSetup() {
+  if (server.method() == HTTP_POST && server.hasArg("hw")) {
+    if (!loadSensorsJson(server.arg("hw"))) { server.send(400, "text/plain", "Invalid JSON"); return; }
+    saveHardware(); stopAll();
+    server.send(200, "text/html", "<html><body style='font-family:sans-serif;background:#101416;color:#e6eef0;padding:16px'>Saved. Restarting... <a href='/setup' style='color:#64ffda'>back</a></body></html>");
+    delay(300); ESP.restart(); return;
   }
   server.send(200, "text/html", setupPage());
 }
@@ -641,7 +784,7 @@ void setupNetwork() {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASS);
     dnsServer.start(53, "*", WiFi.softAPIP());
-    Serial.printf("[wifi] home network unavailable -> access point '%s' at %s (will retry home Wi-Fi when idle)\n", AP_SSID, WiFi.softAPIP().toString().c_str());
+    Serial.printf("[wifi] home network unavailable -> access point '%s'\n", AP_SSID);
   }
   if (MDNS.begin(HOSTNAME)) {
     MDNS.addService("http", "tcp", 80);
@@ -656,7 +799,8 @@ void setupNetwork() {
   server.on("/getTrim", handleGetTrim);
   server.on("/joystick", handleJoystick);
   server.on("/setup", handleSetup);
-  server.on("/api/capabilities", handleCaps);
+  server.on("/api/hardware", handleHardware);
+  server.on("/api/capabilities", handleHardware);
   server.on("/api/sensors", handleSensors);
   server.on("/tof/calibrate", handleTofCalibrate);
   server.onNotFound(handleRoot);
@@ -664,7 +808,6 @@ void setupNetwork() {
   udpLidar.begin(LIDAR_PORT);
   udpMotion.begin(MOTION_PORT);
   udpSensor.begin(SENSOR_PORT);
-  Serial.printf("[net] web :80 (/setup), lidar UDP :%u, motion UDP :%u, sensors UDP :%u\n", LIDAR_PORT, MOTION_PORT, SENSOR_PORT);
 }
 
 void setupOta() {
@@ -672,13 +815,12 @@ void setupOta() {
 #ifdef OTA_PASS
   ArduinoOTA.setPassword(OTA_PASS);
 #endif
-  ArduinoOTA.onStart([]() { stopAll(); if (cfg.lidar) Lidar.end(); Serial.println("[ota] update starting, motors stopped"); });
+  ArduinoOTA.onStart([]() { stopAll(); if (hw.lidar) Lidar.end(); Serial.println("[ota] update starting"); });
   ArduinoOTA.onEnd([]() { Serial.println("[ota] update done, rebooting"); });
   ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[ota] error %u\n", e); });
   ArduinoOTA.begin();
 }
 
-/// In fallback AP mode with nobody connected for a minute: restart to retry the home network.
 void wifiRecovery() {
   if (!apMode) return;
   if (WiFi.softAPgetStationNum() > 0) { apSinceMs = millis(); return; }
@@ -687,19 +829,22 @@ void wifiRecovery() {
 
 // ================= main =================
 void setup() {
-  loadConfig();
-  setupMotors();                      // motors stopped before anything else
+  loadHardware();
+  setupMotors();
   Serial.begin(115200);
   delay(300);
-  Serial.printf("\n=== %s firmware v%s (%s) ===\n", cfg.name, FW_VERSION, cfg.drive);
-  Serial.printf("[cfg] speed %d trim %d | lidar %d tof %d us %d bumpers %d/%d | usStop %d floor %d\n",
-                cfg.speed, cfg.trim, cfg.lidar, cfg.tof, cfg.us, cfg.hasBumpL, cfg.hasBumpR, cfg.usStopMm, cfg.floorMm);
+  Serial.printf("\n=== %s firmware v%s (%s) ===\n", hw.name, FW_VERSION, hw.drive);
+  for (int i = 0; i < nSensors; i++) {
+    Sensor &s = sensors[i];
+    Serial.printf("[hw] %s: %s %s slot %s pins %d/%d yaw %.0f %s%s\n", s.id, typeName(s.type), roleName(s.role), s.slot, s.pinA, s.pinB, s.yawDeg,
+                  s.floorTilt ? "floor-tilt " : "", s.enabled ? "" : "(disabled)");
+  }
   setupSensors();
   setupNetwork();
   setupOta();
-  if (cfg.lidar) {
+  if (hw.lidar) {
     Lidar.setRxBufferSize(8192);
-    Lidar.begin(LIDAR_BAUD, SERIAL_8N1, cfg.lidarRx, cfg.lidarTx);
+    Lidar.begin(LIDAR_BAUD, SERIAL_8N1, hw.lidarRx, hw.lidarTx);
     delay(50);
     lidarStartScan();
   }
@@ -707,7 +852,7 @@ void setup() {
 }
 
 void loop() {
-  if (cfg.lidar) {
+  if (hw.lidar) {
     while (Lidar.available()) { lidarByte(Lidar.read()); lastByteMs = millis(); }
     if (millis() - lastByteMs > 8000) { Serial.println("[lidar] no data for 8 s, restarting scan"); lidarStartScan(); lastByteMs = millis(); }
   }
@@ -725,15 +870,14 @@ void loop() {
 
   static uint32_t lastLidarStatus = 0, lastMotionStatus = 0, lastSensorFeed = 0, lastLog = 0;
   uint32_t now = millis();
-  if (now - lastLidarStatus >= 1000) { lastLidarStatus = now; if (cfg.lidar) sendLidarStatus(); }
+  if (now - lastLidarStatus >= 1000) { lastLidarStatus = now; if (hw.lidar) sendLidarStatus(); }
   if (now - lastMotionStatus >= 250) { lastMotionStatus = now; sendMotionStatus(); }
   if (now - lastSensorFeed >= 50) { lastSensorFeed = now; sendSensorFeed(); }
   if (now - lastLog >= 2000) {
     lastLog = now;
-    Serial.printf("[stat] lidar %.1f Hz %d pts subs %d | motors L%.2f R%.2f src %s wd %lu | block %s | tof %d us %d bump %d%d | %s %s\n",
-      revHz, lastRevPts, activeSubs(), curLeft, curRight, srcName(cmdSrc), (unsigned long)watchdogTrips, blockName(),
-      tofMm, usMm, bumpLPressed, bumpRPressed, apMode ? "AP" : "wifi",
-      apMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str());
+    Serial.printf("[stat] lidar %.1f Hz %d pts | motors L%.2f R%.2f src %s wd %lu | block %s | %s %s\n",
+      revHz, lastRevPts, curLeft, curRight, srcName(cmdSrc), (unsigned long)watchdogTrips, blockSummary().c_str(),
+      apMode ? "AP" : "wifi", apMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str());
   }
   delay(1);
 }
