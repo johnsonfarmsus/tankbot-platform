@@ -51,7 +51,8 @@ The controller's Settings page shows the current tier and what would unlock the 
 2. **Flash the firmware.** Copy `firmware/tankbot/src/secrets.example.h` to `secrets.h`, enter your
    2.4 GHz Wi-Fi and an OTA password, then `cd firmware/tankbot && pio run -t upload` over USB once.
    From then on `pio run -e ota -t upload` updates it over Wi-Fi.
-3. **Drive it.** Open `http://tankbot.local/` on any device on your Wi-Fi (away from home the robot
+3. **Drive it.** Open `http://tankbot.local/` on any device on your Wi-Fi (buttons, joystick, or the
+   arrow keys / W A S D on a computer) (away from home the robot
    broadcasts its own `TankBot` network instead). Speed levels and steering trim live here too.
 4. **Tell it what's attached** at `http://tankbot.local/setup`: name, drive type, sensors, pins.
    If you followed the standard wiring the pins are already right. Pointing the ToF at the floor?
@@ -63,9 +64,11 @@ The controller's Settings page shows the current tier and what would unlock the 
    - **Mounted brain**: the phone rides on the robot; camera tracking, mount detection, status face.
    - **Brain in hand**: same brain off the robot, tracking with the lidar alone.
    - **Controller**: a remote for a brain on the network.
-2. On the brain phone's screen, note the **controller address** (e.g. `http://192.168.1.199:8080`)
-   and open it in a browser, or in the app in Controller role.
-3. Controller pages: **Drive** (joystick, arrow keys, radar and map views, Go to...), **Maps**
+2. Open **`http://tankbot.local/brain`** in any browser on the same Wi-Fi: the robot sends you to
+   wherever the brain is (bookmark it). The robot's own page (`tankbot.local`) also shows an
+   "Open full controls" button whenever a brain is running. The app's Controller role works too.
+3. Controller pages: **Drive** (map you can drag, zoom and pinch, follow-the-robot, a colour key,
+   joystick, arrow keys, radar view, Go to... anywhere on the map, status cards with actions), **Maps**
    (save, load, edit, no-go lines, map quality), **Bot** (the profile: platform size, sensor
    positions and heights), **Settings** (trim, power levels, obstacle stop and pass distances,
    what the robot and the phone can do).
