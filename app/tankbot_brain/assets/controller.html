@@ -289,6 +289,7 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
       <div class="row"><a id="robotPageLink2" href="http://tankbot.local/" target="_blank">Robot page (simple driving)</a> &middot; <a id="robotSetupLink" href="http://tankbot.local/setup" target="_blank">Robot setup page</a></div>
     </div>
   </div>
+  <div class="small">Changes save automatically as soon as you leave a field or press Enter.</div>
   <div class="row"><button id="setclose">Back to Drive</button></div>
 </div></div></section>
 </main>
@@ -329,7 +330,11 @@ function connect() {
     } catch (e) { showError("handling " + m.type, e); }
   };
 }
-function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+function send(o) {
+  if (!(ws && ws.readyState === 1)) { if (o.type === "set") toast("Not connected: change not saved", "danger"); return; }
+  ws.send(JSON.stringify(o));
+  if (o.type === "set" && typeof page !== "undefined" && page === "settings") toast("Saved"); // settings save as you change them
+}
 
 // ---- joystick: sends 20x per second while held; the brain stops the robot if these stop ----
 const stick = $("stick"), sctx = stick.getContext("2d");
