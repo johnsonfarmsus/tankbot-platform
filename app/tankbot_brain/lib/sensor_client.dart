@@ -20,7 +20,28 @@ class SensorClient {
   Stream<Map<String, dynamic>> get readings => _ctrl.stream;
 
   bool get fresh => appClockMs() - lastMs < 1000;
-  String get block => fresh ? (latest?['block'] as String? ?? 'none') : 'none';
+  /// Directions the robot's reflexes currently block, with reasons (firmware v3: {"front": "bumper"}).
+  Map<String, String> get blocks {
+    if (!fresh) return const {};
+    final b = latest?['block'];
+    if (b is Map) return {for (final e in b.entries) '${e.key}': '${e.value}'};
+    if (b is String && b != 'none') return {'front': b}; // firmware v2
+    return const {};
+  }
+
+  /// Forward block reason, or 'none'.
+  String get block => blocks['front'] ?? 'none';
+
+  /// Live value for one sensor id (mm for rangers, 1/0 for bumpers), or null.
+  int? value(String id) {
+    if (!fresh) return null;
+    final list = latest?['sensors'];
+    if (list is! List) return null;
+    for (final e in list) {
+      if (e is Map && e['id'] == id) return e['ok'] == true ? (e['v'] as num?)?.toInt() : null;
+    }
+    return null;
+  }
 
   Future<void> start({String? manualIp}) async {
     stop();

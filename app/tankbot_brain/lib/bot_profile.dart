@@ -12,8 +12,63 @@ class BotSensor {
   double fromLeftMm, fromFrontMm, heightMm, yawDeg;
   /// Bumper bars: width of the bar (mm), centred on fromLeftMm.
   double widthMm;
+  // Hardware (lives on the robot's ESP32 for robot-side sensors):
+  String slot; // BUMP1 BUMP2 TOF US1 US2 I2C LIDAR CUSTOM NONE
+  int pinA, pinB; // CUSTOM slot only
+  String role; // obstacle | cliff | bump | orientation | mapping | none
+  bool enabled, floorTilt;
+  double stopMm, floorMm;
+  /// True once this entry came from the robot's own sensor table (false = phone-side or legacy).
+  bool onRobot;
   BotSensor(this.id, this.type, this.name,
-      {required this.fromLeftMm, required this.fromFrontMm, this.heightMm = 0, this.yawDeg = 0, this.widthMm = 0});
+      {required this.fromLeftMm, required this.fromFrontMm, this.heightMm = 0, this.yawDeg = 0, this.widthMm = 0,
+      this.slot = 'NONE', this.pinA = -1, this.pinB = -1, String? role, this.enabled = true, this.floorTilt = false,
+      this.stopMm = 150, this.floorMm = 0, this.onRobot = false})
+      : role = role ?? defaultRole(type);
+
+  static String defaultRole(String type) => switch (type) {
+        'bumper' => 'bump',
+        'tof' || 'ultrasonic' => 'obstacle',
+        'imu' => 'orientation',
+        'lidar' => 'mapping',
+        _ => 'none',
+      };
+
+  bool get onPhone => type == 'camera' || type == 'depth';
+
+  /// Entry in the robot's (ESP32) sensor table.
+  Map<String, dynamic> toHardware() => {
+        'id': id,
+        'name': name,
+        'type': type,
+        'slot': slot,
+        'pinA': pinA,
+        'pinB': pinB,
+        'role': role,
+        'enabled': enabled,
+        'yawDeg': yawDeg,
+        'floorTilt': floorTilt,
+        'stopMm': stopMm.round(),
+        'floorMm': floorMm.round(),
+        'left': fromLeftMm,
+        'front': fromFrontMm,
+        'height': heightMm,
+        'width': widthMm,
+      };
+
+  static BotSensor? fromHardware(Map h) {
+    final type = h['type'];
+    if (type is! String || !types.contains(type)) return null;
+    double n(dynamic v, double d) => v is num && v.isFinite ? v.toDouble() : d;
+    final id = h['id'];
+    if (id is! String || id.isEmpty) return null;
+    return BotSensor(id, type, (h['name'] as String?) ?? id,
+        fromLeftMm: n(h['left'], 0), fromFrontMm: n(h['front'], 0), heightMm: n(h['height'], 0),
+        yawDeg: n(h['yawDeg'], 0), widthMm: n(h['width'], 0),
+        slot: (h['slot'] as String?) ?? 'NONE', pinA: (h['pinA'] as num?)?.toInt() ?? -1, pinB: (h['pinB'] as num?)?.toInt() ?? -1,
+        role: (h['role'] as String?) ?? defaultRole(type), enabled: h['enabled'] != false, floorTilt: h['floorTilt'] == true,
+        stopMm: n(h['stopMm'], 150), floorMm: n(h['floorMm'], 0), onRobot: true);
+  }
 
   static const types = ['lidar', 'camera', 'bumper', 'tof', 'ultrasonic', 'imu', 'depth'];
 
@@ -26,6 +81,15 @@ class BotSensor {
         'heightMm': heightMm,
         'yawDeg': yawDeg,
         if (widthMm > 0) 'widthMm': widthMm,
+        'slot': slot,
+        'pinA': pinA,
+        'pinB': pinB,
+        'role': role,
+        'enabled': enabled,
+        'floorTilt': floorTilt,
+        'stopMm': stopMm,
+        'floorMm': floorMm,
+        'onRobot': onRobot,
       };
 
   static BotSensor? fromJson(dynamic j) {
@@ -39,7 +103,16 @@ class BotSensor {
         fromFrontMm: num_(j['fromFrontMm'], 0).clamp(-500, 3000).toDouble(),
         heightMm: num_(j['heightMm'], 0).clamp(-1000, 3000).toDouble(),
         yawDeg: num_(j['yawDeg'], 0).clamp(-180, 180).toDouble(),
-        widthMm: num_(j['widthMm'], 0).clamp(0, 3000).toDouble());
+        widthMm: num_(j['widthMm'], 0).clamp(0, 3000).toDouble(),
+        slot: (j['slot'] as String?) ?? (type == 'camera' || type == 'depth' ? 'NONE' : 'NONE'),
+        pinA: (j['pinA'] as num?)?.toInt() ?? -1,
+        pinB: (j['pinB'] as num?)?.toInt() ?? -1,
+        role: j['role'] as String?,
+        enabled: j['enabled'] != false,
+        floorTilt: j['floorTilt'] == true,
+        stopMm: num_(j['stopMm'], 150).clamp(20, 4000).toDouble(),
+        floorMm: num_(j['floorMm'], 0).clamp(0, 8000).toDouble(),
+        onRobot: j['onRobot'] == true);
   }
 }
 

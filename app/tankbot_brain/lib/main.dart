@@ -337,11 +337,18 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       case 'bot.set':
         final np = BotProfile.fromJson(m['profile']);
         if (np != null) {
+          for (final x in np.sensors) {
+            if (!x.onPhone) x.onRobot = true; // edited here: belongs to the robot's table
+          }
           profile = np;
           maxSpeed = np.cruisePower;
           BotProfileStore.save(np, store.robot);
           server.broadcast({'type': 'bot', 'profile': profile.toJson()});
+          _pushHardwareIfChanged();
         }
+        break;
+      case 'bot.calibrate':
+        if (m['id'] is String) _calibrateFloor(m['id'] as String);
         break;
       case 'set':
         if (m['maxSpeed'] is num) maxSpeed = (m['maxSpeed'] as num).toDouble().clamp(0.2, 1.0);
@@ -890,8 +897,6 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   // ---------- robot sensors (ESP32 feed) ----------
-  bool _capsApplied = false;
-  int _prevBumpL = 0, _prevBumpR = 0;
 
   /// Where a profile sensor is in map coordinates right now.
   Offset? _sensorWorld(BotSensor sn) {
@@ -902,32 +907,106 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     return Offset(p.x + c * fwd - sd * left, p.y + sd * fwd + c * left);
   }
 
-  /// Sensors the ESP32 says are attached appear in the profile at a default spot (front edge).
-  void _prefillProfileFromCaps() {
+  String? _appliedHardware;
+
+  /// The robot's own sensor table is the truth for robot-side hardware; phone sensors stay in the
+  /// profile. Placements measured in the profile before sensors lived on the robot carry over once.
+  void _mergeRobotHardware() {
     final caps = sensors.caps;
-    if (caps == null || _capsApplied) return;
-    _capsApplied = true;
-    final sn = (caps['sensors'] as Map?) ?? {};
-    final w = profile.widthMm, defaults = <String, (String, String, double, double, double)>{
-      'lidar': ('lidar', 'RPLidar', w / 2, 40, 200),
-      'tof': ('tof', 'ToF (floor)', w / 2, 10, -20),
-      'ultrasonic': ('us', 'Ultrasonic', w / 2, 5, -20),
-      'bumperL': ('bumpL', 'Front bumper', w / 2, -20, -30),
-      'bumperR': ('bumpR', 'Right bumper', w * 0.75, -20, -30),
-    };
-    var changed = false;
-    defaults.forEach((capKey, d) {
-      if (sn[capKey] == true && profile.byId(d.$1) == null && (d.$1 == 'lidar' ? profile.byType('lidar') == null : true)) {
-        final type = capKey.startsWith('bumper') ? 'bumper' : capKey;
-        profile.sensors.add(BotSensor(d.$1, type, d.$2,
-            fromLeftMm: d.$3, fromFrontMm: d.$4, heightMm: d.$5, widthMm: type == 'bumper' ? w * 0.9 : 0));
-        changed = true;
-      }
-    });
-    if (changed) {
-      BotProfileStore.save(profile, store.robot);
-      server.broadcast({'type': 'bot', 'profile': profile.toJson()});
+    final list = caps?['sensors'];
+    if (list is! List) return; // older firmware: nothing to merge
+    final key = jsonEncode(list);
+    if (key == _appliedHardware) return;
+    _appliedHardware = key;
+    final robotSensors = [
+      for (final h in list)
+        if (h is Map) BotSensor.fromHardware(h)
+    ].whereType<BotSensor>().toList();
+    final legacy = [for (final x in profile.sensors) if (!x.onPhone && !x.onRobot) x];
+    var carried = false;
+    for (final r in robotSensors) {
+      final i = legacy.indexWhere((l) => l.type == r.type);
+      if (i < 0) continue;
+      final l = legacy.removeAt(i);
+      r.fromLeftMm = l.fromLeftMm;
+      r.fromFrontMm = l.fromFrontMm;
+      r.heightMm = l.heightMm;
+      r.yawDeg = l.yawDeg;
+      if (l.widthMm > 0) r.widthMm = l.widthMm;
+      carried = true;
     }
+    profile.sensors
+      ..removeWhere((x) => !x.onPhone)
+      ..addAll(robotSensors);
+    if (caps!['drive'] is String) profile.drive = caps['drive'] as String;
+    BotProfileStore.save(profile, store.robot);
+    server.broadcast({'type': 'bot', 'profile': profile.toJson()});
+    if (carried) _pushHardwareIfChanged(); // write the measured placements back to the robot
+  }
+
+  /// HTTP to the robot's ESP32.
+  Future<(int, String)> _robotHttp(String method, String path, [String? body]) async {
+    final ip = motion.address;
+    if (ip == null) return (0, 'robot not connected');
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+    try {
+      final uri = Uri.parse('http://$ip$path');
+      final req = method == 'POST' ? await c.postUrl(uri) : await c.getUrl(uri);
+      if (body != null) {
+        req.headers.contentType = ContentType.json;
+        req.write(body);
+      }
+      final res = await req.close();
+      final text = await res.transform(utf8.decoder).join();
+      return (res.statusCode, text);
+    } catch (e) {
+      return (0, '$e');
+    } finally {
+      c.close();
+    }
+  }
+
+  /// Send the robot-side sensors to the ESP32 if they differ from what it has (it restarts to apply).
+  Future<void> _pushHardwareIfChanged() async {
+    final caps = sensors.caps;
+    if (caps == null || caps['sensors'] is! List) return;
+    final mine = [for (final x in profile.sensors) if (!x.onPhone) x.toHardware()];
+    final theirs = [
+      for (final h in caps['sensors'] as List)
+        if (h is Map) BotSensor.fromHardware(h)?.toHardware()
+    ].whereType<Map<String, dynamic>>().toList();
+    if (jsonEncode(mine) == jsonEncode(theirs)) return;
+    final body = jsonEncode({'name': caps['name'], 'drive': profile.drive, 'pins': caps['pins'], 'sensors': mine});
+    final (code, text) = await _robotHttp('POST', '/api/hardware', body);
+    if (code == 200) {
+      _appliedHardware = null;
+      sensors.caps = null; // a fresh announce arrives after the restart
+      _flash('Sensor setup sent to the robot - it restarts to apply (about 10 s)');
+    } else {
+      _flash('Could not update the robot: ${code == 0 ? text : 'HTTP $code $text'}');
+    }
+  }
+
+  /// Cliff sensors: remember the current floor reading as normal.
+  Future<void> _calibrateFloor(String id) async {
+    final (code, text) = await _robotHttp('GET', '/tof/calibrate?id=${Uri.encodeQueryComponent(id)}');
+    _flash(code == 200 ? text : 'Calibration failed: $text');
+    if (code == 200) {
+      final (c2, hwJson) = await _robotHttp('GET', '/api/hardware');
+      if (c2 == 200) {
+        try {
+          sensors.caps = jsonDecode(hwJson) as Map<String, dynamic>;
+          _mergeRobotHardware();
+        } catch (_) {}
+      }
+    }
+  }
+
+  bool get _robotHasLidar {
+    final raw = sensors.caps?['sensors'];
+    if (raw is List) return raw.any((e) => e is Map && e['type'] == 'lidar' && e['enabled'] != false);
+    if (raw is Map) return raw['lidar'] != false;
+    return true;
   }
 
   bool _switchingRobot = false;
@@ -945,7 +1024,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       store.robot = clean;
       widget.settings?.lastRobot = clean;
       widget.settings?.save();
-      _capsApplied = false;
+      _appliedHardware = null;
       final p = await BotProfileStore.load(clean);
       profile = p ?? BotProfile.tankbotDefault()
         ..name = name;
@@ -964,14 +1043,21 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
+  final Map<String, int> _prevSensorVals = {};
+
   void _onRobotSensors(Map<String, dynamic> r) {
     _switchRobotIfNeeded();
-    _prefillProfileFromCaps();
-    final bl = (r['bumpL'] as num?)?.toInt() ?? -1, br = (r['bumpR'] as num?)?.toInt() ?? -1;
-    if (bl == 1 && _prevBumpL != 1) _bumpObstacle('bumpL');
-    if (br == 1 && _prevBumpR != 1) _bumpObstacle('bumpR');
-    _prevBumpL = bl;
-    _prevBumpR = br;
+    _mergeRobotHardware();
+    final list = r['sensors'];
+    if (list is! List) return;
+    for (final e in list) {
+      if (e is! Map || e['id'] is! String) continue;
+      final id = e['id'] as String;
+      final v = e['ok'] == true ? ((e['v'] as num?)?.toInt() ?? -1) : -1;
+      final sn = profile.byId(id);
+      if (sn != null && sn.type == 'bumper' && sn.role == 'bump' && v == 1 && (_prevSensorVals[id] ?? 0) != 1) _bumpObstacle(id);
+      _prevSensorVals[id] = v;
+    }
   }
 
   /// A bumper hit: something is there that the lidar didn't see. Put it on the map, permanently.
@@ -980,9 +1066,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final sn = profile.byId(sensorId);
     final w = sn == null ? null : _sensorWorld(sn);
     if (w == null) return;
-    // a little ahead of the bumper face
+    // a little beyond the bumper face, in the direction it faces
     final p = robotPose!;
-    final ox = w.dx + math.cos(p.heading) * 0.05, oy = w.dy + math.sin(p.heading) * 0.05;
+    final a = p.heading + sn!.yawDeg * math.pi / 180;
+    final ox = w.dx + math.cos(a) * 0.05, oy = w.dy + math.sin(a) * 0.05;
     active.edits.add({'type': 'obstacle', 'id': active.nextEditId++, 'stroke': 'bump${active.nextEditId}', 'x': ox, 'y': oy, 'r': 0.07});
     grid.markCircle(ox, oy, 0.07);
     active.edited = true;
@@ -1052,18 +1139,23 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     ];
   }
 
-  /// The ultrasonic's current reading as a point on the map (low obstacles the lidar misses).
-  Offset? _ultrasonicPoint() {
-    final live = sensors.fresh ? sensors.latest : null;
-    final mm = (live?['usMm'] as num?)?.toDouble() ?? -1;
-    if (mm < 30 || mm > 800) return null;
-    final sn = profile.byId('us') ?? profile.byType('ultrasonic');
-    if (sn == null) return null;
-    final w = _sensorWorld(sn);
+  /// Every forward/side/rear ranger (ToF, ultrasonic) used for obstacles: its reading as a point on
+  /// the map (low obstacles the lidar misses).
+  List<Offset> _rangerPoints() {
     final p = robotPose;
-    if (w == null || p == null) return null;
-    final a = p.heading + sn.yawDeg * math.pi / 180;
-    return Offset(w.dx + math.cos(a) * mm / 1000, w.dy + math.sin(a) * mm / 1000);
+    if (p == null) return const [];
+    final out = <Offset>[];
+    for (final sn in profile.sensors) {
+      if (!sn.enabled || sn.role != 'obstacle' || sn.floorTilt || (sn.type != 'tof' && sn.type != 'ultrasonic')) continue;
+      final mm = sensors.value(sn.id);
+      final maxMm = sn.type == 'ultrasonic' ? 800 : 1500;
+      if (mm == null || mm < 30 || mm > maxMm) continue;
+      final w = _sensorWorld(sn);
+      if (w == null) continue;
+      final a = p.heading + sn.yawDeg * math.pi / 180;
+      out.add(Offset(w.dx + math.cos(a) * mm / 1000, w.dy + math.sin(a) * mm / 1000));
+    }
+    return out;
   }
 
   // ---------- tap-to-go navigation ----------
@@ -1078,11 +1170,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final p = robotPose, sc = scan;
     if (p == null || sc == null || stale) return const [];
     final c = math.cos(p.heading), sn = math.sin(p.heading);
-    final us = _ultrasonicPoint();
     return [
       for (final q in ScanMatcher.robotFrame(sc.points, fwdM: lidarFwdM, leftM: lidarLeftM, stride: 2, maxR: 2.5))
         Offset(p.x + c * q.dx - sn * q.dy, p.y + sn * q.dx + c * q.dy),
-      if (us != null) us,
+      ..._rangerPoints(),
       ..._depthWorld(),
     ];
   }
@@ -1526,7 +1617,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         scanStale: stale,
         stopDistMm: stopDistMm,
         reflexBlock: sensors.block,
-        lidarExpected: sensors.caps == null || (sensors.caps!['sensors'] as Map?)?['lidar'] != false,
+        lidarExpected: _robotHasLidar,
         depthObstacles: depth.fresh(appClockMs()) ? depth.obstacles : const [],
         dropOffs: depth.fresh(appClockMs()) ? depth.cliffs : const [],
         depthStopMm: profile.depthStopMm,

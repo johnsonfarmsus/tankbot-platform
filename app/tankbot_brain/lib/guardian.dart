@@ -85,9 +85,12 @@ class Tier {
     required bool mounted,
     required bool motionConnected,
   }) {
-    final sn = (robotCaps?['sensors'] as Map?) ?? {};
-    final hasReflex = sn['bumperL'] == true || sn['bumperR'] == true || sn['tof'] == true || sn['ultrasonic'] == true;
-    final hasLidar = sn['lidar'] == true;
+    final raw = robotCaps?['sensors'];
+    bool any(bool Function(Map e) f) => raw is List && raw.any((e) => e is Map && e['enabled'] != false && f(e));
+    final legacy = raw is Map ? raw : const {};
+    final hasReflex = any((e) => ['bump', 'cliff', 'obstacle'].contains(e['role']) && e['type'] != 'lidar') ||
+        legacy['bumperL'] == true || legacy['bumperR'] == true || legacy['tof'] == true || legacy['ultrasonic'] == true;
+    final hasLidar = any((e) => e['type'] == 'lidar') || legacy['lidar'] == true;
     final hasDepth = mounted && phoneCaps['sceneDepth'] == true;
     if (!motionConnected) return ('No robot', 'Connect to the robot (tankbot.local) to drive.');
     if (hasLidar && hasDepth) return ('3D awareness', 'Everything is unlocked on this hardware.');

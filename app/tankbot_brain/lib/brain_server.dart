@@ -192,7 +192,7 @@ input[type=range]{width:100%}
   <div style="font-weight:600">Sensors</div>
   <div id="botSensors" style="display:flex;flex-direction:column;gap:4px"></div>
   <div class="row"><select id="botAddType"><option value="lidar">Lidar</option><option value="camera">Phone camera</option><option value="bumper">Bumper</option><option value="tof">ToF distance</option><option value="ultrasonic">Ultrasonic</option><option value="imu">IMU</option><option value="depth">Depth camera</option></select><button id="botAdd">Add sensor</button></div>
-  <div style="color:#9fb3bb;font-size:12px">Positions are from the front and left edges of the platform; heights are above the floor. The phone camera is where the robot's tracked position sits; the lidar offset and the planning footprint are worked out from these.</div>
+  <div style="color:#9fb3bb;font-size:12px">One place for the whole robot: for each sensor, what it is plugged into, what it is used for, which way it faces, and where it sits. Saving stores the layout and sends sensor changes to the robot (it restarts once to apply them). Positions are from the platform's front and left edges; heights are from the platform top.</div>
   <div class="row"><button id="botSave">Save to robot</button><button id="botCancel">Back to Drive (discards unsaved changes)</button><span id="botInfo" style="color:#9fb3bb"></span></div>
  </div>
 </div>
@@ -373,18 +373,20 @@ $("sd").onchange = e => send({type: "set", stopDistMm: parseFloat(e.target.value
 $("pd").onchange = e => send({type: "set", passDistMm: parseFloat(e.target.value)});
 $("dsd").onchange = e => send({type: "set", depthStopMm: parseFloat(e.target.value)});
 $("dmh").onchange = e => send({type: "set", depthMinHeightMm: parseFloat(e.target.value)});
+function liveText(type, s) { if (!s || !s.ok) return "-"; return type === "bumper" ? (s.v === 1 ? "PRESSED" : "ok") : s.v + " mm"; }
 function robotText(r) {
-  if (!r || !r.caps) return "Robot: no capability report yet (is the robot on firmware v2?)";
-  const c = r.caps, sn = c.sensors || {}, on = [];
-  for (const k of ["lidar", "tof", "ultrasonic", "bumperL", "bumperR"]) if (sn[k]) on.push(k);
+  if (!r || !r.caps) return "Robot: no hardware report yet";
+  const c = r.caps, list = Array.isArray(c.sensors) ? c.sensors : [];
   const tr = telem && telem.tier;
-  let t = "Robot: " + c.name + " (firmware " + c.fw + ", " + c.drive + ")\nAttached: " + (on.length ? on.join(", ") : "none");
+  let t = "Robot: " + c.name + " (firmware " + c.fw + ", " + c.drive + ")";
+  t += "\nAttached: " + (list.filter(x => x.enabled !== false).map(x => x.name + " (" + x.role + ")").join(", ") || "none");
   if (tr) t += "\nTier: " + tr.name + "\nNext: " + tr.next;
   const l = r.live;
-  if (l) t += "\nLive: bumpers " + (l.bumpL < 0 ? "-" : l.bumpL ? "HIT" : "ok") + " / " + (l.bumpR < 0 ? "-" : l.bumpR ? "HIT" : "ok") +
-    ", ToF " + (l.tofMm < 0 ? "-" : l.tofMm + " mm") + ", ultrasonic " + (l.usMm < 0 ? "-" : l.usMm + " mm") +
-    ", forward block: " + l.block + ", reflex events " + l.reflexEvents;
-  else t += "\nLive readings: not arriving";
+  if (l && Array.isArray(l.sensors)) {
+    t += "\nLive: " + (l.sensors.map(x => { const d = list.find(y => y.id === x.id); return (d ? d.name : x.id) + " " + liveText(d ? d.type : "", x); }).join(", ") || "-");
+    const bl = l.block || {}, dirs = Object.keys(bl);
+    t += "\nBlocked: " + (dirs.length ? dirs.map(k => k + " (" + bl[k] + ")").join(", ") : "none") + ", reflex events " + l.reflexEvents;
+  } else t += "\nLive readings: not arriving";
   return t;
 }
 
@@ -422,6 +424,8 @@ $("botSave").onclick = () => {
   botDraft.name = $("botName").value; botDraft.drive = $("botDrive").value;
   botDraft.platform.widthMm = parseFloat($("botW").value); botDraft.platform.lengthMm = parseFloat($("botL").value);
   botDraft.platform.heightMm = parseFloat($("botH").value) || 0;
+  const probs = Object.keys(botProblems());
+  if (probs.length) { $("botInfo").textContent = "Fix the problems marked in red first"; return; }
   send({type: "bot.set", profile: botDraft});
   $("botInfo").textContent = "Saved";
   setTimeout(() => { $("botInfo").textContent = ""; }, 2000);
@@ -429,34 +433,132 @@ $("botSave").onclick = () => {
 ["botW", "botL", "botH"].forEach(id => $(id).oninput = () => { if (!botDraft) return;
   botDraft.platform.widthMm = parseFloat($("botW").value) || 100; botDraft.platform.lengthMm = parseFloat($("botL").value) || 100;
   botDraft.platform.heightMm = parseFloat($("botH").value) || 0; drawBot(); });
+const SLOT_INFO = {BUMP1: "Bumper 1 (pin 13)", BUMP2: "Bumper 2 (pin 23)", TOF: "ToF serial (pins 32/33)", US1: "Ultrasonic 1 (14/34)",
+  US2: "Ultrasonic 2 (2/35)", I2C: "I2C (21/22)", LIDAR: "Lidar serial", CUSTOM: "Custom pins", NONE: "On the phone"};
+const SLOT_OK = {bumper: ["BUMP1", "BUMP2", "CUSTOM"], tof: ["TOF", "CUSTOM"], ultrasonic: ["US1", "US2", "CUSTOM"],
+  imu: ["I2C", "CUSTOM"], lidar: ["LIDAR"], camera: ["NONE"], depth: ["NONE"]};
+const ROLE_OK = {bumper: ["bump", "none"], tof: ["obstacle", "cliff", "none"], ultrasonic: ["obstacle", "cliff", "none"],
+  imu: ["orientation", "none"], lidar: ["mapping"], camera: ["none"], depth: ["none"]};
+const ROLE_LABEL = {obstacle: "obstacles ahead of it", cliff: "drop-offs (aimed at the floor)", bump: "bump detection",
+  orientation: "orientation", mapping: "mapping", none: "nothing (reading only)"};
+const SENSOR_DEFAULTS = {
+  bumper: {role: "bump", heightMm: -30, fromFrontMm: -15, widthMm: 150},
+  tof: {role: "obstacle", heightMm: -20, fromFrontMm: 5, stopMm: 150},
+  ultrasonic: {role: "obstacle", heightMm: -20, fromFrontMm: 5, stopMm: 150},
+  imu: {role: "orientation", heightMm: 0, fromFrontMm: 85},
+  lidar: {role: "mapping", heightMm: 200, fromFrontMm: 40},
+  camera: {role: "none", heightMm: 135, fromFrontMm: 40},
+  depth: {role: "none", heightMm: 135, fromFrontMm: 40},
+};
+function freeSlot(type) {
+  const used = botDraft.sensors.filter(x => x.enabled !== false).map(x => x.slot);
+  return SLOT_OK[type].find(sl => sl === "NONE" || sl === "CUSTOM" || !used.includes(sl)) || SLOT_OK[type][0];
+}
 $("botAdd").onclick = () => {
   if (!botDraft) return;
-  const type = $("botAddType").value;
-  botDraft.sensors.push({id: type + "_" + Date.now(), type, name: SENSOR_LABEL[type],
-    fromLeftMm: botDraft.platform.widthMm / 2, fromFrontMm: 20, heightMm: 50, yawDeg: 0});
+  const type = $("botAddType").value, d = SENSOR_DEFAULTS[type] || {};
+  const n = botDraft.sensors.filter(x => x.type === type).length + 1;
+  botDraft.sensors.push(Object.assign({
+    id: type.substring(0, 4) + (Date.now() % 100000), type, name: SENSOR_LABEL[type] + (n > 1 ? " " + n : ""),
+    fromLeftMm: botDraft.platform.widthMm / 2, fromFrontMm: 20, heightMm: 0, yawDeg: 0, widthMm: 0,
+    slot: freeSlot(type), pinA: -1, pinB: -1, enabled: true, floorTilt: false, stopMm: 150, floorMm: 0,
+    onRobot: !(type === "camera" || type === "depth"),
+  }, d));
   renderBotSensors(); drawBot();
 };
+/// Problems that would make the robot's setup not work: two sensors on one slot, wrong slot for the type.
+function botProblems() {
+  const probs = {}, seen = {};
+  for (const x of botDraft.sensors) {
+    if (x.enabled === false) continue;
+    if (!SLOT_OK[x.type].includes(x.slot)) probs[x.id] = "needs one of: " + SLOT_OK[x.type].map(k => SLOT_INFO[k]).join(", ");
+    if (x.slot !== "NONE" && x.slot !== "CUSTOM") {
+      if (seen[x.slot]) { probs[x.id] = "shares " + SLOT_INFO[x.slot] + " with " + seen[x.slot].name; probs[seen[x.slot].id] = probs[seen[x.slot].id] || "shares " + SLOT_INFO[x.slot] + " with " + x.name; }
+      else seen[x.slot] = x;
+    }
+  }
+  return probs;
+}
 function numInput(v, min, max, w, onchange) {
   const i = document.createElement("input"); i.type = "number"; i.value = Math.round(v); i.min = min; i.max = max; i.style.width = w + "px";
   i.oninput = () => onchange(parseFloat(i.value) || 0); return i;
 }
 function renderBotSensors() {
   const box = $("botSensors"); box.textContent = "";
+  const probs = botProblems();
+  const lab = t => { const e = document.createElement("span"); e.textContent = t; e.style.color = "#9fb3bb"; return e; };
+  const select = (opts, cur, onchange) => {
+    const sel = document.createElement("select");
+    for (const [v, txt] of opts) { const o = document.createElement("option"); o.value = v; o.textContent = txt; if (String(v) === String(cur)) o.selected = true; sel.append(o); }
+    sel.onchange = () => onchange(sel.value); return sel;
+  };
+  const check = (cur, txt, onchange) => {
+    const l = document.createElement("label"); const c = document.createElement("input"); c.type = "checkbox"; c.checked = !!cur;
+    c.onchange = () => onchange(c.checked); l.append(c, " " + txt); return l;
+  };
+  const rerender = () => { renderBotSensors(); drawBot(); };
   botDraft.sensors.forEach((sn, idx) => {
-    const row = document.createElement("div"); row.className = "row";
-    const dot = document.createElement("span"); dot.style.cssText = "display:inline-block;width:10px;height:10px;border-radius:5px;background:" + SENSOR_COLOR[sn.type];
-    const nm = document.createElement("input"); nm.value = sn.name; nm.style.width = "110px"; nm.oninput = () => { sn.name = nm.value; drawBot(); };
-    const lab = t => { const e = document.createElement("span"); e.textContent = t; e.style.color = "#9fb3bb"; return e; };
-    const del = document.createElement("button"); del.textContent = "x"; del.onclick = () => { botDraft.sensors.splice(idx, 1); renderBotSensors(); drawBot(); };
-    row.append(dot, lab(SENSOR_LABEL[sn.type]), nm,
-      lab("from left"), numInput(sn.fromLeftMm, -500, 3000, 60, v => { sn.fromLeftMm = v; drawBot(); }),
+    if (sn.slot == null) sn.slot = SLOT_OK[sn.type][0];
+    if (sn.role == null) sn.role = (SENSOR_DEFAULTS[sn.type] || {}).role || "none";
+    const card = document.createElement("div");
+    card.style.cssText = "border:1px solid " + (probs[sn.id] ? "#ff5252" : "#2c3a44") + ";border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:6px";
+    // line 1: identity + live reading
+    const r1 = document.createElement("div"); r1.className = "row";
+    const dot = document.createElement("span"); dot.style.cssText = "display:inline-block;width:12px;height:12px;border-radius:6px;background:" + SENSOR_COLOR[sn.type];
+    const nm = document.createElement("input"); nm.value = sn.name; nm.maxLength = 23; nm.style.width = "140px"; nm.oninput = () => { sn.name = nm.value; drawBot(); };
+    const live = document.createElement("span"); live.id = "botLive_" + sn.id; live.style.cssText = "color:#64ffda;min-width:90px";
+    const del = document.createElement("button"); del.textContent = "Remove"; del.onclick = () => { botDraft.sensors.splice(idx, 1); rerender(); };
+    r1.append(dot, nm, lab(SENSOR_LABEL[sn.type]));
+    if (sn.type !== "camera" && sn.type !== "depth") r1.append(check(sn.enabled !== false, "attached", v => { sn.enabled = v; rerender(); }));
+    r1.append(live, del);
+    card.append(r1);
+    // line 2: how it is connected and what it is for
+    const r2 = document.createElement("div"); r2.className = "row";
+    if (sn.type === "camera" || sn.type === "depth") {
+      r2.append(lab("On the phone (mounted brain): sits where the phone camera is."));
+    } else {
+      r2.append(lab("connected to"), select(SLOT_OK[sn.type].map(k => [k, SLOT_INFO[k]]), sn.slot, v => { sn.slot = v; rerender(); }));
+      if (sn.slot === "CUSTOM") r2.append(lab("pin A"), numInput(sn.pinA, -1, 39, 50, v => { sn.pinA = v; }), lab("pin B"), numInput(sn.pinB, -1, 39, 50, v => { sn.pinB = v; }));
+      r2.append(lab("used for"), select(ROLE_OK[sn.type].map(k => [k, ROLE_LABEL[k]]), sn.role, v => {
+        sn.role = v; if (v === "cliff") sn.floorTilt = true; else if (v === "obstacle") sn.floorTilt = false; rerender(); }));
+      const facings = [[0, "front"], [90, "left"], [180, "back"], [-90, "right"]];
+      const isStd = facings.some(f => f[0] === Math.round(sn.yawDeg));
+      r2.append(lab("faces"), select(facings.concat([["custom", "custom angle"]]), isStd ? Math.round(sn.yawDeg) : "custom", v => {
+        if (v !== "custom") sn.yawDeg = parseFloat(v); else sn.yawDeg = sn.yawDeg === 0 ? 45 : sn.yawDeg; rerender(); }));
+      if (!isStd) r2.append(numInput(sn.yawDeg, -180, 180, 54, v => { sn.yawDeg = v; drawBot(); }), lab("deg (+ = left)"));
+      if (sn.type === "tof" || sn.type === "ultrasonic") r2.append(check(sn.floorTilt, "aimed at the floor", v => { sn.floorTilt = v; }));
+      if (sn.role === "obstacle") r2.append(lab("stop closer than"), numInput(sn.stopMm, 20, 4000, 60, v => { sn.stopMm = v; }), lab("mm"));
+      if (sn.role === "cliff") {
+        r2.append(lab("normal floor reading"), numInput(sn.floorMm, 0, 8000, 60, v => { sn.floorMm = v; }), lab("mm"));
+        const cal = document.createElement("button"); cal.textContent = "Calibrate now";
+        cal.title = "Robot on flat floor: remember the current reading as normal";
+        cal.onclick = () => send({type: "bot.calibrate", id: sn.id});
+        r2.append(cal);
+      }
+    }
+    card.append(r2);
+    // line 3: where it is
+    const r3 = document.createElement("div"); r3.className = "row";
+    r3.append(lab("from left"), numInput(sn.fromLeftMm, -500, 3000, 60, v => { sn.fromLeftMm = v; drawBot(); }),
       lab("from front"), numInput(sn.fromFrontMm, -500, 3000, 60, v => { sn.fromFrontMm = v; drawBot(); }),
-      lab("height vs platform"), numInput(sn.heightMm, -1000, 3000, 60, v => { sn.heightMm = v; drawBot(); }),
-      lab("yaw"), numInput(sn.yawDeg, -180, 180, 50, v => { sn.yawDeg = v; drawBot(); }));
-    if (sn.type === "bumper") row.append(lab("bar width"), numInput(sn.widthMm || 0, 0, 3000, 60, v => { sn.widthMm = v; drawBot(); }));
-    row.append(del);
-    box.append(row);
+      lab("height vs platform"), numInput(sn.heightMm, -1000, 3000, 60, v => { sn.heightMm = v; drawBot(); }), lab("mm"));
+    if (sn.type === "bumper") r3.append(lab("bar width"), numInput(sn.widthMm || 0, 0, 3000, 60, v => { sn.widthMm = v; drawBot(); }), lab("mm"));
+    card.append(r3);
+    if (probs[sn.id]) { const w = document.createElement("div"); w.style.color = "#ff5252"; w.textContent = "Problem: " + probs[sn.id]; card.append(w); }
+    box.append(card);
   });
+  updateBotLive();
+}
+function updateBotLive() {
+  if (!botDraft || !telem || !telem.robot) return;
+  const live = telem.robot.live && Array.isArray(telem.robot.live.sensors) ? telem.robot.live.sensors : [];
+  for (const sn of botDraft.sensors) {
+    const el = $("botLive_" + sn.id); if (!el) continue;
+    if (sn.type === "camera" || sn.type === "depth") { el.textContent = ""; continue; }
+    if (sn.type === "lidar") { el.textContent = telem.stats && telem.stats.scanRate > 1 ? "streaming" : "no data"; continue; }
+    const x = live.find(y => y.id === sn.id);
+    el.textContent = x ? "live: " + liveText(sn.type, x) : (sn.enabled === false ? "" : "not reporting yet");
+  }
 }
 function botTopScale() {
   const cv2 = $("botTop"), W = botDraft.platform.widthMm, L = botDraft.platform.lengthMm;
@@ -618,6 +720,7 @@ function updateUi() {
   if (t.loc && t.loc.state !== "tracking") { lb.style.display = "flex"; $("loctext").textContent = t.loc.note; }
   else lb.style.display = "none";
   if (settingsOpen) { $("capsInfo").textContent = capsText(t.caps, t.tracking); $("robotInfo").textContent = robotText(t.robot); }
+  if (botOpen) updateBotLive();
   $("motors").textContent = m ? "Motors L " + m.left.toFixed(2) + "  R " + m.right.toFixed(2) + " (" + m.src + ")" : "Motors: -";
 }
 
