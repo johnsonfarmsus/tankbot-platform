@@ -2,10 +2,12 @@ import Flutter
 import UIKit
 import ARKit
 import CoreMotion
+import CoreLocation
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
   private var arPose: ArkitPoseStreamer?
+  private var location: LocationStreamer?
 
   override func application(
     _ application: UIApplication,
@@ -14,9 +16,70 @@ import CoreMotion
     GeneratedPluginRegistrant.register(with: self)
     if let registrar = self.registrar(forPlugin: "ArkitPoseStreamer") {
       arPose = ArkitPoseStreamer(messenger: registrar.messenger())
+      location = LocationStreamer(messenger: registrar.messenger())
     }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
+}
+
+/// Streams GPS fixes and compass headings to Flutter, for logging and evaluation.
+/// Event channel "tankbot/location": maps with type
+///   "gps"     t (unix s), lat, lon, hAcc (m), alt, vAcc, speed, course
+///   "heading" t, mag, true (degrees), acc (degrees), x, y, z (raw field, microtesla)
+///   "auth"    status, precise
+final class LocationStreamer: NSObject, FlutterStreamHandler, CLLocationManagerDelegate {
+  private let mgr = CLLocationManager()
+  private var sink: FlutterEventSink?
+
+  init(messenger: FlutterBinaryMessenger) {
+    super.init()
+    mgr.delegate = self
+    mgr.desiredAccuracy = kCLLocationAccuracyBest
+    mgr.distanceFilter = kCLDistanceFilterNone
+    mgr.headingFilter = 1
+    mgr.headingOrientation = .portrait
+    FlutterEventChannel(name: "tankbot/location", binaryMessenger: messenger).setStreamHandler(self)
+  }
+
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    sink = events
+    mgr.requestWhenInUseAuthorization()
+    mgr.startUpdatingLocation()
+    if CLLocationManager.headingAvailable() { mgr.startUpdatingHeading() }
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    mgr.stopUpdatingLocation()
+    mgr.stopUpdatingHeading()
+    sink = nil
+    return nil
+  }
+
+  func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    if #available(iOS 14.0, *) {
+      sink?(["type": "auth", "status": Int(manager.authorizationStatus.rawValue), "precise": manager.accuracyAuthorization == .fullAccuracy])
+    }
+    if sink != nil { manager.startUpdatingLocation() }
+  }
+
+  func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    for l in locations {
+      sink?(["type": "gps", "t": l.timestamp.timeIntervalSince1970, "lat": l.coordinate.latitude, "lon": l.coordinate.longitude,
+             "hAcc": l.horizontalAccuracy, "alt": l.altitude, "vAcc": l.verticalAccuracy, "speed": l.speed, "course": l.course])
+    }
+  }
+
+  func locationManager(_ manager: CLLocationManager, didUpdateHeading h: CLHeading) {
+    sink?(["type": "heading", "t": h.timestamp.timeIntervalSince1970, "mag": h.magneticHeading, "true": h.trueHeading,
+           "acc": h.headingAccuracy, "x": h.x, "y": h.y, "z": h.z])
+  }
+
+  func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    sink?(["type": "error", "msg": error.localizedDescription])
+  }
+
+  func locationManagerShouldDisplayHeadingCalibration(_ manager: CLLocationManager) -> Bool { false }
 }
 
 /// Streams the phone's ARKit pose to Flutter at ~30 Hz.

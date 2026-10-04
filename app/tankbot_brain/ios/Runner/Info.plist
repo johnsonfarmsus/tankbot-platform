@@ -43,6 +43,8 @@
 	<string>TankBot Brain uses the camera for ARKit position tracking so the robot knows where it is.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>TankBot Brain connects to your robot on the local network to receive lidar data and send commands.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>TankBot Brain records GPS and compass readings (only when you start a sensor log) to test whether they can improve the robot map.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

@@ -22,6 +22,7 @@ import 'app_settings.dart';
 import 'role_screens.dart';
 import 'guardian.dart';
 import 'depth_obstacles.dart';
+import 'sensor_log.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -103,6 +104,66 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   final motion = MotionClient();
   final sensors = SensorClient();
   final depth = DepthObstacles();
+
+  // ---------- sensor log (GPS / compass evaluation) ----------
+  final SensorLog sensorLog = SensorLog();
+  StreamSubscription? _locSub;
+  Timer? _logTimer;
+  int gpsFixes = 0, headingReads = 0;
+  Map<String, dynamic>? lastGps, lastHeading;
+  double lastGpsMs = -1e9;
+  String locAuth = 'not asked yet';
+
+  Future<void> _logStart() async {
+    if (sensorLog.recording) return;
+    final name = await sensorLog.start();
+    if (name == null) {
+      _flash('Could not start the sensor log');
+      return;
+    }
+    gpsFixes = 0;
+    headingReads = 0;
+    _locSub = const EventChannel('tankbot/location').receiveBroadcastStream().listen(_onLocation, onError: (_) {});
+    _logTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      final p = robotPose;
+      sensorLog.write('pose', [p?.x, p?.y, p?.heading, locState, _mode]);
+    });
+    _flash('Recording sensor log $name');
+  }
+
+  Future<void> _logStop() async {
+    _logTimer?.cancel();
+    _logTimer = null;
+    await _locSub?.cancel();
+    _locSub = null;
+    final n = sensorLog.name, lines = sensorLog.lines;
+    await sensorLog.stop();
+    _flash('Saved $n ($lines lines)');
+  }
+
+  void _onLocation(dynamic e) {
+    if (e is! Map) return;
+    final m = Map<String, dynamic>.from(e);
+    final p = robotPose;
+    switch (m['type']) {
+      case 'gps':
+        gpsFixes++;
+        lastGps = m;
+        lastGpsMs = appClockMs();
+        sensorLog.write('gps', [m['t'], m['lat'], m['lon'], m['hAcc'], m['alt'], m['vAcc'], m['speed'], m['course'], p?.x, p?.y, p?.heading]);
+      case 'heading':
+        headingReads++;
+        lastHeading = m;
+        sensorLog.write('heading', [m['t'], m['mag'], m['true'], m['acc'], m['x'], m['y'], m['z'], p?.x, p?.y, p?.heading]);
+      case 'auth':
+        final st = (m['status'] as num?)?.toInt() ?? -1;
+        locAuth = switch (st) { 0 => 'not asked yet', 1 => 'restricted', 2 => 'denied', 3 || 4 => 'allowed', _ => 'unknown' } +
+            (m['precise'] == false ? ' (approximate only)' : '');
+        sensorLog.write('auth', [st, m['precise']]);
+      case 'error':
+        sensorLog.write('error', [m['msg']]);
+    }
+  }
   final poses = PoseClient();
   final grid = OccupancyGrid();
   final store = MapStore();
@@ -348,6 +409,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           _pushHardwareIfChanged();
         }
         break;
+      case 'log.start':
+        _logStart();
+        break;
+      case 'log.stop':
+        _logStop();
+        break;
       case 'bot.calibrate':
         if (m['id'] is String) _calibrateFloor(m['id'] as String);
         break;
@@ -483,6 +550,18 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         for (final e in active.edits)
           if (e['type'] == 'nogo') [e['x1'], e['y1'], e['x2'], e['y2'], e['id']]
       ],
+      'log': {
+        'recording': sensorLog.recording,
+        'name': sensorLog.name,
+        'lines': sensorLog.lines,
+        'gpsFixes': gpsFixes,
+        'headings': headingReads,
+        'auth': locAuth,
+        'gpsAcc': lastGps?['hAcc'],
+        'gpsAgeS': lastGps == null ? null : ((appClockMs() - lastGpsMs) / 1000).round(),
+        'heading': lastHeading?['mag'],
+        'headingAcc': lastHeading?['acc'],
+      },
       'rangers': [for (final q in _rangerPoints()) [(q.dx * 100).round() / 100, (q.dy * 100).round() / 100]],
       'dropoffs': [
         for (final e in active.edits)

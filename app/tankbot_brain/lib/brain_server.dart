@@ -168,6 +168,9 @@ input[type=range]{width:100%}
   <div style="color:#9fb3bb;font-size:12px">Depth camera (low obstacles the lidar can't see): block forward closer than the stop distance; only things at least this tall above the floor count. Raise the height if carpet or thresholds trigger it.</div>
   <div style="font-weight:600;margin-top:4px">Robot</div>
   <div id="robotInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
+  <div style="font-weight:600;margin-top:4px">Sensor log</div>
+  <div class="row"><button id="logBtn">Start recording</button></div>
+  <div id="logInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
   <div style="font-weight:600;margin-top:4px">This brain</div>
   <div id="capsInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
   <button id="setclose">Back to Drive</button>
@@ -372,6 +375,7 @@ $("trim").onchange = e => send({type: "set", trim: -parseInt(e.target.value, 10)
 $("sd").onchange = e => send({type: "set", stopDistMm: parseFloat(e.target.value)});
 $("pd").onchange = e => send({type: "set", passDistMm: parseFloat(e.target.value)});
 $("dsd").onchange = e => send({type: "set", depthStopMm: parseFloat(e.target.value)});
+$("logBtn").onclick = () => send({type: telem && telem.log && telem.log.recording ? "log.stop" : "log.start"});
 $("dmh").onchange = e => send({type: "set", depthMinHeightMm: parseFloat(e.target.value)});
 function liveText(type, s) { if (!s || !s.ok) return "-"; return type === "bumper" ? (s.v === 1 ? "PRESSED" : "ok") : s.v + " mm"; }
 function robotText(r) {
@@ -722,6 +726,14 @@ function updateUi() {
   else lb.style.display = "none";
   if (settingsOpen) { $("capsInfo").textContent = capsText(t.caps, t.tracking); $("robotInfo").textContent = robotText(t.robot); }
   if (botOpen) updateBotLive();
+  if (settingsOpen && t.log) {
+    const lg = t.log;
+    $("logBtn").textContent = lg.recording ? "Stop recording" : "Start recording";
+    $("logInfo").textContent = (lg.recording ? "Recording " + lg.name + " (" + lg.lines + " lines)" : (lg.name ? "Last log: " + lg.name : "Not recording")) +
+      "\nLocation permission: " + lg.auth +
+      "\nGPS: " + lg.gpsFixes + " fixes" + (lg.gpsAcc != null ? ", last claims +-" + Math.round(lg.gpsAcc) + " m, " + lg.gpsAgeS + " s ago" : "") +
+      "\nCompass: " + lg.headings + " readings" + (lg.heading != null ? ", now " + Math.round(lg.heading) + " deg (+-" + Math.round(lg.headingAcc) + ")" : "");
+  }
   $("motors").textContent = m ? "Motors L " + m.left.toFixed(2) + "  R " + m.right.toFixed(2) + " (" + m.src + ")" : "Motors: -";
 }
 
