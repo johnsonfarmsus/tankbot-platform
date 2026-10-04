@@ -12,6 +12,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'lidar_client.dart';
+import 'pose_graph.dart';
 
 class Keyframe {
   final double t; // unix ms
@@ -48,6 +49,10 @@ class MapSession {
   bool edited = false; // keyframes corrected or map edited since the last save
   /// Map edits: {'type': 'erase', x, y, r} and {'type': 'nogo', x1, y1, x2, y2}, each with id + stroke.
   final List<Map<String, dynamic>> edits = [];
+  /// Pose-graph links between keyframes (driving + loop closures), by keyframe index.
+  final List<PGEdge> graphEdges = [];
+  /// GPS fixes tagged to keyframes: {i, lat, lon, hAcc}.
+  final List<Map<String, dynamic>> geoTags = [];
   int nextEditId = 1;
   /// Where the robot last was on this map [x, y, heading]: first guess when the map loads.
   List<double>? lastPose;
@@ -170,6 +175,9 @@ class MapStore {
     final eTmp = File('${d.path}/edits.json.tmp');
     await eTmp.writeAsString(jsonEncode({'next': m.nextEditId, 'edits': m.edits}), flush: true);
     await eTmp.rename('${d.path}/edits.json');
+    final gTmp = File('${d.path}/graph.json.tmp');
+    await gTmp.writeAsString(jsonEncode({'edges': [for (final e in m.graphEdges) e.toJson()], 'geo': m.geoTags}), flush: true);
+    await gTmp.rename('${d.path}/graph.json');
     m.savedCount = count;
     m.renamed = false;
     m.edited = false;
@@ -198,6 +206,17 @@ class MapStore {
         m.nextEditId = (e['next'] as num?)?.toInt() ?? 1;
         for (final x in (e['edits'] as List? ?? [])) {
           m.edits.add(Map<String, dynamic>.from(x as Map));
+        }
+      }
+      final gf = File('${root.path}/$id/graph.json');
+      if (await gf.exists()) {
+        final gj = jsonDecode(await gf.readAsString()) as Map<String, dynamic>;
+        for (final e in (gj['edges'] as List? ?? [])) {
+          final pe = PGEdge.fromJson(e);
+          if (pe != null) m.graphEdges.add(pe);
+        }
+        for (final t in (gj['geo'] as List? ?? [])) {
+          if (t is Map) m.geoTags.add(Map<String, dynamic>.from(t));
         }
       }
       m.savedCount = m.keyframes.length;

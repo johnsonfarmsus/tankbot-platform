@@ -168,6 +168,10 @@ input[type=range]{width:100%}
   <div style="color:#9fb3bb;font-size:12px">Depth camera (low obstacles the lidar can't see): block forward closer than the stop distance; only things at least this tall above the floor count. Raise the height if carpet or thresholds trigger it.</div>
   <div style="font-weight:600;margin-top:4px">Robot</div>
   <div id="robotInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
+  <div style="font-weight:600;margin-top:4px">Map straightening</div>
+  <label style="display:flex;align-items:center;gap:8px"><input id="wallAlign" type="checkbox"> Wall alignment (my walls are mostly square to each other)</label>
+  <div class="row"><label>Use GPS when its accuracy is better than <input id="gpsAcc" type="number" min="1" max="50" step="1" style="width:60px"> m</label></div>
+  <div id="gpsInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5"></div>
   <div style="font-weight:600;margin-top:4px">Sensor log</div>
   <div class="row"><button id="logBtn">Start recording</button></div>
   <div id="logInfo" style="color:#9fb3bb;font-size:12px;line-height:1.5;white-space:pre-line"></div>
@@ -203,7 +207,7 @@ input[type=range]{width:100%}
  <div style="background:#1b2227;border:1px solid #3a4a55;border-radius:12px;padding:16px;width:100%;max-width:760px;margin:0 auto;box-sizing:border-box;display:flex;flex-direction:column;gap:10px;font-size:14px">
   <div style="font-weight:600;font-size:16px">Maps</div>
   <div id="mapActive" style="color:#9fb3bb"></div>
-  <div id="mapQuality" style="color:#9fb3bb;font-size:12px"></div>
+  <div id="mapQuality" style="color:#9fb3bb;font-size:12px;white-space:pre-line"></div>
   <div class="row"><button id="relocBtn">Find me again</button><button id="homeBtn">I'm at home</button></div>
   <div class="row"><input id="mapName" style="flex:1;min-width:0;background:#101416;color:#e6eef0;border:1px solid #3a4a55;border-radius:8px;padding:6px" placeholder="Map name"><button id="mapSave">Save</button></div>
   <div class="row"><button id="mapNew">New map here</button></div>
@@ -361,6 +365,8 @@ function syncSettings() {
   if (typeof s.passDistMm === "number" && document.activeElement !== $("pd")) $("pd").value = Math.round(s.passDistMm);
   if (typeof s.depthStopMm === "number" && document.activeElement !== $("dsd")) $("dsd").value = Math.round(s.depthStopMm);
   if (typeof s.depthMinHeightMm === "number" && document.activeElement !== $("dmh")) $("dmh").value = Math.round(s.depthMinHeightMm);
+  if (typeof s.wallAlign === "boolean") $("wallAlign").checked = s.wallAlign;
+  if (typeof s.gpsMaxAccM === "number" && document.activeElement !== $("gpsAcc")) $("gpsAcc").value = Math.round(s.gpsMaxAccM);
   if (typeof s.minPower === "number") { $("minp").value = Math.round(s.minPower * 100); $("minpv").textContent = Math.round(s.minPower * 100) + "%"; }
   if (typeof s.cruisePower === "number") { $("cruise").value = Math.round(s.cruisePower * 100); $("cruisev").textContent = Math.round(s.cruisePower * 100) + "%"; }
 }
@@ -377,6 +383,8 @@ $("pd").onchange = e => send({type: "set", passDistMm: parseFloat(e.target.value
 $("dsd").onchange = e => send({type: "set", depthStopMm: parseFloat(e.target.value)});
 $("logBtn").onclick = () => send({type: telem && telem.log && telem.log.recording ? "log.stop" : "log.start"});
 $("dmh").onchange = e => send({type: "set", depthMinHeightMm: parseFloat(e.target.value)});
+$("wallAlign").onchange = e => send({type: "set", wallAlign: e.target.checked});
+$("gpsAcc").onchange = e => send({type: "set", gpsMaxAccM: parseFloat(e.target.value)});
 function liveText(type, s) { if (!s || !s.ok) return "-"; return type === "bumper" ? (s.v === 1 ? "PRESSED" : "ok") : s.v + " mm"; }
 function robotText(r) {
   if (!r || !r.caps) return "Robot: no hardware report yet";
@@ -662,7 +670,9 @@ function renderActive() {
   if (q) $("mapQuality").textContent = "Map quality: " + q.matchHits + " lidar corrections, " + q.matchMisses +
     " rejected, " + q.skippedTurning + " scans skipped while spinning, " + q.loopClosures + " loop closures" +
     (q.loopClosures ? " (last one fixed " + q.lastLoopCm.toFixed(0) + " cm / " + q.lastLoopDeg.toFixed(1) + " deg)" : "") +
-    (q.rebuilding ? " - redrawing map..." : "");
+    (q.rebuilding ? " - redrawing map..." : "") +
+    (q.optimizations != null ? "\nStraightened " + q.optimizations + " times (last moved up to " + q.lastOptCm.toFixed(0) + " cm / " +
+      q.lastOptDeg.toFixed(1) + " deg), " + q.wallAligned + " keyframes wall-aligned, " + q.gpsUsed + " GPS fixes used" : "");
 }
 function renderMaps() {
   if (!mapsData) return;
@@ -726,6 +736,12 @@ function updateUi() {
   else lb.style.display = "none";
   if (settingsOpen) { $("capsInfo").textContent = capsText(t.caps, t.tracking); $("robotInfo").textContent = robotText(t.robot); }
   if (botOpen) updateBotLive();
+  if (settingsOpen && t.log && t.settings) {
+    const lim = t.settings.gpsMaxAccM, acc = t.log.gpsAcc;
+    $("gpsInfo").textContent = acc == null ? "GPS: no fix yet" :
+      "GPS now: +-" + Math.round(acc) + " m (" + t.log.gpsAgeS + " s ago) - " + (acc <= lim ? "good enough to use outdoors" : "not used (needs better than " + lim + " m)") +
+      (t.quality ? ". Fixes tagged on this map: " + t.quality.geoTags + ", used: " + t.quality.gpsUsed : "");
+  }
   if (settingsOpen && t.log) {
     const lg = t.log;
     $("logBtn").textContent = lg.recording ? "Stop recording" : "Start recording";

@@ -14,8 +14,10 @@ class LoopClosure {
   /// Full correction: rotate about (pivotX, pivotY) by dTheta, then translate by (tx, ty).
   final double pivotX, pivotY, dTheta, tx, ty;
   final double corrCm, corrDeg, hitRatio;
+  /// Where the newest keyframe really is, according to the match against the first visit.
+  final double matchX, matchY, matchH;
   const LoopClosure(this.startIndex, this.endIndex, this.pivotX, this.pivotY, this.dTheta, this.tx, this.ty,
-      this.corrCm, this.corrDeg, this.hitRatio);
+      this.corrCm, this.corrDeg, this.hitRatio, {this.matchX = 0, this.matchY = 0, this.matchH = 0});
 }
 
 double _sq(double v) => v * v;
@@ -100,7 +102,8 @@ class LoopCloser {
     final c = math.cos(dth), s = math.sin(dth);
     final rx = p.x + c * (cur.x - p.x) - s * (cur.y - p.y);
     final ry = p.y + s * (cur.x - p.x) + c * (cur.y - p.y);
-    return LoopClosure(start, n - 1, p.x, p.y, dth, r.x - rx, r.y - ry, dcm, dth * 180 / math.pi, r.hitRatio);
+    return LoopClosure(start, n - 1, p.x, p.y, dth, r.x - rx, r.y - ry, dcm, dth * 180 / math.pi, r.hitRatio,
+        matchX: r.x, matchY: r.y, matchH: r.h);
   }
 
   /// Transform a pose by a fraction w (0..1) of the correction.

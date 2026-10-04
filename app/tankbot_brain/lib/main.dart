@@ -23,6 +23,7 @@ import 'role_screens.dart';
 import 'guardian.dart';
 import 'depth_obstacles.dart';
 import 'sensor_log.dart';
+import 'pose_graph.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -123,7 +124,6 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     gpsFixes = 0;
     headingReads = 0;
-    _locSub = const EventChannel('tankbot/location').receiveBroadcastStream().listen(_onLocation, onError: (_) {});
     _logTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
       final p = robotPose;
       sensorLog.write('pose', [p?.x, p?.y, p?.heading, locState, _mode]);
@@ -134,8 +134,6 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   Future<void> _logStop() async {
     _logTimer?.cancel();
     _logTimer = null;
-    await _locSub?.cancel();
-    _locSub = null;
     final n = sensorLog.name, lines = sensorLog.lines;
     await sensorLog.stop();
     _flash('Saved $n ($lines lines)');
@@ -301,6 +299,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _telemTimer = Timer.periodic(const Duration(milliseconds: 200), (_) => _sendTelemetry());
     WidgetsBinding.instance.addObserver(this);
     _subs.add(sensors.readings.listen(_onRobotSensors));
+    _locSub = const EventChannel('tankbot/location').receiveBroadcastStream().listen(_onLocation, onError: (_) {});
     _subs.add(poses.depth.listen((pts) {
       depth.update(pts, profile, appClockMs());
       _rememberDropOffs();
@@ -342,6 +341,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _tick?.cancel();
     _telemTimer?.cancel();
     _navTimer?.cancel();
+    _locSub?.cancel();
     final lp = _lastRobotPose;
     if (lp != null && locState == 'tracking') {
       active.lastPose = [lp.x, lp.y, lp.heading];
@@ -425,6 +425,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (m['stopDistMm'] is num || m['passDistMm'] is num) {
           if (m['stopDistMm'] is num) profile.stopDistMm = (m['stopDistMm'] as num).toDouble().clamp(100.0, 2000.0);
           if (m['passDistMm'] is num) profile.passDistMm = (m['passDistMm'] as num).toDouble().clamp(0.0, 1000.0);
+          BotProfileStore.save(profile, store.robot);
+        }
+        if (m['wallAlign'] is bool || m['gpsMaxAccM'] is num) {
+          if (m['wallAlign'] is bool) profile.wallAlign = m['wallAlign'] as bool;
+          if (m['gpsMaxAccM'] is num) profile.gpsMaxAccM = (m['gpsMaxAccM'] as num).toDouble().clamp(1.0, 50.0);
           BotProfileStore.save(profile, store.robot);
         }
         if (m['depthStopMm'] is num || m['depthMinHeightMm'] is num) {
@@ -577,6 +582,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'rebuilding': _rebuilding,
         'navReplans': navReplans,
         'navFrontBlocks': navFrontBlocks,
+        'optimizations': mapOptimizations,
+        'lastOptCm': lastOptMoveCm,
+        'lastOptDeg': lastOptMoveDeg,
+        'wallAligned': wallAligned,
+        'gpsUsed': gpsUsed,
+        'geoTags': active.geoTags.length,
       },
       'blocked': _blocked,
       'blockReason': blockReason,
@@ -595,6 +606,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'passDistMm': profile.passDistMm,
         'depthStopMm': profile.depthStopMm,
         'depthMinHeightMm': profile.depthMinHeightMm,
+        'wallAlign': profile.wallAlign,
+        'gpsMaxAccM': profile.gpsMaxAccM,
         'trim': motionStatus?['trim'],
         'minPower': profile.minPower,
         'cruisePower': profile.cruisePower,
@@ -673,6 +686,17 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     k.add(Keyframe.fromScan(p.x, p.y, p.heading, pts));
     active.updated = DateTime.now();
+    if (k.length >= 2) {
+      final ka = k[k.length - 2], kb = k.last;
+      final (dx, dy, dth) = relativePose(ka.x, ka.y, ka.h, kb.x, kb.y, kb.h);
+      active.graphEdges.add(PGEdge(k.length - 2, k.length - 1, dx, dy, dth));
+    }
+    _tagGeo(k.length - 1);
+    _kfSinceOptimize++;
+    if (_kfSinceOptimize >= 40 && !_optimizing && !_rebuilding && !_loopChecking) {
+      _kfSinceOptimize = 0;
+      _optimizeMap('straighten');
+    }
     _kfSinceLoopCheck++;
     _kfSinceClosure++;
     if (_kfSinceLoopCheck >= 10 && _kfSinceClosure >= 15 && !_loopChecking && !_rebuilding) {
@@ -692,25 +716,167 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     _loopChecking = false;
     if (lc == null || _rebuilding || _loadingMap) return;
-    LoopCloser.apply(active.keyframes, lc);
-    // move the live pose by the full correction so tracking continues on the corrected map
-    final rp = robotPose;
-    if (rp != null) {
-      final t = LoopCloser.transform(lc, rp.x, rp.y, rp.heading, 1.0);
-      final raw = poses.latest;
-      if (_mode == 'ar' && raw != null && raw.good) {
-        _corr.setSoThat(raw, t.$1, t.$2, t.$3);
-      } else {
-        _lidarPose = Pose(appClockMs(), t.$1, t.$2, t.$3, true);
-      }
-      _lastRobotPose = Pose(appClockMs(), t.$1, t.$2, t.$3, true);
-    }
+    // a loop link: the newest keyframe, as seen from the first visit to this place
+    final anchor = lc.startIndex - 1;
+    final ka = active.keyframes[anchor];
+    final (dx, dy, dth) = relativePose(ka.x, ka.y, ka.h, lc.matchX, lc.matchY, lc.matchH);
+    active.graphEdges.add(PGEdge(anchor, lc.endIndex, dx, dy, dth, sigmaT: 0.02, sigmaR: 0.005, robust: true, kind: 'loop'));
     loopClosures++;
     lastLoopCm = lc.corrCm;
     lastLoopDeg = lc.corrDeg;
     _kfSinceClosure = 0;
-    active.edited = true;
-    await _rebuildGrid();
+    await _optimizeMap('loop');
+  }
+
+  // ---------- map straightening (pose graph) ----------
+  bool _optimizing = false;
+  int _kfSinceOptimize = 0, mapOptimizations = 0, wallAligned = 0, gpsUsed = 0;
+  double lastOptMoveCm = 0, lastOptMoveDeg = 0;
+  final _wallDir = Expando<List<double>>();
+  double _lastTaggedGpsMs = -1e9;
+
+  /// A new GPS fix since the last tag: attach it to this keyframe (used later only if good enough).
+  void _tagGeo(int kfIndex) {
+    final g = lastGps;
+    if (g == null || lastGpsMs <= _lastTaggedGpsMs || appClockMs() - lastGpsMs > 1500) return;
+    final acc = (g['hAcc'] as num?)?.toDouble() ?? -1;
+    if (acc <= 0 || acc > 50) return;
+    _lastTaggedGpsMs = lastGpsMs;
+    active.geoTags.add({'i': kfIndex, 'lat': g['lat'], 'lon': g['lon'], 'hAcc': acc});
+  }
+
+  (double, double) _wallOf(Keyframe k) {
+    final c = _wallDir[k];
+    if (c != null) return (c[0], c[1]);
+    final pts = [
+      for (final q in ScanMatcher.robotFrame(k.points(), fwdM: active.lidarFwdM, leftM: active.lidarLeftM)) (q.dx, q.dy)
+    ];
+    final r = WallDirection.ofScan(pts);
+    _wallDir[k] = [r.$1, r.$2];
+    return r;
+  }
+
+  /// Maps saved before the pose graph existed: create driving links from the keyframes as they are.
+  void _ensureOdometryEdges() {
+    final have = <int>{for (final e in active.graphEdges) if (e.kind == 'odo' && e.j == e.i + 1) e.i};
+    final kfs = active.keyframes;
+    for (var i = 0; i + 1 < kfs.length; i++) {
+      if (have.contains(i)) continue;
+      final ka = kfs[i], kb = kfs[i + 1];
+      final (dx, dy, dth) = relativePose(ka.x, ka.y, ka.h, kb.x, kb.y, kb.h);
+      active.graphEdges.add(PGEdge(i, i + 1, dx, dy, dth));
+    }
+  }
+
+  /// Solve the whole map: driving links, loop links, wall alignment and (good) GPS together.
+  Future<void> _optimizeMap(String reason) async {
+    if (_optimizing || _rebuilding || _loadingMap) return;
+    final kfs = active.keyframes;
+    final n = kfs.length;
+    if (n < 10) return;
+    _optimizing = true;
+    try {
+      _ensureOdometryEdges();
+      final g = PoseGraph([for (final k in kfs.take(n)) k.x], [for (final k in kfs.take(n)) k.y], [for (final k in kfs.take(n)) k.h]);
+      g.edges.addAll(active.graphEdges.where((e) => e.i < n && e.j < n));
+      // wall alignment: compare each scan's wall direction with the house's (from the earliest keyframes)
+      wallAligned = 0;
+      if (profile.wallAlign) {
+        var c4 = 0.0, s4 = 0.0, used = 0;
+        for (var i = 0; i < n && used < 30; i++) {
+          final (th, st) = _wallOf(kfs[i]);
+          if (st < 0.45) continue;
+          final w = th + kfs[i].h;
+          c4 += st * math.cos(4 * w);
+          s4 += st * math.sin(4 * w);
+          used++;
+        }
+        if (used >= 5) {
+          final ref = math.atan2(s4, c4) / 4;
+          for (var i = 1; i < n; i++) {
+            final (th, st) = _wallOf(kfs[i]);
+            if (i % 60 == 59) await Future<void>.delayed(Duration.zero);
+            if (st < 0.45) continue;
+            final d = WallDirection.wrap90(th + kfs[i].h - ref);
+            if (d.abs() > 10 * math.pi / 180) continue; // an angled wall, not the house grid
+            g.headingPriors.add(PGHeadingPrior(i, kfs[i].h - d, 0.05));
+            wallAligned++;
+          }
+        }
+      }
+      // GPS: only fixes better than the threshold, and only once they cover enough ground
+      gpsUsed = 0;
+      final good = [
+        for (final t in active.geoTags)
+          if ((t['hAcc'] as num) <= profile.gpsMaxAccM && (t['i'] as num) < n) t
+      ];
+      if (good.length >= 3) {
+        final lat0 = (good.first['lat'] as num).toDouble(), lon0 = (good.first['lon'] as num).toDouble();
+        final mlon = 111320.0 * math.cos(lat0 * math.pi / 180);
+        final fixes = [
+          for (final t in good)
+            PGGps((t['i'] as num).toInt(), ((t['lon'] as num) - lon0) * mlon, ((t['lat'] as num) - lat0) * 111320.0,
+                (t['hAcc'] as num).toDouble().clamp(1.0, 50.0))
+        ];
+        var span = 0.0;
+        for (final f in fixes) {
+          span = math.max(span, math.sqrt(math.pow(f.east - fixes.first.east, 2) + math.pow(f.north - fixes.first.north, 2)));
+        }
+        if (span >= 15) {
+          g.gps.addAll(fixes);
+          g.initGpsAlignment();
+          gpsUsed = fixes.length;
+        }
+      }
+      await Future<void>.delayed(Duration.zero);
+      g.optimize();
+      var maxMove = 0.0, maxTurn = 0.0;
+      for (var i = 0; i < n; i++) {
+        maxMove = math.max(maxMove, math.sqrt(math.pow(g.x[i] - kfs[i].x, 2) + math.pow(g.y[i] - kfs[i].y, 2)));
+        maxTurn = math.max(maxTurn, wrapAngle(g.h[i] - kfs[i].h).abs());
+      }
+      mapOptimizations++;
+      lastOptMoveCm = maxMove * 100;
+      lastOptMoveDeg = maxTurn * 180 / math.pi;
+      if (maxMove < 0.03 && maxTurn < 0.01) return; // already straight: nothing to redraw
+      final last = kfs[n - 1];
+      final ox = last.x, oy = last.y, oh = last.h;
+      for (var i = 0; i < n; i++) {
+        kfs[i].x = g.x[i];
+        kfs[i].y = g.y[i];
+        kfs[i].h = g.h[i];
+      }
+      // keyframes added while solving, and the live pose, move with the newest solved keyframe
+      for (var i = n; i < kfs.length; i++) {
+        final (nx, ny, nh) = _carry(ox, oy, oh, g.x[n - 1], g.y[n - 1], g.h[n - 1], kfs[i].x, kfs[i].y, kfs[i].h);
+        kfs[i].x = nx;
+        kfs[i].y = ny;
+        kfs[i].h = nh;
+      }
+      final rp = robotPose;
+      if (rp != null) {
+        final (px, py, ph) = _carry(ox, oy, oh, g.x[n - 1], g.y[n - 1], g.h[n - 1], rp.x, rp.y, rp.heading);
+        final raw = poses.latest;
+        if (_mode == 'ar' && raw != null && raw.good) {
+          _corr.setSoThat(raw, px, py, ph);
+        } else {
+          _lidarPose = Pose(appClockMs(), px, py, ph, true);
+        }
+        _lastRobotPose = Pose(appClockMs(), px, py, ph, true);
+      }
+      active.edited = true;
+      if (reason == 'loop') _flash('Closed a loop - map straightened (moved up to ${lastOptMoveCm.round()} cm)');
+      await _rebuildGrid();
+    } finally {
+      _optimizing = false;
+    }
+  }
+
+  /// Where a pose ends up when the keyframe it was measured from moves from (o) to (n).
+  (double, double, double) _carry(double ox, double oy, double oh, double nx, double ny, double nh, double px, double py, double ph) {
+    final (rx, ry, rh) = relativePose(ox, oy, oh, px, py, ph);
+    final c = math.cos(nh), s = math.sin(nh);
+    return (nx + c * rx - s * ry, ny + s * rx + c * ry, wrapAngle(nh + rh));
   }
 
   /// Redraw the whole map from the (corrected) keyframes.

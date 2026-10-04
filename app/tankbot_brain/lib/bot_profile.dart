@@ -132,6 +132,9 @@ class BotProfile {
   /// Obstacle handling (mm): never drive forward closer than stopDistMm to something ahead;
   /// plan routes that keep at least passDistMm of clearance around the body.
   double stopDistMm, passDistMm;
+  /// Map straightening: keep walls square (houses), and use GPS only when better than this (m).
+  bool wallAlign;
+  double gpsMaxAccM;
   /// Robot-side sensor edits made here that the robot has not confirmed yet (keep retrying; don't overwrite).
   bool hardwareDirty;
   /// Depth camera: block forward closer than depthStopMm; ignore things lower than depthMinHeightMm.
@@ -152,6 +155,8 @@ class BotProfile {
     this.stopDistMm = 300,
     this.passDistMm = 100,
     this.hardwareDirty = false,
+    this.wallAlign = true,
+    this.gpsMaxAccM = 5,
     this.depthStopMm = 250,
     this.depthMinHeightMm = 60,
   });
@@ -254,6 +259,7 @@ class BotProfile {
         'obstacles': {'stopMm': stopDistMm, 'passMm': passDistMm, 'depthStopMm': depthStopMm, 'depthMinHeightMm': depthMinHeightMm},
         'sensors': [for (final s in sensors) s.toJson()],
         'hardwareDirty': hardwareDirty,
+        'mapping': {'wallAlign': wallAlign, 'gpsMaxAccM': gpsMaxAccM},
       };
 
   static BotProfile? fromJson(dynamic j) {
@@ -300,6 +306,8 @@ class BotProfile {
       stopDistMm: stopMm,
       passDistMm: passMm,
       hardwareDirty: j['hardwareDirty'] == true,
+      wallAlign: !(j['mapping'] is Map && (j['mapping'] as Map)['wallAlign'] == false),
+      gpsMaxAccM: num_(j['mapping'] is Map ? (j['mapping'] as Map)['gpsMaxAccM'] : null, 5).clamp(1, 50).toDouble(),
       depthStopMm: dStop,
       depthMinHeightMm: dMinH,
     );
