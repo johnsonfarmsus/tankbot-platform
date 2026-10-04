@@ -331,6 +331,13 @@ const char MAIN_page[] PROGMEM = R"=====(
         font-size: 1em;
       }
     }
+    .tb-links { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; margin: 6px 0 14px; }
+    .tb-link { display: inline-flex; flex-direction: column; align-items: center; padding: 8px 14px; border-radius: 10px;
+      background: rgba(255,255,255,0.12); color: #fff; text-decoration: none; font-weight: 600; font-size: 0.95em; }
+    .tb-link span { font-weight: 400; font-size: 0.75em; opacity: 0.85; }
+    .tb-brain { background: #00bfa5; color: #062a24; }
+    .tb-note { font-size: 0.8em; opacity: 0.85; max-width: 420px; text-align: center; margin: 0 auto; }
+    .tb-keys { margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -339,6 +346,11 @@ const char MAIN_page[] PROGMEM = R"=====(
     <button class="settings-btn" id="settingsBtn">&#9881;</button>
 
     <h1>TankBot</h1>
+    <div class="tb-links">
+      <a id="brainLink" class="tb-link tb-brain" href="/brain" style="display:none">Open full controls &rarr;<span>maps, tap-to-go, sensors</span></a>
+      <div id="noBrain" class="tb-note">No brain connected. Run the TankBot app on a phone on this Wi-Fi to unlock mapping and self-driving, then use <b>tankbot.local/brain</b>.</div>
+      <a class="tb-link" href="/setup">Setup</a>
+    </div>
 
     <div class="speed-control">
       <label class="speed-label">Speed Control</label>
@@ -361,6 +373,7 @@ const char MAIN_page[] PROGMEM = R"=====(
     </div>
 
     <div class="status" id="status">Ready</div>
+    <div class="tb-note tb-keys">Keyboard: arrow keys or W A S D to drive, Space to stop</div>
   </div>
 
   <!-- Settings Modal -->
@@ -602,6 +615,39 @@ const char MAIN_page[] PROGMEM = R"=====(
           status.textContent = 'Error: ' + error;
         });
     }
+
+    // ---- keyboard driving: hold to drive (same keep-alive safety as the buttons) ----
+    const KEYS = { ArrowUp: 'forward', KeyW: 'forward', ArrowDown: 'backward', KeyS: 'backward',
+                   ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right' };
+    const keysDown = [];
+    function keyDrive() {
+      if (!keysDown.length) { release(); return; }
+      hold('move', KEYS[keysDown[keysDown.length - 1]]); // the most recent key wins
+    }
+    document.addEventListener('keydown', e => {
+      if (e.code === 'Space') { e.preventDefault(); keysDown.length = 0; release(); return; }
+      if (!KEYS[e.code]) return;
+      e.preventDefault();
+      if (!keysDown.includes(e.code)) { keysDown.push(e.code); keyDrive(); }
+    });
+    document.addEventListener('keyup', e => {
+      const i = keysDown.indexOf(e.code);
+      if (i < 0) return;
+      keysDown.splice(i, 1);
+      keyDrive();
+    });
+    window.addEventListener('blur', () => { keysDown.length = 0; release(); });
+
+    // ---- link to the brain's full controls, when a brain is around ----
+    function checkBrain() {
+      fetch('/api/brain').then(r => r.json()).then(b => {
+        const on = !!(b && b.url);
+        document.getElementById('brainLink').style.display = on ? '' : 'none';
+        document.getElementById('noBrain').style.display = on ? 'none' : '';
+      }).catch(() => {});
+    }
+    checkBrain();
+    setInterval(checkBrain, 3000);
 
     // Load saved trim value on page load
     fetch('/getTrim')

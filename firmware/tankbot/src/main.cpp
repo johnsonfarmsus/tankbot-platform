@@ -620,6 +620,10 @@ void reflexUpdate() {
 
 // ---- sensor feed + capabilities (UDP 5603) ----
 Sub sensorSubs[MAX_SUBS];
+// The brain announces itself ("TBRN1:<port>") so this page can link to its full controls.
+IPAddress brainIp; uint16_t brainPort = 0; uint32_t brainSeenMs = 0;
+bool brainAlive() { return brainPort != 0 && millis() - brainSeenMs < 10000; }
+String brainUrl() { return "http://" + brainIp.toString() + ":" + String(brainPort) + "/"; }
 
 String sensorsJson() {
   JsonDocument doc;
@@ -642,7 +646,10 @@ void handleSensorUdp() {
   while (sz > 0) {
     char msg[16] = {0};
     udpSensor.read(msg, min(sz, 15));
-    if (strncmp(msg, "TSSUB", 5) == 0) {
+    if (strncmp(msg, "TBRN1:", 6) == 0) {
+      int port = atoi(msg + 6);
+      if (port > 0 && port < 65536) { brainIp = udpSensor.remoteIP(); brainPort = port; brainSeenMs = millis(); }
+    } else if (strncmp(msg, "TSSUB", 5) == 0) {
       IPAddress ip = udpSensor.remoteIP(); uint16_t port = udpSensor.remotePort();
       Sub *slot = nullptr; bool fresh = false;
       for (auto &s : sensorSubs) if (s.used && s.ip == ip && s.port == port) slot = &s;
@@ -723,6 +730,27 @@ void handleHardware() {
   server.send(200, "application/json", hardwareJson(true));
 }
 void handleSensors() { server.send(200, "application/json", sensorsJson()); }
+
+/// Where the brain's full controls are (empty object if no brain has been seen in 10 s).
+void handleBrainApi() {
+  server.send(200, "application/json", brainAlive() ? "{\"url\":\"" + brainUrl() + "\"}" : "{}");
+}
+
+/// tankbot.local/brain: the one address to bookmark; it always leads to the brain, wherever it is.
+void handleBrainRedirect() {
+  if (brainAlive()) {
+    server.sendHeader("Location", brainUrl());
+    server.send(302, "text/plain", "Brain at " + brainUrl());
+    return;
+  }
+  server.send(200, "text/html",
+    "<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>No brain</title>"
+    "<style>body{font-family:-apple-system,sans-serif;background:#0f1417;color:#e6eef0;padding:24px;max-width:520px;margin:auto;line-height:1.5}"
+    "a{color:#64ffda}</style></head><body><h2>No brain found</h2>"
+    "<p>The full controls (maps, tap-to-go, setup of the robot's sensors) run on a <b>brain</b>: the TankBot app on a phone or tablet on this Wi-Fi.</p>"
+    "<p>Open the app, choose <b>Mounted brain</b> or <b>Brain in hand</b>, and this page will send you there automatically.</p>"
+    "<p><a href='/'>Back to simple driving</a></p><script>setTimeout(()=>location.reload(),4000)</script></body></html>");
+}
 
 /// Cliff sensor pointed at the floor: remember today's floor reading as normal. /tof/calibrate?id=tof
 void handleTofCalibrate() {
@@ -807,6 +835,8 @@ void setupNetwork() {
   server.on("/api/hardware", handleHardware);
   server.on("/api/capabilities", handleHardware);
   server.on("/api/sensors", handleSensors);
+  server.on("/api/brain", handleBrainApi);
+  server.on("/brain", handleBrainRedirect);
   server.on("/tof/calibrate", handleTofCalibrate);
   server.onNotFound(handleRoot);
   server.begin();

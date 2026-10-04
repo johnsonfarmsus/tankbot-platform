@@ -9,6 +9,8 @@ class SensorClient {
   SensorClient({this.host = 'tankbot.local', this.port = 5603});
   final String host;
   final int port;
+  /// Port of this brain's control server, announced to the robot.
+  int brainPort = 8080;
 
   InternetAddress? _addr;
   RawDatagramSocket? _sock;
@@ -71,6 +73,7 @@ class SensorClient {
     final a = _addr, s = _sock;
     if (a == null || s == null) return;
     s.send(ascii.encode('TSSUB'), a, port);
+    s.send(ascii.encode('TBRN1:$brainPort'), a, port); // so the robot's page can link to the full controls
   }
 
   void _handle(Uint8List data) {
