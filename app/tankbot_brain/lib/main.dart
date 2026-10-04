@@ -457,6 +457,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       case 'atHome':
         _atHome();
         break;
+      case 'loc.set':
+        final lx = (m['x'] as num?)?.toDouble(), ly = (m['y'] as num?)?.toDouble(), lh = (m['h'] as num?)?.toDouble();
+        if (lx != null && ly != null && lh != null) _setPosition(lx, ly, lh);
+        break;
       case 'map.erase':
         final ex = (m['x'] as num?)?.toDouble(), ey = (m['y'] as num?)?.toDouble();
         final er = ((m['r'] as num?)?.toDouble() ?? 0.2).clamp(0.05, 1.0);
@@ -1138,6 +1142,31 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       });
     }
     if (mounted) setState(() {});
+  }
+
+  /// "The robot is here, facing this way" (from the controller): fine-tune the hint with the lidar
+  /// within +-50 cm and +-25 degrees, then take it.
+  Future<void> _setPosition(double x, double y, double h) async {
+    if (_navTimer != null && navActive) _navCancel('Stopped: position being set');
+    final s = scan;
+    final t = s?.appMs;
+    final raw = t == null ? poses.latest : (poses.at(t) ?? poses.latest);
+    if (s == null || stale) {
+      _acceptReloc(MatchResult(x, y, h, 0, 0, false), raw, 'Placed where you said (no lidar data to check it against)');
+      return;
+    }
+    final pts = ScanMatcher.robotFrame(s.points, fwdM: lidarFwdM, leftM: lidarLeftM);
+    final coarse = [for (var i = 0; i < pts.length; i += 2) pts[i]];
+    var r = matcher.local(coarse, x, y, h, lin: 0.5, linStep: 0.05, ang: 0.44, angStep: 0.035);
+    await Future<void>.delayed(Duration.zero);
+    r = matcher.local(pts, r.x, r.y, r.h, lin: 0.05, linStep: 0.01, ang: 0.035, angStep: 0.007);
+    if (r.hitRatio >= 0.5) {
+      final moved = math.sqrt(_sq(r.x - x) + _sq(r.y - y)) * 100;
+      _acceptReloc(r, raw, 'Position set - the lidar fine-tuned it by ${moved.round()} cm (${(r.hitRatio * 100).round()}% of the scan fits)');
+    } else {
+      _acceptReloc(MatchResult(x, y, h, 0, r.hitRatio, false), raw,
+          "Placed where you said - the lidar couldn't confirm it (${(r.hitRatio * 100).round()}% fit). If the walls don't line up, try again.");
+    }
   }
 
   /// Manual fallback: the robot is on the map's home spot, facing the way it faced when the map started.

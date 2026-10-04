@@ -184,6 +184,7 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
         <button id="editbtn">Edit map</button>
         <button id="mapping">Pause mapping</button>
         <button id="clear">New map here</button>
+        <button id="setposbtn" style="grid-column: 1 / span 2">Set position&hellip;</button>
       </div>
       <div class="small hidesmall">Keys: arrows or W A S D to drive, Space stops, Esc cancels. Drag the map to look around, scroll or pinch to zoom, &#9678; to follow the robot again.</div>
       <div class="small hidesmall" id="motors"></div>
@@ -803,6 +804,9 @@ function trayCards() {
   if (!t) return cards;
   const st = t.stats || {};
   if (connected && (st.scanRate || 0) < 1) cards.push({sev: "danger", title: "No lidar data", text: "Is the robot switched on and on this Wi-Fi?"});
+  if (setPosMode) cards.push({sev: "info", title: "Set position",
+    text: "Press where the robot really is and drag toward the way it is facing, then let go. The lidar fine-tunes it.",
+    actions: [["Cancel", () => { setPosMode = false; posStart = null; cv.classList.remove("aiming"); renderTray(); }]]});
   if (goMode) cards.push({sev: "info", title: "Go to", text: "Click or tap the map where the robot should go. You can drag and zoom first.",
     actions: [["Cancel", () => { goMode = false; renderTray(); }]]});
   const nv = t.nav;
@@ -816,7 +820,7 @@ function trayCards() {
   if (t.blocked) cards.push({sev: "warn", title: "Forward blocked", text: t.blockReason || "Something is in the way"});
   if (t.loc && t.loc.state !== "tracking") {
     cards.push({sev: "warn", title: t.loc.state === "localizing" ? "Finding its position" : "Position unknown", text: t.loc.note || "",
-      actions: [["Try again", () => send({type: "reloc"})],
+      actions: [["Set position", () => startSetPos()], ["Try again", () => send({type: "reloc"})],
                 ["I'm at home", () => { if (confirm("Is the robot on the map's home spot (white circle), facing along its line?")) send({type: "atHome"}); }]]});
   }
   const mt = t.mount;
@@ -914,6 +918,14 @@ $("legendBtn").onclick = () => $("legend").classList.toggle("show");
 
 // ================= map editing + go-to =================
 let editMode = false, tool = "pan", nogoStart = null, hover = null, lastErase = null, strokeId = 0, goMode = false;
+let setPosMode = false, posStart = null, posEnd = null;
+function startSetPos() {
+  if (editMode) setEdit(false);
+  goMode = false; setMode("map"); showPage("drive");
+  setPosMode = true; posStart = null; posEnd = null;
+  cv.classList.add("aiming");
+  renderTray();
+}
 const HINTS = {
   pan: "Drag to move around the map.",
   erase: "Drag over ghost walls or junk to wipe them back to open floor.",
@@ -936,8 +948,10 @@ document.querySelectorAll("#edittools [data-tool]").forEach(b => b.onclick = () 
 $("editbtn").onclick = () => setEdit(!editMode);
 $("editDone").onclick = () => setEdit(false);
 $("undoEdit").onclick = () => send({type: "map.undo"});
+$("setposbtn").onclick = () => { if (setPosMode) { setPosMode = false; posStart = null; cv.classList.remove("aiming"); renderTray(); } else startSetPos(); };
 $("gobtn").onclick = () => {
   if (editMode) setEdit(false);
+  setPosMode = false; posStart = null;
   setMode("map");
   goMode = !goMode; navDismissed = null;
   cv.classList.toggle("aiming", goMode);
@@ -974,7 +988,8 @@ function onMapClick(w) {
 }
 document.addEventListener("keydown", e => {
   if (e.code !== "Escape") return;
-  if (goMode) { goMode = false; cv.classList.remove("aiming"); renderTray(); }
+  if (setPosMode) { setPosMode = false; posStart = null; cv.classList.remove("aiming"); renderTray(); }
+  else if (goMode) { goMode = false; cv.classList.remove("aiming"); renderTray(); }
   else if (nogoStart) nogoStart = null;
   else if (editMode) setEdit(false);
 });
@@ -991,6 +1006,11 @@ cv.addEventListener("pointerdown", e => {
     const [a, b] = [...pointers.values()];
     pinch = {d: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), ppm: mode === "map" ? viewSt.ppm : radarPpm};
     drag = null;
+    return;
+  }
+  if (setPosMode && mode === "map" && view) {
+    posStart = screenToWorld(q.x, q.y); posEnd = null;
+    drag = {x0: q.x, y0: q.y, x: q.x, y: q.y, moved: false, setpos: true};
     return;
   }
   drag = {x0: q.x, y0: q.y, x: q.x, y: q.y, moved: false, erase: editMode && tool === "erase" && mode === "map"};
@@ -1010,6 +1030,7 @@ cv.addEventListener("pointermove", e => {
     return;
   }
   if (!drag) return;
+  if (drag.setpos) { posEnd = screenToWorld(q.x, q.y); return; }
   const dx = q.x - drag.x, dy = q.y - drag.y;
   drag.x = q.x; drag.y = q.y;
   if (Math.hypot(q.x - drag.x0, q.y - drag.y0) > 6) drag.moved = true;
@@ -1023,6 +1044,18 @@ function endPointer(e, cancelled) {
   pointers.delete(e.pointerId);
   if (pinch) { if (pointers.size < 2) pinch = null; drag = null; return; }
   const d = drag; drag = null;
+  if (d && d.setpos) {
+    if (!cancelled && posStart && view) {
+      const q = canvasXY(e), end = screenToWorld(q.x, q.y);
+      const long = Math.hypot(q.x - d.x0, q.y - d.y0) > 12;
+      // no drag: keep the heading it thinks it has
+      const h = long ? Math.atan2(end.y - posStart.y, end.x - posStart.x) : (telem && telem.pose ? telem.pose.h : Math.PI / 2);
+      send({type: "loc.set", x: posStart.x, y: posStart.y, h: h});
+      setPosMode = false; cv.classList.remove("aiming"); renderTray();
+    }
+    posStart = null; posEnd = null;
+    return;
+  }
   if (cancelled || !d || d.moved || d.erase || mode !== "map" || !view) return;
   const q = canvasXY(e);
   onMapClick(screenToWorld(q.x, q.y));
@@ -1151,6 +1184,14 @@ function frameInner() {
         ctx.strokeStyle = "rgba(79,140,255,0.8)"; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(hs[0], hs[1], 10, 0, Math.PI * 2); ctx.stroke();
       }
+    }
+    if (setPosMode && posStart) {
+      const a = toS(posStart.x, posStart.y);
+      const gh = posEnd && Math.hypot(posEnd.x - posStart.x, posEnd.y - posStart.y) * ppm > 12
+        ? Math.atan2(posEnd.y - posStart.y, posEnd.x - posStart.x) : p.h;
+      if (posEnd) { const b = toS(posEnd.x, posEnd.y); ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.setLineDash([5, 4]); ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]); }
+      ctx.globalAlpha = 0.6; drawArrow(a[0], a[1], gh, true, ppm); ctx.globalAlpha = 1;
     }
     // robot: footprint circle + arrow
     const rs = toS(p.x, p.y);
