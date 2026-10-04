@@ -69,7 +69,7 @@ for r in rows:
         flips += 1
     if s:
         last = s
-al = [abs(num(r, 'alphaDeg')) for r in rows if r['alphaDeg'] and r['why'] == 'driving']
+al = [abs(num(r, 'alphaDeg')) for r in rows if r['alphaDeg'] and r['why'].startswith('driving')]
 print(f'turn direction reversals: {flips}; heading error while driving: median {stats.median(al) if al else 0:.1f} deg, '
       f'90% {sorted(al)[int(len(al) * 0.9)] if al else 0:.1f} deg')
 

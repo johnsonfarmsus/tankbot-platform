@@ -265,7 +265,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       _checkDisturbance(s);
       if (mapping && _mapAllowed) _pending.add(s);
       _processPending();
-      if (motion.driving) _applyDrive();
+      // keep manual driving's obstacle stop current - but never while the autonomous driver is
+      // driving: this used to command 'stop' 10x a second during Go To, fighting the driver
+      if (motion.driving && !navActive) _applyDrive();
       if (!robotMode) setState(() {});
     }));
     _subs.add(client.status.listen((s) => robotStatus = s));
@@ -1760,10 +1762,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       t = dir * turnP;
     } else {
       f = cruise;
+      // steer gently while driving: ease one track by at most (cruise - minimum power), so neither
+      // track ever drops below the power it needs to keep moving
+      final steerMax = math.max(0.0, cruise - profile.minPower);
+      if (alpha.abs() > 0.05) t = (-1.5 * alpha).clamp(-steerMax, steerMax).toDouble();
     }
     _trAlpha = alpha;
     _trTarget = target;
-    _navWhy = t != 0 ? 'turning' : (f > 0 ? 'driving' : (_navRotating ? 'turn pause' : 'idle'));
+    _navWhy = f > 0 ? (t != 0 ? 'driving+steer' : 'driving') : (t != 0 ? 'turning' : (_navRotating ? 'turn pause' : 'idle'));
     // autonomy always asks the guardian before moving forward (whatever the manual setting)
     final g = guard;
     if (f > 0 && !g.forwardClear) {
