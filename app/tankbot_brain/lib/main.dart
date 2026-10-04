@@ -299,6 +299,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _telemTimer = Timer.periodic(const Duration(milliseconds: 200), (_) => _sendTelemetry());
     WidgetsBinding.instance.addObserver(this);
     _subs.add(sensors.readings.listen(_onRobotSensors));
+    _startLagMonitor();
+    _native.invokeMethod<String>('documentsDir').then((d) => _docsDir = d).catchError((_) => null);
     _locSub = const EventChannel('tankbot/location').receiveBroadcastStream().listen(_onLocation, onError: (_) {});
     _subs.add(poses.depth.listen((pts) {
       depth.update(pts, profile, appClockMs());
@@ -343,6 +345,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _telemTimer?.cancel();
     _navTimer?.cancel();
     _locSub?.cancel();
+    _lagTimer?.cancel();
     final lp = _lastRobotPose;
     if (lp != null && locState == 'tracking') {
       active.lastPose = [lp.x, lp.y, lp.heading];
@@ -1592,22 +1595,106 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   /// 10 times a second while navigating: steer along the route, re-plan around surprises.
+  // ---------- trip recorder: one CSV row per driving step, Documents/logs/nav_*.csv ----------
+  IOSink? _navTrace;
+  String? navTraceName;
+  String? _docsDir;
+  String _navWhy = '';
+  double _trAlpha = 0, _trLastTickMs = 0, _loopLagMaxMs = 0, _lagLastMs = 0;
+  Offset? _trTarget;
+  bool _trPathBlocked = false;
+  Timer? _lagTimer;
+
+  /// How late the brain's event loop is: anything long here delays steering and motor commands.
+  void _startLagMonitor() {
+    _lagLastMs = appClockMs();
+    _lagTimer = Timer.periodic(const Duration(milliseconds: 20), (_) {
+      final now = appClockMs();
+      final late = now - _lagLastMs - 20;
+      if (late > _loopLagMaxMs) _loopLagMaxMs = late;
+      _lagLastMs = now;
+    });
+  }
+
   void _navStep() {
+    final now = appClockMs();
+    if (!navActive) {
+      if (_navTrace != null) _navTraceClose();
+      return;
+    }
+    final gap = _trLastTickMs == 0 ? 0.0 : now - _trLastTickMs;
+    _trLastTickMs = now;
+    final replansBefore = navReplans;
+    _navWhy = '';
+    _trPathBlocked = false;
+    _trTarget = null;
+    try {
+      _navStepCore();
+    } finally {
+      _navTraceRow(now, gap, navReplans - replansBefore);
+      if (!navActive) _navTraceClose();
+    }
+  }
+
+  void _navTraceRow(double now, double gap, int replans) {
+    if (_navTrace == null) {
+      final d = _docsDir;
+      if (d == null) return;
+      try {
+        Directory('$d/logs').createSync(recursive: true);
+        final t = DateTime.now();
+        String two(int v) => v.toString().padLeft(2, '0');
+        navTraceName = 'nav_${t.year}${two(t.month)}${two(t.day)}_${two(t.hour)}${two(t.minute)}${two(t.second)}.csv';
+        _navTrace = File('$d/logs/$navTraceName').openWrite();
+        _navTrace!.writeln('ms,gapMs,state,why,x,y,h,tx,ty,alphaDeg,rotating,cmdF,cmdT,guardClear,guardReason,frontMm,reflex,'
+            'replans,pathBlocked,escL,escR,escSrc,wdTrips,blockedCmds,scanAgeMs,loc,rebuilding,optimizing,mode,loopLagMs,goalX,goalY');
+      } catch (_) {
+        _navTrace = null;
+        return;
+      }
+    }
+    String c(Object? v) => v == null ? '' : (v is double ? v.toStringAsFixed(3) : '$v').replaceAll(',', ';');
+    final p = robotPose, g = guard, m = motionStatus, sc = scan;
+    _navTrace!.writeln([
+      c(now.round()), c(gap.round()), c(navState), c(_navWhy), c(p?.x), c(p?.y), c(p?.heading),
+      c(_trTarget?.dx), c(_trTarget?.dy), c(_trAlpha * 180 / math.pi), c(_navRotating ? 1 : 0), c(_cmdF), c(_cmdT),
+      c(g.forwardClear ? 1 : 0), c(g.reason), c(g.frontMm?.round()), c(sensors.block), c(replans), c(_trPathBlocked ? 1 : 0),
+      c(m?['left']), c(m?['right']), c(m?['src']), c(m?['wd_trips']), c(m?['blocked_cmds']),
+      c(sc == null ? null : DateTime.now().difference(sc.received).inMilliseconds), c(locState), c(_rebuilding ? 1 : 0),
+      c(_optimizing ? 1 : 0), c(_mode), c(_loopLagMaxMs.round()), c(navGoal?.dx), c(navGoal?.dy),
+    ].join(','));
+    _loopLagMaxMs = 0;
+  }
+
+  void _navTraceClose() {
+    final t = _navTrace;
+    _navTrace = null;
+    _trLastTickMs = 0;
+    if (t != null) {
+      t.flush().then((_) => t.close());
+      _flash('Trip log saved: $navTraceName');
+    }
+  }
+
+  void _navStepCore() {
     if (!navActive) return;
     final now = appClockMs();
     if (server.clientCount == 0) {
+      _navWhy = 'stopped: no controller';
       _navCancel('Stopped: no controller connected (someone needs to be watching)');
       return;
     }
     if (locState != 'tracking' || _rebuilding) {
       _navStopMotors();
       navNote = _rebuilding ? 'Updating the map...' : 'Lost my position - waiting';
+      _navWhy = _rebuilding ? 'wait: map redraw' : 'wait: position lost';
       return;
     }
     final p = robotPose, goal = navGoal;
     if (p == null || goal == null) return;
     final pos = Offset(p.x, p.y);
     if ((goal - pos).distance < 0.2) {
+      _navWhy = 'arrived';
       _navFinish('Arrived');
       return;
     }
@@ -1615,6 +1702,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
     if (navState == 'blocked') {
       _navStopMotors();
+      _navWhy = 'blocked: waiting to re-plan';
       if (now - _navLastPlanMs > 1500) {
         if (_navReplan()) {
           navNote = 'Found a way - driving';
@@ -1630,10 +1718,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     var replan = now - _navLastPlanMs > 4000;
     if (!replan && now - _navLastBlockReplanMs > 1000 && _pathBlocked(pos, live)) {
       replan = true;
+      _trPathBlocked = true;
       _navLastBlockReplanMs = now;
     }
     if (replan && !_navReplan()) {
       _navStopMotors();
+      _navWhy = 're-plan failed';
       return;
     }
 
@@ -1671,9 +1761,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     } else {
       f = cruise;
     }
+    _trAlpha = alpha;
+    _trTarget = target;
+    _navWhy = t != 0 ? 'turning' : (f > 0 ? 'driving' : (_navRotating ? 'turn pause' : 'idle'));
     // autonomy always asks the guardian before moving forward (whatever the manual setting)
     final g = guard;
     if (f > 0 && !g.forwardClear) {
+      _navWhy = 'guard: ${g.reason}';
       navFrontBlocks++;
       f = 0;
       if (now - _navLastBlockReplanMs > 1000) {
