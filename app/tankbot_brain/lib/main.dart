@@ -206,7 +206,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   int _navIdx = 1, _navFails = 0;
   double _navLastPlanMs = 0;
   bool _navRotating = false;
-  double _navTurnStartMs = 0;
+  double _navTurnStartMs = 0, _navTurnDir = 1, _navSettleUntilMs = 0;
+  int _pathBlockedStreak = 0;
   Timer? _navTimer;
   double _cmdF = 0, _cmdT = 0, _navLastBlockReplanMs = 0;
   int navReplans = 0, navFrontBlocks = 0;
@@ -1717,8 +1718,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     // re-plan now and then (the map changes), and when the lidar sees something on the route
     // (at most once a second, so it doesn't thrash)
-    var replan = now - _navLastPlanMs > 4000;
-    if (!replan && now - _navLastBlockReplanMs > 1000 && _pathBlocked(pos, live)) {
+    var replan = now - _navLastPlanMs > 8000;
+    // something on the route must be seen on 3 consecutive steps: one noisy reading is not a reason
+    _pathBlockedStreak = _pathBlocked(pos, live) ? _pathBlockedStreak + 1 : 0;
+    if (!replan && now - _navLastBlockReplanMs > 1000 && _pathBlockedStreak >= 3) {
       replan = true;
       _trPathBlocked = true;
       _navLastBlockReplanMs = now;
@@ -1742,24 +1745,28 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final cruise = profile.cruisePower;
     final turnP = math.max(profile.minPower, 0.9); // turning on the spot needs nearly everything
     double f = 0, t = 0;
-    // Turn on the spot when more than 20 deg off; keep going until within 4 deg. The direction is
-    // re-checked every tick (an overshoot turns back), and for the last 20 deg the turn is pulsed:
-    // 120 ms on, 200 ms settle, so full-power turns can't spin past the target.
-    final dir = alpha > 0 ? -1.0 : 1.0; // turn command: positive = clockwise/right
-    if (_navRotating) {
-      if (alpha.abs() <= 0.07 && now - _navTurnStartMs >= 150) {
-        _navRotating = false;
-        f = cruise;
-      } else if (alpha.abs() > 0.35) {
-        t = dir * turnP;
+    // Turn on the spot only when more than 30 deg off course. A turn goes one way only and ends at
+    // 12 deg or the moment it overshoots; then the robot sits still briefly so tracking can catch up,
+    // and re-assesses. Smaller errors are steered out while driving. (Pulsing at full power to hit a
+    // tight window overshot and reversed over and over: the left-right wave.)
+    if (now < _navSettleUntilMs) {
+      _navWhy = 'settle';
+    } else if (_navRotating) {
+      final wantDir = alpha > 0 ? -1.0 : 1.0; // turn command: positive = clockwise/right
+      if (alpha.abs() < 0.21 || wantDir != _navTurnDir) {
+        _navRotating = false; // close enough, or overshot: stop and look again
+        _navSettleUntilMs = now + 350;
+      } else if (alpha.abs() > 0.6) {
+        t = _navTurnDir * turnP; // far off: turn continuously
       } else {
-        final phase = ((now - _navTurnStartMs) % 320).toInt();
-        t = phase < 120 ? dir * turnP : 0;
+        final phase = ((now - _navTurnStartMs) % 350).toInt();
+        t = phase < 100 ? _navTurnDir * turnP : 0; // closing in: short nudges, time to see each one land
       }
-    } else if (alpha.abs() > 0.35) {
+    } else if (alpha.abs() > 0.52) {
       _navRotating = true;
+      _navTurnDir = alpha > 0 ? -1.0 : 1.0;
       _navTurnStartMs = now;
-      t = dir * turnP;
+      t = _navTurnDir * turnP;
     } else {
       f = cruise;
       // steer gently while driving: ease one track by at most (cruise - minimum power), so neither
@@ -1769,7 +1776,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     _trAlpha = alpha;
     _trTarget = target;
-    _navWhy = f > 0 ? (t != 0 ? 'driving+steer' : 'driving') : (t != 0 ? 'turning' : (_navRotating ? 'turn pause' : 'idle'));
+    if (_navWhy != 'settle') {
+      _navWhy = f > 0 ? (t != 0 ? 'driving+steer' : 'driving') : (t != 0 ? 'turning' : (_navRotating ? 'turn pause' : 'idle'));
+    }
     // autonomy always asks the guardian before moving forward (whatever the manual setting)
     final g = guard;
     if (f > 0 && !g.forwardClear) {
