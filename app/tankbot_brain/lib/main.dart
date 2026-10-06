@@ -411,6 +411,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           np.hardwareDirty = true; // cleared once the robot confirms (or already matches)
           profile = np;
           maxSpeed = np.cruisePower;
+          if (robotMode) _lockOrientation();
           BotProfileStore.save(np, store.robot);
           server.broadcast({'type': 'bot', 'profile': profile.toJson()});
           _pushHardwareIfChanged();
@@ -1860,7 +1861,15 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   bool get _mapAllowed => !robotMode || mountState == 'mounted';
   bool get _motorsIdle => !motion.driving && appClockMs() - _lastDriveMs > 700;
 
+  /// In robot mode the screen stays in the mounted orientation, so a bump never flips it.
+  void _lockOrientation() {
+    SystemChrome.setPreferredOrientations(profile.phoneMount == 'landscape'
+        ? const [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
+        : const [DeviceOrientation.portraitUp]);
+  }
+
   void _enterRobotMode() {
+    _lockOrientation();
     setState(() {
       robotMode = true;
       mountState = 'mounting';
@@ -1872,6 +1881,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   void _exitRobotMode() => setState(() {
+        SystemChrome.setPreferredOrientations(const []); // back to the default: any orientation
         robotMode = false;
         mountState = 'off';
         mountNote = '';
@@ -2318,52 +2328,69 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final ok = !stale && poses.state == 'normal';
     final sync = client.robotOffsetMs == null ? 'syncing' : '±${(client.syncRttMs! / 2).toStringAsFixed(0)} ms';
     TextStyle s(double size, [Color c = Colors.white70]) => TextStyle(fontSize: size, color: c);
+    final status = <Widget>[
+      Row(children: [
+        Icon(Icons.smart_toy, color: ok ? Colors.tealAccent : Colors.orangeAccent, size: 34),
+        const SizedBox(width: 12),
+        Flexible(child: Text(widget.role == AppRole.mounted ? 'TankBot Brain' : 'TankBot Brain (in hand)', style: s(24, Colors.white))),
+      ]),
+      const SizedBox(height: 12),
+      if (mountNote.isNotEmpty) Text(mountNote, style: s(17, mountState == 'mounted' ? Colors.tealAccent : Colors.amberAccent)),
+      if (locNote.isNotEmpty) Text(locNote, style: s(15, locState == 'tracking' ? Colors.tealAccent : Colors.amberAccent)),
+      Text('Tracking: $poseSource', style: s(14)),
+      Text('Robot: ${robotIp ?? 'searching...'}${(scan != null && !stale) ? '' : ' (not heard from)'}  -  This brain: ${myIp ?? 'no Wi-Fi?'}',
+          style: s(13, (scan != null && !stale) ? Colors.white70 : Colors.amberAccent)),
+      if (navState != 'idle' || navNote.isNotEmpty)
+        Text('Navigation: ${navNote.isEmpty ? navState : navNote}', style: s(15, navActive ? Colors.lightBlueAccent : Colors.white70)),
+      if (_blocked) Text('OBSTACLE AHEAD', style: s(20, Colors.redAccent)),
+    ];
+    final details = <Widget>[
+      Text('Control from any browser on this Wi-Fi:', style: s(14)),
+      const SizedBox(height: 4),
+      SelectableText(server.url ?? server.error ?? 'starting...',
+          style: const TextStyle(fontSize: 20, color: Colors.tealAccent, fontWeight: FontWeight.w600)),
+      Text('or tankbot.local/brain', style: s(13, Colors.white54)),
+      const SizedBox(height: 14),
+      Text('Remotes connected: ${server.clientCount}', style: s(15)),
+      Text('Lidar: ${stale ? "NO DATA" : "${(_recent.length / 2.0).toStringAsFixed(1)} scans/s"}', style: s(15)),
+      Text('Tracking: ${poses.state}', style: s(15)),
+      Text('Clock sync: $sync', style: s(15)),
+      Text('Mapped scans: ${grid.scansIntegrated}', style: s(15)),
+      if (p != null) Text('Position: ${p.x.toStringAsFixed(2)}, ${p.y.toStringAsFixed(2)} m', style: s(15)),
+    ];
+    final exit = Center(
+      child: TextButton(
+        onLongPress: _exitRobotMode,
+        onPressed: () {},
+        child: Text('Long-press to exit robot mode', style: s(13, Colors.white38)),
+      ),
+    );
+    Widget column(List<Widget> kids) => SingleChildScrollView(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: kids));
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(children: [
-                Icon(Icons.smart_toy, color: ok ? Colors.tealAccent : Colors.orangeAccent, size: 36),
-                const SizedBox(width: 12),
-                Text(widget.role == AppRole.mounted ? 'TankBot Brain' : 'TankBot Brain (in hand)', style: s(26, Colors.white)),
-              ]),
-              const SizedBox(height: 16),
-              if (mountNote.isNotEmpty)
-                Text(mountNote, style: s(18, mountState == 'mounted' ? Colors.tealAccent : Colors.amberAccent)),
-              if (locNote.isNotEmpty)
-                Text(locNote, style: s(15, locState == 'tracking' ? Colors.tealAccent : Colors.amberAccent)),
-              Text('Tracking: $poseSource', style: s(14)),
-              Text('Robot: ${robotIp ?? 'searching...'}${(scan != null && !stale) ? '' : ' (not heard from)'}  -  This brain: ${myIp ?? 'no Wi-Fi?'}',
-                  style: s(13, (scan != null && !stale) ? Colors.white70 : Colors.amberAccent)),
-              if (navState != 'idle' || navNote.isNotEmpty)
-                Text('Navigation: ${navNote.isEmpty ? navState : navNote}', style: s(15, navActive ? Colors.lightBlueAccent : Colors.white70)),
-              const SizedBox(height: 24),
-              Text('Control from any browser on this Wi-Fi:', style: s(14)),
-              const SizedBox(height: 6),
-              SelectableText(server.url ?? server.error ?? 'starting...',
-                  style: const TextStyle(fontSize: 22, color: Colors.tealAccent, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 24),
-              Text('Remotes connected: ${server.clientCount}', style: s(16)),
-              Text('Lidar: ${stale ? "NO DATA" : "${(_recent.length / 2.0).toStringAsFixed(1)} scans/s"}', style: s(16)),
-              Text('Tracking: ${poses.state}', style: s(16)),
-              Text('Clock sync: $sync', style: s(16)),
-              Text('Mapped scans: ${grid.scansIntegrated}', style: s(16)),
-              if (p != null) Text('Position: ${p.x.toStringAsFixed(2)}, ${p.y.toStringAsFixed(2)} m', style: s(16)),
-              if (_blocked) Text('OBSTACLE AHEAD', style: s(20, Colors.redAccent)),
-              const Spacer(),
-              Center(
-                child: TextButton(
-                  onLongPress: _exitRobotMode,
-                  onPressed: () {},
-                  child: Text('Long-press to exit robot mode', style: s(13, Colors.white38)),
+          padding: const EdgeInsets.all(16),
+          child: LayoutBuilder(builder: (context, box) {
+            final wide = box.maxWidth > box.maxHeight; // landscape mount: status and details side by side
+            if (wide) {
+              return Column(children: [
+                Expanded(
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Expanded(flex: 3, child: column(status)),
+                    const SizedBox(width: 20),
+                    Expanded(flex: 2, child: column(details)),
+                  ]),
                 ),
-              ),
-            ],
-          ),
+                exit,
+              ]);
+            }
+            return Column(children: [
+              Expanded(child: column([...status, const SizedBox(height: 20), ...details])),
+              exit,
+            ]);
+          }),
         ),
       ),
     );

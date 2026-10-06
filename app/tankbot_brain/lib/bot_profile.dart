@@ -132,6 +132,9 @@ class BotProfile {
   /// Obstacle handling (mm): never drive forward closer than stopDistMm to something ahead;
   /// plan routes that keep at least passDistMm of clearance around the body.
   double stopDistMm, passDistMm;
+  /// How the brain phone sits in its mount: 'portrait' (upright) or 'landscape' (on its side).
+  /// Tracking doesn't care (it follows the camera); this sets the screen layout and orientation lock.
+  String phoneMount;
   /// Map straightening: keep walls square (houses), and use GPS only when better than this (m).
   bool wallAlign;
   double gpsMaxAccM;
@@ -160,6 +163,7 @@ class BotProfile {
     this.hardwareDirty = false,
     this.hardwareMigrated = true,
     this.wallAlign = true,
+    this.phoneMount = 'portrait',
     this.gpsMaxAccM = 5,
     this.depthStopMm = 250,
     this.depthMinHeightMm = 60,
@@ -255,6 +259,7 @@ class BotProfile {
 
   Map<String, dynamic> toJson() => {
         'version': 2,
+        'phoneMount': phoneMount,
         'name': name,
         'drive': drive,
         'platform': {'widthMm': widthMm, 'lengthMm': lengthMm, 'heightMm': platformHeightMm},
@@ -314,6 +319,7 @@ class BotProfile {
       // profiles saved before this flag existed may still hold measured placements to carry over
       hardwareMigrated: j['hardwareMigrated'] == true,
       wallAlign: !(j['mapping'] is Map && (j['mapping'] as Map)['wallAlign'] == false),
+      phoneMount: j['phoneMount'] == 'landscape' ? 'landscape' : 'portrait',
       gpsMaxAccM: num_(j['mapping'] is Map ? (j['mapping'] as Map)['gpsMaxAccM'] : null, 5).clamp(1, 50).toDouble(),
       depthStopMm: dStop,
       depthMinHeightMm: dMinH,

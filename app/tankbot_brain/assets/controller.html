@@ -218,6 +218,7 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
     <div class="row">
       <label>Name <input id="botName" style="width:140px"></label>
       <label>Drive <select id="botDrive"><option value="tank">Tank</option><option value="wheelchair">Wheelchair</option><option value="mecanum">Mecanum</option></select></label>
+      <label>Brain phone mounted <select id="botMount"><option value="portrait">upright (portrait)</option><option value="landscape">on its side (landscape)</option></select></label>
     </div>
     <div class="row">
       <label>Platform width <input id="botW" type="number" min="50" max="3000" style="width:72px"> mm</label>
@@ -491,6 +492,7 @@ function openBot() {
   if (!botProfile) { send({type: "bot.get"}); return; }
   botDraft = JSON.parse(JSON.stringify(botProfile));
   $("botName").value = botDraft.name; $("botDrive").value = botDraft.drive;
+  $("botMount").value = botDraft.phoneMount || "portrait";
   $("botW").value = botDraft.platform.widthMm; $("botL").value = botDraft.platform.lengthMm;
   $("botH").value = botDraft.platform.heightMm == null ? 60 : botDraft.platform.heightMm;
   renderBotSensors(); drawBot();
@@ -500,6 +502,7 @@ $("botCancel").onclick = () => showPage("drive");
 $("botSave").onclick = () => {
   if (!botDraft) return;
   botDraft.name = $("botName").value; botDraft.drive = $("botDrive").value;
+  botDraft.phoneMount = $("botMount").value;
   botDraft.platform.widthMm = parseFloat($("botW").value); botDraft.platform.lengthMm = parseFloat($("botL").value);
   botDraft.platform.heightMm = parseFloat($("botH").value) || 0;
   const probs = Object.keys(botProblems());
