@@ -309,9 +309,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       depth.update(pts, profile, appClockMs());
       _rememberDropOffs();
     }));
-    client.start();
-    motion.start();
-    sensors.start();
+    _connectRobot();
+    _linkTimer = Timer.periodic(const Duration(seconds: 4), (_) => _checkRobotLink());
     if (widget.role == AppRole.mounted) {
       poses.start();
       WidgetsBinding.instance.addPostFrameCallback((_) => _enterRobotMode()); // this phone rides on the robot
@@ -349,6 +348,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _navTimer?.cancel();
     _locSub?.cancel();
     _lagTimer?.cancel();
+    _linkTimer?.cancel();
     final lp = _lastRobotPose;
     if (lp != null && locState == 'tracking') {
       active.lastPose = [lp.x, lp.y, lp.heading];
@@ -555,7 +555,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
                 [(sc.points[i].angleDeg * 10).round() / 10, (sc.points[i].distMm).round() / 1000]
             ],
       'lidarOffset': {'fwd': lidarFwdM, 'left': lidarLeftM},
-      'robotIp': motion.address,
+      'robotIp': robotIp ?? motion.address,
       'bot': {'name': profile.name, 'drive': profile.drive, 'bodyRadiusM': profile.bodyRadiusM, 'sensors': profile.sensors.length},
       'mapInfo': _mapInfo(),
       'loc': {'state': locState, 'note': locNote},
@@ -1598,6 +1598,62 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   /// 10 times a second while navigating: steer along the route, re-plan around surprises.
+  // ---------- finding the robot (and finding it again) ----------
+  String? robotIp, myIp;
+  bool _connecting = false;
+  double _lastRobotHeardMs = 0;
+  Timer? _linkTimer;
+
+  /// Look up tankbot.local (falling back to the last address that worked) and point all three
+  /// links (lidar, motion, sensors) at it.
+  Future<void> _connectRobot() async {
+    if (_connecting) return;
+    _connecting = true;
+    try {
+      String? ip;
+      try {
+        final found = await InternetAddress.lookup('tankbot.local', type: InternetAddressType.IPv4)
+            .timeout(const Duration(seconds: 5));
+        if (found.isNotEmpty) ip = found.first.address;
+      } catch (_) {}
+      final last = widget.settings?.lastRobotIp ?? '';
+      ip ??= last.isNotEmpty ? last : null;
+      if (ip == null) return; // nothing yet: the link check tries again shortly
+      robotIp = ip;
+      client.start(manualIp: ip);
+      motion.start(manualIp: ip);
+      sensors.start(manualIp: ip);
+      _lastRobotHeardMs = appClockMs(); // give it a moment before judging the link
+    } finally {
+      _connecting = false;
+    }
+  }
+
+  /// Every few seconds: is the robot talking to us? If not for 8 s, look for it again.
+  Future<void> _checkRobotLink() async {
+    final now = appClockMs();
+    final heard = (scan != null && !stale) || sensors.fresh;
+    if (heard) {
+      _lastRobotHeardMs = now;
+      final s = widget.settings;
+      if (s != null && robotIp != null && s.lastRobotIp != robotIp) {
+        s.lastRobotIp = robotIp!;
+        s.save();
+      }
+    } else if (now - _lastRobotHeardMs > 8000) {
+      _lastRobotHeardMs = now;
+      _connectRobot();
+    }
+    try {
+      for (final ni in await NetworkInterface.list(type: InternetAddressType.IPv4)) {
+        if (ni.name.startsWith('en')) {
+          myIp = ni.addresses.first.address;
+          break;
+        }
+      }
+    } catch (_) {}
+  }
+
   // ---------- trip recorder: one CSV row per driving step, Documents/logs/nav_*.csv ----------
   IOSink? _navTrace;
   String? navTraceName;
@@ -2281,6 +2337,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
               if (locNote.isNotEmpty)
                 Text(locNote, style: s(15, locState == 'tracking' ? Colors.tealAccent : Colors.amberAccent)),
               Text('Tracking: $poseSource', style: s(14)),
+              Text('Robot: ${robotIp ?? 'searching...'}${(scan != null && !stale) ? '' : ' (not heard from)'}  -  This brain: ${myIp ?? 'no Wi-Fi?'}',
+                  style: s(13, (scan != null && !stale) ? Colors.white70 : Colors.amberAccent)),
               if (navState != 'idle' || navNote.isNotEmpty)
                 Text('Navigation: ${navNote.isEmpty ? navState : navNote}', style: s(15, navActive ? Colors.lightBlueAccent : Colors.white70)),
               const SizedBox(height: 24),

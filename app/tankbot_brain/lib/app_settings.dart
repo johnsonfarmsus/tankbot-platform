@@ -9,6 +9,7 @@ class AppSettings {
   AppRole? role;
   String brainUrl = ''; // controller role: last brain address, e.g. http://192.168.1.199:8080
   String lastRobot = 'TankBot'; // brain roles: which robot's profile and maps to open at startup
+  String lastRobotIp = ''; // the robot's last known address: fallback when tankbot.local doesn't resolve
 
   static const _native = MethodChannel('tankbot/arkit');
 
@@ -31,6 +32,7 @@ class AppSettings {
       s.role = AppRole.values.cast<AppRole?>().firstWhere((e) => e!.name == r, orElse: () => null);
       s.brainUrl = (j['brainUrl'] as String?) ?? '';
       s.lastRobot = (j['lastRobot'] as String?) ?? 'TankBot';
+      s.lastRobotIp = (j['lastRobotIp'] as String?) ?? '';
     } catch (_) {}
     return s;
   }
@@ -39,7 +41,7 @@ class AppSettings {
     final f = await _file();
     if (f == null) return;
     try {
-      await f.writeAsString(jsonEncode({'role': role?.name, 'brainUrl': brainUrl, 'lastRobot': lastRobot}), flush: true);
+      await f.writeAsString(jsonEncode({'role': role?.name, 'brainUrl': brainUrl, 'lastRobot': lastRobot, 'lastRobotIp': lastRobotIp}), flush: true);
     } catch (_) {}
   }
 }
