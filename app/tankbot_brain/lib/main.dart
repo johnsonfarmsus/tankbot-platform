@@ -682,6 +682,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'changesCommitted': changesCommitted,
         'newTerritoryScans': newTerritoryScans,
         'untrustedScans': untrustedScans,
+        'wideRecoveries': wideRecoveries,
         'tempMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] != 'change' && e['confirmed'] != true).length,
       },
       'blocked': _blocked,
@@ -2359,6 +2360,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   // ---------- trust: stop drawing (and stop driving) when the position is doubtful ----------
   bool _scanTrusted = true;
+  int _matchMissStreak = 0, wideRecoveries = 0;
+  double _lastWideSearchMs = 0;
   double _untrustedSinceMs = 0;
   int untrustedScans = 0;
   final Map<int, double> _kfAddedMs = {}; // keyframe index -> when it was added (this session)
@@ -2555,8 +2558,23 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       _noteTrust();
       return lidarOnly ? null : guess;
     }
-    final r = matcher.localCoarseFine(pts, guess.x, guess.y, guess.heading,
-        lin: lidarOnly ? 0.16 : 0.12, ang: lidarOnly ? 0.26 : 0.17);
+    // The camera's position can slide (phones without a depth sensor, plain walls, standing still).
+    // Matches that keep failing mean it has slid outside the normal window: look wider.
+    final wide = _matchMissStreak >= 3;
+    var r = matcher.localCoarseFine(pts, guess.x, guess.y, guess.heading,
+        lin: wide ? 0.35 : (lidarOnly ? 0.16 : 0.12), ang: wide ? 0.3 : (lidarOnly ? 0.26 : 0.17));
+    final nowT = appClockMs();
+    if ((r.hitRatio < 0.5 || r.atEdge) && _matchMissStreak >= 8 && nowT - _lastWideSearchMs > 1500) {
+      // still lost: the same wide search Set position does (+-60 cm, +-20 deg), a couple of times a second
+      _lastWideSearchMs = nowT;
+      final coarse = [for (var i = 0; i < pts.length; i += 2) pts[i]];
+      var w = matcher.local(coarse, guess.x, guess.y, guess.heading, lin: 0.6, linStep: 0.05, ang: 0.35, angStep: 0.035);
+      w = matcher.local(pts, w.x, w.y, w.h, lin: 0.05, linStep: 0.01, ang: 0.035, angStep: 0.007);
+      if (w.hitRatio >= 0.6 && w.hitRatio > r.hitRatio) {
+        r = w;
+        wideRecoveries++;
+      }
+    }
     // How much of this scan lands on parts of the map we already know? In new territory there is
     // little to compare with and the camera carries the pose; where the map is known, the scan has to
     // agree with it before anything is drawn.
@@ -2571,11 +2589,15 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _noteTrust();
     if (!matched) {
       matchMisses++;
+      _matchMissStreak++;
       return lidarOnly ? null : guess; // unsure: keep the camera's guess, or skip the scan
     }
     matchHits++;
-    // Camera mode: move halfway to the match each scan (smooth, robust to one bad match).
-    final a = lidarOnly ? 1.0 : 0.5;
+    _matchMissStreak = 0;
+    // Camera mode: move halfway to the match each scan (smooth, robust to one bad match) - but when
+    // the lidar is confident and the camera is well off, snap to the lidar: the camera has drifted.
+    final off = math.sqrt(_sq(r.x - guess.x) + _sq(r.y - guess.y));
+    final a = lidarOnly || (r.hitRatio >= 0.6 && off > 0.1) ? 1.0 : 0.5;
     final nx = guess.x + (r.x - guess.x) * a, ny = guess.y + (r.y - guess.y) * a;
     final nh = guess.heading + _angDiff(r.h, guess.heading) * a;
     lastCorrCm = math.sqrt(_sq(r.x - guess.x) + _sq(r.y - guess.y)) * 100;
