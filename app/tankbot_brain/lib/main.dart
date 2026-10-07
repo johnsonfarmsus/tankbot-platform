@@ -208,6 +208,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   double _navLastPlanMs = 0;
   bool _navRotating = false;
   double _navTurnStartMs = 0, _navTurnDir = 1, _navSettleUntilMs = 0;
+  // recovery when blocked: back up, settle, re-plan around what was in the way
+  String _recover = '';
+  double _recoverUntilMs = 0, _blockedSinceMs = 0;
+  Offset? _recoverFrom;
+  int _navRecoveries = 0;
   int _pathBlockedStreak = 0;
   Timer? _navTimer;
   double _cmdF = 0, _cmdT = 0, _navLastBlockReplanMs = 0;
@@ -1687,6 +1692,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     navGoal = Offset(x, y);
     _navFails = 0;
     _navRotating = false;
+    _navRecoveries = 0;
+    _recover = '';
+    _blockedSinceMs = 0;
     _onRelease(); // start from a standstill
     if (_navReplan()) {
       navNote = 'Driving to the goal';
@@ -1931,6 +1939,35 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     final live = _liveObstacles();
 
+    if (_recover == 'back') {
+      final moved = (pos - _recoverFrom!).distance;
+      if (moved >= 0.25 || now > _recoverUntilMs || !_rearClear()) {
+        _recover = 'settle';
+        _recoverUntilMs = now + 500;
+        _navStopMotors();
+      } else {
+        _navWhy = 'recover: backing up';
+        _cmdF = -profile.minPower;
+        _cmdT = 0;
+        motion.drive(_cmdF, _cmdT);
+        _lastDriveMs = now;
+        return;
+      }
+    }
+    if (_recover == 'settle') {
+      _navWhy = 'recover: settle';
+      if (now < _recoverUntilMs) {
+        _navStopMotors();
+        return;
+      }
+      _recover = '';
+      _blockedSinceMs = 0;
+      if (!_navReplan()) {
+        _navStopMotors();
+        return;
+      }
+      navNote = 'Backed away - going around it';
+    }
     if (navState == 'blocked') {
       _navStopMotors();
       _navWhy = 'blocked: waiting to re-plan';
@@ -2013,6 +2050,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       _navWhy = 'guard: ${g.reason}';
       navFrontBlocks++;
       f = 0;
+      if (_blockedSinceMs == 0) _blockedSinceMs = now;
+      if (now - _blockedSinceMs > 1200) {
+        _startRecovery(g.reason, pos, p.heading);
+        return;
+      }
       if (now - _navLastBlockReplanMs > 1000) {
         _navLastBlockReplanMs = now;
         if (!_navReplan()) {
@@ -2022,10 +2064,57 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         navNote = 'In the way (${g.reason}) - going around';
       }
     }
+    if (f > 0 && g.forwardClear) _blockedSinceMs = 0;
     _cmdF = f;
     _cmdT = t;
     motion.drive(_cmdF, _cmdT);
     _lastDriveMs = now;
+  }
+
+  /// Blocked ahead: mark what is there (temporary, so the new route avoids it), then back up if the
+  /// space behind is clear. Gives up on this goal after 4 tries, or when boxed in.
+  void _startRecovery(String reason, Offset pos, double heading) {
+    _navRecoveries++;
+    _blockedSinceMs = 0;
+    _stopNow();
+    final ahead = profile.lengthMm / 2000.0 + 0.08;
+    _addMark('bump', pos.dx + math.cos(heading) * ahead, pos.dy + math.sin(heading) * ahead, 0.07);
+    if (_navRecoveries > 4) {
+      _navFinish('Stuck: kept getting blocked ($reason) - giving up on this spot', failed: true);
+      return;
+    }
+    if (!_rearClear()) {
+      _navFinish('Boxed in: blocked ahead ($reason) and no room to back up', failed: true);
+      return;
+    }
+    _recover = 'back';
+    _recoverFrom = pos;
+    _recoverUntilMs = appClockMs() + 2000;
+    navNote = 'Blocked ($reason) - backing up to go around';
+  }
+
+  void _stopNow() => _navStopMotors();
+
+  /// Room to back up ~30 cm: no robot reflex blocking the back, no lidar points in the strip behind,
+  /// and no walls there on the map.
+  bool _rearClear() {
+    if (sensors.blocks['back'] != null) return false;
+    final p = robotPose;
+    if (p == null) return false;
+    final rear = profile.lengthMm / 2000.0, half = profile.widthMm / 2000.0 + 0.04;
+    final s = scan;
+    if (s != null && !stale) {
+      for (final q in ScanMatcher.robotFrame(s.points, fwdM: lidarFwdM, leftM: lidarLeftM)) {
+        if (q.dx < -rear + 0.02 && q.dx > -rear - 0.3 && q.dy.abs() < half) return false;
+      }
+    }
+    final c = math.cos(p.heading), sn = math.sin(p.heading);
+    for (var b = rear; b <= rear + 0.3; b += 0.05) {
+      for (var l = -half; l <= half; l += 0.05) {
+        if (grid.at(p.x - c * b - sn * l, p.y - sn * b + c * l) > 0.5) return false;
+      }
+    }
+    return true;
   }
 
   // ---------- mounting ----------
