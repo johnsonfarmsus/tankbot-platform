@@ -728,7 +728,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       },
       'motion': m == null ? null : {'left': m['left'], 'right': m['right'], 'src': m['src']},
       'stats': {
-        'scanRate': _recent.length / 2.0,
+        'scanRate': _scanRate(),
+        'robotSilentS': _lastRobotHeardMs == 0 ? null : ((appClockMs() - _lastRobotHeardMs) / 1000).round(),
         'ar': poses.state,
         'mapped': grid.scansIntegrated,
         'remotes': server.clientCount,
@@ -1834,6 +1835,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   String? robotIp, myIp;
   bool _connecting = false;
   double _lastRobotHeardMs = 0;
+  double _lastReconnectMs = 0;
   Timer? _linkTimer;
 
   /// Look up tankbot.local (falling back to the last address that worked) and point all three
@@ -1855,7 +1857,6 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       client.start(manualIp: ip);
       motion.start(manualIp: ip);
       sensors.start(manualIp: ip);
-      _lastRobotHeardMs = appClockMs(); // give it a moment before judging the link
     } finally {
       _connecting = false;
     }
@@ -1872,9 +1873,15 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         s.lastRobotIp = robotIp!;
         s.save();
       }
-    } else if (now - _lastRobotHeardMs > 8000) {
-      _lastRobotHeardMs = now;
-      _connectRobot();
+    } else {
+      if (now - _lastRobotHeardMs > 3000 && (navActive || _exploring)) {
+        _stopExplore('Exploration stopped: the robot stopped responding (power? Wi-Fi?)');
+        if (navActive) _navCancel('Stopped: the robot stopped responding (power? Wi-Fi?)');
+      }
+      if (now - _lastRobotHeardMs > 8000 && now - _lastReconnectMs > 8000) {
+        _lastReconnectMs = now; // look for it again every 8 s while it stays quiet
+        _connectRobot();
+      }
     }
     try {
       for (final ni in await NetworkInterface.list(type: InternetAddressType.IPv4)) {
@@ -2800,6 +2807,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   // ---------- driving ----------
+  double _scanRate() {
+    final now = DateTime.now();
+    _recent.removeWhere((t) => now.difference(t) > const Duration(seconds: 2));
+    return _recent.length / 2.0;
+  }
+
   bool get stale => scan == null || DateTime.now().difference(scan!.received) > const Duration(seconds: 1);
 
   /// The guardian's current verdict on forward motion (lidar around the body's front, ESP32 reflexes).
