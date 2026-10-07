@@ -330,7 +330,22 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _subs.add(sensors.readings.listen(_onRobotSensors));
     _startLagMonitor();
-    poses.onJump = (m, deg) => _event('camera jump smoothed over', '${(m * 100).round()} cm / ${deg.round()} deg in one frame');
+    poses.onJump = (m, deg) {
+      _event('camera jump smoothed over', '${(m * 100).round()} cm / ${deg.round()} deg in one frame');
+      // several impossible jumps within a few seconds: the camera can't see properly (lens covered,
+      // smudged, too dark) - track with the lidar alone for a minute rather than keep trusting it
+      final now = appClockMs();
+      _camJumpTimes.add(now);
+      _camJumpTimes.removeWhere((t) => now - t > 5000);
+      if (_camJumpTimes.length >= 3) {
+        if (now > _camDistrustUntilMs) {
+          cameraDistrusts++;
+          _event('camera distrusted', '${_camJumpTimes.length} impossible jumps in 5 s');
+          _flash('Camera tracking is jumping around (lens covered or smudged?) - using the lidar alone for now');
+        }
+        _camDistrustUntilMs = now + 60000;
+      }
+    };
     _marksTimer = Timer.periodic(const Duration(seconds: 60), (_) => _expireMarks());
     _native.invokeMethod<String>('documentsDir').then((d) => _docsDir = d).catchError((_) => null);
     _locSub = const EventChannel('tankbot/location').receiveBroadcastStream().listen(_onLocation, onError: (_) {});
@@ -2601,6 +2616,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   Pose? _idleCamRef;
+  final List<double> _camJumpTimes = [];
   double _camDistrustUntilMs = 0;
   int cameraDistrusts = 0;
 
