@@ -35,7 +35,7 @@ class TankBotApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'TankBot Brain',
+      title: 'TankBot',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal, brightness: Brightness.dark),
@@ -3240,7 +3240,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       Row(children: [
         Icon(Icons.smart_toy, color: ok ? Colors.tealAccent : Colors.orangeAccent, size: 34),
         const SizedBox(width: 12),
-        Flexible(child: Text(widget.role == AppRole.mounted ? 'TankBot Brain' : 'TankBot Brain (in hand)', style: s(24, Colors.white))),
+        Flexible(child: Text(widget.role == AppRole.mounted ? 'TankBot - mounted brain' : 'TankBot - brain in hand', style: s(24, Colors.white))),
       ]),
       const SizedBox(height: 12),
       if (mountNote.isNotEmpty) Text(mountNote, style: s(17, mountState == 'mounted' ? Colors.tealAccent : Colors.amberAccent)),

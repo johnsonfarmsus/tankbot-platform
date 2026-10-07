@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>TankBot Brain</string>
+	<string>TankBot</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>tankbot_brain</string>
+	<string>TankBot</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -40,11 +40,11 @@
 		<string>_http._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>TankBot Brain uses the camera for ARKit position tracking so the robot knows where it is.</string>
+	<string>TankBot uses the camera for ARKit position tracking so the robot knows where it is.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>TankBot Brain connects to your robot on the local network to receive lidar data and send commands.</string>
+	<string>TankBot connects to your robot on the local network to receive lidar data and send commands.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>TankBot Brain records GPS and compass readings (only when you start a sensor log) to test whether they can improve the robot map.</string>
+	<string>TankBot records GPS and compass readings (only when you start a sensor log) to test whether they can improve the robot map.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

@@ -40,7 +40,7 @@ The controller's Settings page shows the current tier and what would unlock the 
 |---|---|
 | `firmware/tankbot/` | ESP32 firmware v3: sensor table, directional reflexes, lidar bridge, sensor feed, web page, OTA |
 | `firmware/motion/` | the original TankBot firmware, kept for reference |
-| `app/tankbot_brain/` | the Flutter app: Mounted brain / Brain in hand / Controller roles |
+| `app/tankbot_brain/` | the **TankBot** app (Flutter): Mounted brain / Brain in hand / Controller roles |
 | `docs/` | [user guide](docs/user-guide.md), [wiring](docs/wiring.md), [protocol](docs/protocol.md), [bot profile](docs/bot-profile.md), [app architecture](docs/app-architecture.md), [diagnostics](docs/diagnostics.md), [roadmap](docs/ROADMAP.md), [changelog](CHANGELOG.md) |
 | `tools/` | desktop helpers: log analysis, brain commands, controller checks ([tools/README](tools/README.md)) |
 
@@ -60,7 +60,8 @@ The controller's Settings page shows the current tier and what would unlock the 
 
 ## Adding a brain
 
-1. Install the app on a phone (iOS today; Android when ARCore support lands) and choose a role:
+1. Install the **TankBot** app on a phone (iOS today; Android when ARCore support lands). Each time it
+   opens it asks what the device is doing:
    - **Mounted brain**: the phone rides on the robot; camera tracking, mount detection, status face.
    - **Brain in hand**: same brain off the robot, tracking with the lidar alone.
    - **Controller**: a remote for a brain on the network.

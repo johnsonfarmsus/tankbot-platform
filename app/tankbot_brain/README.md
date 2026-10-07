@@ -1,16 +1,13 @@
-# tankbot_brain
+# TankBot app
 
-TankBot Platform brain app
+The TankBot app (Flutter, iOS today): one app, three roles chosen at launch.
 
-## Getting Started
+- **Mounted brain**: the phone rides on the robot (camera tracking, mapping, navigation, control server).
+- **Brain in hand**: the same brain off the robot, tracking with the lidar alone.
+- **Controller**: a remote for a brain on the network.
 
-This project is a starting point for a Flutter application.
+See the [project README](../../README.md), the [user guide](../../docs/user-guide.md) and the
+[app architecture](../../docs/app-architecture.md). The Dart package is still named `tankbot_brain`
+internally (folder, imports, bundle id `com.johnsonfarms.tankbotBrain`) so installed phones keep their data.
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+`flutter test` must pass before every install.
