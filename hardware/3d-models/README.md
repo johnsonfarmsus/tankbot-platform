@@ -20,9 +20,16 @@ are ready to slice and print; `.f3d` files are the Fusion 360 sources for modify
 | Lidar Tower | [`TankBot Lidar Tower.stl`](<TankBot Lidar Tower.stl>) | [`TankBot Lidar Tower.f3d`](<TankBot Lidar Tower.f3d>) |
 | Phone Base | [`TankBot Phone Base.stl`](<TankBot Phone Base.stl>) | [`TankBot Phone Base.f3d`](<TankBot Phone Base.f3d>) |
 | Phone Clamp | [`TankBot Phone Clamp.stl`](<TankBot Phone Clamp.stl>) | [`TankBot Phone Clamp.f3d`](<TankBot Phone Clamp.f3d>) |
+| Spacer 6x3x3 | [`TankBot Spacer 6x3x3.stl`](<TankBot Spacer 6x3x3.stl>) | - |
 | Ultrasonic Mount 1of2 | [`TankBot Ultrasonic Mount 1of2.stl`](<TankBot Ultrasonic Mount 1of2.stl>) | [`TankBot Ultrasonic Mount 1of2.f3d`](<TankBot Ultrasonic Mount 1of2.f3d>) |
 | Ultrasonic Mount 2of2 | [`TankBot Ultrasonic Mount 2of2.stl`](<TankBot Ultrasonic Mount 2of2.stl>) | [`TankBot Ultrasonic Mount 2of2.f3d`](<TankBot Ultrasonic Mount 2of2.f3d>) |
 | Wire Management | [`TankBot Wire Management.stl`](<TankBot Wire Management.stl>) | [`TankBot Wire Management.f3d`](<TankBot Wire Management.f3d>) |
+
+**One screw for everything:** every printed part, board and module mounts with **M3 x 6 mm socket head
+cap screws**.
+
+**Spacer 6x3x3:** lifts an electronics board off the tank base. It sits between the board and the base,
+and the M3 screw passes through the board, then the spacer, into the base.
 
 The base robot (chassis, motors, original mounting parts) comes from the original
 [TankBot ESP32](https://github.com/johnsonfarmsus/tank-bot-esp32) project and its

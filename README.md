@@ -61,9 +61,30 @@ shows what the next part would unlock.
 
    **3D-printed parts for this version:** [TankBot on Printables](https://www.printables.com/model/1869360-tankbot)
    (base plate, lidar tower and base, phone base and clamp, bumper and switch mount, two-part ultrasonic
-   mount, battery and charger clamps, a 2-wire connector, wire management). Backup copies of the model files, with Fusion 360 sources, are in
+   mount, battery and charger clamps, a 2-wire connector, wire management, board spacers). Backup copies of the model files, with Fusion 360 sources, are in
    [`hardware/3d-models`](hardware/3d-models).
 3. **Wire it** following [docs/wiring.md](docs/wiring.md), then follow *Setting up a robot* below.
+
+### Parts list
+
+| Part | Used for | Notes |
+|---|---|---|
+| **ESP32 DevKit**, 38-pin (CP2102, USB-C) | the robot's controller | as in the original TankBot |
+| **ESP32 38-pin expansion board** ("ESP32S 38P V4" style) | mounts the ESP32; power and wiring | DC input 6.5-16 V, onboard 5 V / 3.3 V, an S/V/G header for every pin (a jumper sets V to 3.3 V or 5 V) |
+| **L298N** H-bridge motor driver | drives both tracks | ENA / ENB jumpers removed so the ESP32 sets the speed |
+| **TP101 tracked chassis** with 2x **33GB-520-18.7F** DC motors | the robot base | as in the original TankBot |
+| **3S Li-ion pack**, 11.1 V (12.6 V full) | power | we use a 5600 mAh (62 Wh) pack with a barrel connector; replaces the original 2x 18650 |
+| **Slamtec RPLidar C1** | mapping, position, navigation | on the printed lidar tower |
+| **HC-SR04P** ultrasonic (wide-voltage, 3-5.5 V) | low obstacles ahead | powered from 3.3 V so its echo is safe for the ESP32 |
+| **V-153-1C25** micro switch | front bumper | behind the printed bumper bar |
+| *Optional:* **TOFSense-F2 Mini** ToF sensor | cliff (drop-off) sensor, aimed at the floor | JST GH 1.25 mm connector |
+| **An iPhone with ARKit** | the brain | tested: SE (2nd gen), 11 Pro, 12 Pro; LiDAR iPhones add the depth camera |
+| **M3 x 6 mm socket head cap screws** | everything | the only fastener: all printed parts, boards and modules mount with these |
+| **Spacer 6x3x3** (printed) | electronics boards | lifts a board off the base: board, spacer, base, with the screw through all three |
+| Jumper wires (Dupont) | sensor and motor-driver connections | the expansion board's S/V/G headers take standard Dupont plugs |
+| [3D-printed parts](https://www.printables.com/model/1869360-tankbot) | tower, mounts, clamps, bumper | on Printables |
+
+Pins and power: [docs/wiring.md](docs/wiring.md).
 
 <p align="center">
 <a href="docs/images/tankbot-01.jpg"><img src="docs/images/tankbot-01.jpg" width="200" alt="TankBot photo 1"></a>
