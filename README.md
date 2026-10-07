@@ -61,8 +61,8 @@ shows what the next part would unlock.
 
    **3D-printed parts for this version:** [TankBot on Printables](https://www.printables.com/model/1869360-tankbot)
    (base plate, lidar tower and base, phone base and clamp, bumper and switch mount, two-part ultrasonic
-   mount, battery and charger clamps, a 2-wire connector, wire management, board spacers). Backup copies of the model files, with Fusion 360 sources, are in
-   [`hardware/3d-models`](hardware/3d-models).
+   mount, battery and charger clamps, a 2-wire connector, wire management, board spacers). Get them there; a backup zip of
+   the model files is in [`hardware/`](hardware) in case Printables is ever unavailable.
 3. **Wire it** following [docs/wiring.md](docs/wiring.md), then follow *Setting up a robot* below.
 
 ### Parts list
@@ -140,7 +140,7 @@ The controller's Settings page shows the current tier and what would unlock the 
 | `app/tankbot_brain/` | the **TankBot** app (Flutter): Mounted brain / Brain in hand / Controller roles |
 | `docs/` | [user guide](docs/user-guide.md), [wiring](docs/wiring.md), [protocol](docs/protocol.md), [bot profile](docs/bot-profile.md), [app architecture](docs/app-architecture.md), [diagnostics](docs/diagnostics.md), [roadmap](docs/ROADMAP.md), [changelog](CHANGELOG.md) |
 | `tools/` | desktop helpers: log analysis, brain commands, controller checks ([tools/README](tools/README.md)) |
-| `hardware/3d-models/` | backup copies of the 3D-printed parts (STL + Fusion 360); get them from [Printables](https://www.printables.com/model/1869360-tankbot) |
+| `hardware/` | a backup zip of the 3D-printed parts (STL + Fusion 360); get the parts from [Printables](https://www.printables.com/model/1869360-tankbot) |
 
 ## Setting up a robot
 
