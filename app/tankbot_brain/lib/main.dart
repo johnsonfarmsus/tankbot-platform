@@ -330,6 +330,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _subs.add(sensors.readings.listen(_onRobotSensors));
     _startLagMonitor();
+    poses.onJump = (m, deg) => _event('camera jump smoothed over', '${(m * 100).round()} cm / ${deg.round()} deg in one frame');
     _marksTimer = Timer.periodic(const Duration(seconds: 60), (_) => _expireMarks());
     _native.invokeMethod<String>('documentsDir').then((d) => _docsDir = d).catchError((_) => null);
     _locSub = const EventChannel('tankbot/location').receiveBroadcastStream().listen(_onLocation, onError: (_) {});
@@ -695,6 +696,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'wideRecoveries': wideRecoveries,
         'stalls': stalls,
         'cameraDistrusts': cameraDistrusts,
+        'cameraJumps': poses.jumps,
         'tempMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] != 'change' && e['confirmed'] != true).length,
       },
       'blocked': _blocked,
@@ -948,6 +950,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         maxTurn = math.max(maxTurn, wrapAngle(g.h[i] - kfs[i].h).abs());
       }
       mapOptimizations++;
+      if (maxMove > 0.2) _event('map straightened', '$reason: moved up to ${(maxMove * 100).round()} cm / ${(maxTurn * 180 / math.pi).round()} deg');
       lastOptMoveCm = maxMove * 100;
       lastOptMoveDeg = maxTurn * 180 / math.pi;
       if (maxMove < 0.03 && maxTurn < 0.01) return; // already straight: nothing to redraw
@@ -1220,6 +1223,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   void _acceptReloc(MatchResult best, Pose? raw, String note) {
+    _event('relocalized', note, x: best.x, y: best.y, h: best.h);
     if (_mode == 'ar' && raw != null && raw.good) {
       _corr.setSoThat(raw, best.x, best.y, best.h);
     } else {
@@ -1259,6 +1263,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   /// "The robot is here, facing this way" (from the controller): fine-tune the hint with the lidar
   /// within +-50 cm and +-25 degrees, then take it.
   Future<void> _setPosition(double x, double y, double h) async {
+    _event('set position (user)', '', x: x, y: y, h: h);
     if (_navTimer != null && navActive) _navCancel('Stopped: position being set');
     final s = scan;
     final t = s?.appMs;
@@ -1880,6 +1885,29 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  // ---------- position events: every change of position that isn't driving ----------
+  // Documents/logs/events_YYYYMMDD.csv: time, kind, from x/y/h, to x/y/h, distance, turn, state, detail
+  void _event(String kind, String detail, {Pose? from, double? x, double? y, double? h}) {
+    final d = _docsDir;
+    if (d == null) return;
+    try {
+      final t = DateTime.now();
+      String two(int v) => v.toString().padLeft(2, '0');
+      final f = File('$d/logs/events_${t.year}${two(t.month)}${two(t.day)}.csv');
+      if (!f.existsSync()) {
+        Directory('$d/logs').createSync(recursive: true);
+        f.writeAsStringSync('time,kind,fromX,fromY,fromH,toX,toY,toH,moveM,turnDeg,mode,loc,nav,exploring,detail\n');
+      }
+      final fr = from ?? robotPose;
+      String c(double? v) => v == null ? '' : v.toStringAsFixed(3);
+      final dist = (fr != null && x != null && y != null) ? math.sqrt(_sq(x - fr.x) + _sq(y - fr.y)) : null;
+      final dh = (fr != null && h != null) ? _angDiff(h, fr.heading) * 180 / math.pi : null;
+      f.writeAsStringSync(
+          '${[t.toIso8601String(), kind, c(fr?.x), c(fr?.y), c(fr?.heading), c(x), c(y), c(h), c(dist), c(dh), _mode, locState, navState, _exploring ? 1 : 0, detail.replaceAll(',', ';')].join(',')}\n',
+          mode: FileMode.append);
+    } catch (_) {}
+  }
+
   // ---------- trip recorder: one CSV row per driving step, Documents/logs/nav_*.csv ----------
   IOSink? _navTrace;
   String? navTraceName;
@@ -2366,6 +2394,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       } else if (math.sqrt(_sq(l.x - ref.x) + _sq(l.y - ref.y)) > 0.08) {
         if (now > _camDistrustUntilMs) {
           cameraDistrusts++;
+          _event('camera drifting while still', 'moved ${(math.sqrt(_sq(l.x - ref.x) + _sq(l.y - ref.y)) * 100).round()} cm with motors idle');
           _flash('Camera tracking is drifting here - using the lidar alone for a while');
         }
         _camDistrustUntilMs = now + 30000;
@@ -2381,13 +2410,17 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         final lp = _lidarPose;
         if (lp != null) _corr.setSoThat(poses.latest!, lp.x, lp.y, lp.heading);
         _mode = 'ar';
+        _event('tracking: camera + lidar', 'camera healthy again');
       }
     } else {
       if (_arBadSinceMs < 0) _arBadSinceMs = now;
       final distrusted = profile.trackingMode == 'lidar' || now <= _camDistrustUntilMs;
       if (_mode == 'ar' && (distrusted || now - _arBadSinceMs > 1000)) {
+        final from = robotPose;
         _lidarPose = _poseForSwitch(now, distrusted);
         _mode = 'lidar';
+        _event('tracking: lidar only', distrusted ? 'camera distrusted' : 'camera not available', from: from,
+            x: _lidarPose!.x, y: _lidarPose!.y, h: _lidarPose!.heading);
       }
     }
   }
@@ -2510,6 +2543,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     final removed = kfs.length - first;
     if (removed == 0) return 0;
+    _event('rolled back map scans', '$removed keyframes');
     kfs.removeRange(first, kfs.length);
     active.graphEdges.removeWhere((e) => e.i >= first || e.j >= first);
     active.geoTags.removeWhere((t) => (t['i'] as num) >= first);
@@ -2696,6 +2730,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       var w = matcher.local(coarse, guess.x, guess.y, guess.heading, lin: 0.6, linStep: 0.05, ang: 0.35, angStep: 0.035);
       w = matcher.local(pts, w.x, w.y, w.h, lin: 0.05, linStep: 0.01, ang: 0.035, angStep: 0.007);
       if (w.hitRatio >= 0.6 && w.hitRatio > r.hitRatio && _knownFrac(pts, w.x, w.y, w.h) >= 0.5) {
+        _event('wide search fix', 'scan fit ${(w.hitRatio * 100).round()}%', from: guess, x: w.x, y: w.y, h: w.h);
         r = w;
         wideRecoveries++;
       }
@@ -2724,6 +2759,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     // the lidar is confident and the camera is well off, snap to the lidar: the camera has drifted.
     final off = math.sqrt(_sq(r.x - guess.x) + _sq(r.y - guess.y));
     final a = lidarOnly || (r.hitRatio >= 0.6 && off > 0.1 && knownFrac >= 0.5) ? 1.0 : 0.5;
+    if (!lidarOnly && a == 1.0 && off > 0.25) {
+      _event('lidar snap', 'camera was ${(off * 100).round()} cm off; scan fit ${(r.hitRatio * 100).round()}%', from: guess, x: r.x, y: r.y, h: r.h);
+    }
     final nx = guess.x + (r.x - guess.x) * a, ny = guess.y + (r.y - guess.y) * a;
     final nh = guess.heading + _angDiff(r.h, guess.heading) * a;
     lastCorrCm = math.sqrt(_sq(r.x - guess.x) + _sq(r.y - guess.y)) * 100;

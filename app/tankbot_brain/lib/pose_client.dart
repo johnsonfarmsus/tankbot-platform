@@ -33,6 +33,10 @@ class PoseClient {
   double? _offsetMs; // app clock minus iOS uptime clock
   String state = 'off';
   Stream<Pose> get poses => _ctrl.stream;
+  // offset applied to every raw camera pose after a glitch (see _onEvent)
+  double _fixX = 0, _fixY = 0, _fixH = 0;
+  int jumps = 0;
+  void Function(double metres, double degrees)? onJump;
   Pose? get latest => history.isEmpty ? null : history.last;
 
   Future<bool> start() async {
@@ -79,7 +83,33 @@ class PoseClient {
     final fy = (m['fy'] as num).toDouble();
     state = m['state'] as String;
     final flat = fx * fx + fz * fz; // camera must look roughly horizontal for a heading
-    final p = Pose(t, x, -z, math.atan2(-fz, fx), state == 'normal' && flat > 0.25, fy);
+    final rx = x, ry = -z, rh = math.atan2(-fz, fx);
+    // ARKit sometimes re-anchors after a struggle (dark room, plain walls) and its pose leaps by
+    // metres or tens of degrees between two frames. The robot can't do that, so such a leap is a
+    // glitch: shift every pose from here on so the stream stays continuous (the lidar corrects
+    // whatever error remains).
+    final prev = history.isEmpty ? null : history.last;
+    if (prev != null) {
+      final dt = math.max(0.0, (t - prev.t) / 1000.0);
+      final fx0 = math.cos(_fixH) * rx - math.sin(_fixH) * ry + _fixX;
+      final fy0 = math.sin(_fixH) * rx + math.cos(_fixH) * ry + _fixY;
+      final fh0 = rh + _fixH;
+      final jump = math.sqrt((fx0 - prev.x) * (fx0 - prev.x) + (fy0 - prev.y) * (fy0 - prev.y));
+      var turn = (fh0 - prev.heading) % (2 * math.pi);
+      if (turn > math.pi) turn -= 2 * math.pi;
+      if (turn < -math.pi) turn += 2 * math.pi;
+      if (dt < 1.0 && (jump > 0.6 * dt + 0.04 || turn.abs() > math.pi * dt + 0.06)) {
+        _fixH += -turn;
+        final c1 = math.cos(_fixH), s1 = math.sin(_fixH);
+        _fixX = prev.x - (c1 * rx - s1 * ry);
+        _fixY = prev.y - (s1 * rx + c1 * ry);
+        jumps++;
+        onJump?.call(jump, turn * 180 / math.pi);
+      }
+    }
+    final c = math.cos(_fixH), sn = math.sin(_fixH);
+    final p = Pose(t, c * rx - sn * ry + _fixX, sn * rx + c * ry + _fixY, rh + _fixH,
+        state == 'normal' && flat > 0.25, fy);
     history.add(p);
     while (history.isNotEmpty && t - history.first.t > 5000) {
       history.removeAt(0);
