@@ -7,7 +7,10 @@
   keeps the robot's map copy fresh and starts from it when it has no map. Maps can start from a grid.
 - Defaults that drive well: stop 100 mm, pass 50 mm, depth 100/40 mm, platform height 66 mm.
 - Fixed the flickering Robot not responding card.
-- iPhone 11 Pro as a brain.
+- iPhone 11 Pro as a brain; new app icon.
+- The app asks for its role on every launch (last choice highlighted), checks whether the robot
+  already has a brain and suggests Controller; a running brain that sees a second brain warns and
+  won't self-drive.
 
 ## v0.3 (2026-10-06)
 

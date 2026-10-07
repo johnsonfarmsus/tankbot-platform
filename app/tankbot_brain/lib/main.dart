@@ -55,6 +55,7 @@ class RoleGate extends StatefulWidget {
 
 class _RoleGateState extends State<RoleGate> {
   AppSettings? settings;
+  AppRole? active; // chosen this time; the app asks on every launch (settings.role = last choice)
 
   @override
   void initState() {
@@ -62,30 +63,27 @@ class _RoleGateState extends State<RoleGate> {
     AppSettings.load().then((s) => setState(() => settings = s));
   }
 
-  void _choose(AppRole r) {
+  void _choose(AppRole r, {String? brainUrl}) {
     settings!.role = r;
+    if (brainUrl != null) settings!.brainUrl = brainUrl;
     settings!.save();
-    setState(() {});
+    setState(() => active = r);
   }
 
-  void _changeRole() {
-    settings!.role = null;
-    settings!.save();
-    setState(() {});
-  }
+  void _changeRole() => setState(() => active = null);
 
   @override
   Widget build(BuildContext context) {
     final s = settings;
     if (s == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    switch (s.role) {
+    switch (active) {
       case null:
-        return RoleChooser(onChosen: _choose);
+        return RoleChooser(onChosen: _choose, lastRole: s.role, lastRobotIp: s.lastRobotIp);
       case AppRole.controller:
         return ControllerScreen(settings: s, onChangeRole: _changeRole);
       case AppRole.mounted:
       case AppRole.brain:
-        return LidarScreen(key: ValueKey(s.role), role: s.role!, settings: s, onChangeRole: _changeRole);
+        return LidarScreen(key: ValueKey(active), role: active!, settings: s, onChangeRole: _changeRole);
     }
   }
 }
@@ -646,6 +644,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'note': exploreNote,
         'targets': exploreTargets,
         'cliffSensor': hasCliffSensor,
+        'otherBrain': otherBrainActive ? otherBrain : null,
         'preview': explorePreview == null ? null : [explorePreview!.x, explorePreview!.y, explorePreview!.inRoom ? 1 : 0],
       },
       'nogo': [
@@ -1616,6 +1615,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   void _startExplore() {
     if (_exploring) return;
+    if (otherBrainActive) {
+      _flash('Not exploring: another brain ($otherBrain) is connected to this robot');
+      return;
+    }
     _checkpoint('Before exploring on its own');
     if (locState != 'tracking') {
       _flash("Can't explore until it knows where it is (use Set position)");
@@ -1744,6 +1747,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   void _navGoto(double x, double y) {
+    if (otherBrainActive) {
+      navState = 'failed';
+      navNote = 'Another brain ($otherBrain) is connected to this robot - close the app on one of them first';
+      return;
+    }
     if (locState != 'tracking') {
       navState = 'failed';
       navNote = "I don't know where I am on the map yet";
@@ -1933,6 +1941,25 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   Map<String, dynamic>? robotMapInfo;
   int robotMapUploads = 0;
 
+  String? otherBrain; // another brain announcing itself to the same robot
+  double _otherBrainSeenMs = -1e9;
+  bool get otherBrainActive => otherBrain != null && appClockMs() - _otherBrainSeenMs < 20000;
+
+  /// The robot remembers the last brain that announced itself; if that's ever not us, there are two.
+  Future<void> _checkOtherBrain(String ip) async {
+    final j = await RobotStore.brain(ip);
+    final url = j?['url'] as String?;
+    if (url == null || myIp == null) return;
+    if (!url.contains('//$myIp:')) {
+      final host = Uri.tryParse(url)?.host ?? url;
+      if (!otherBrainActive) _flash('Another brain ($host) is connected to this robot - only one brain per robot');
+      otherBrain = host;
+      _otherBrainSeenMs = appClockMs();
+      _stopExplore('Exploration stopped: another brain is connected to this robot');
+      if (navActive) _navCancel('Stopped: another brain is connected to this robot');
+    }
+  }
+
   String _settingsContent() => jsonEncode(profile.robotSettings()..remove('updated'));
 
   /// Every few seconds while the robot is talking: sync once after connecting, push settings that
@@ -1955,6 +1982,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       }
     }
     _maybeUploadMap();
+    if (ip != null) _checkOtherBrain(ip);
   }
 
   /// On connect: the newer settings win (robot or brain); a map the robot has that this brain doesn't

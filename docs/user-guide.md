@@ -12,6 +12,11 @@ How to drive, map and explore with a TankBot-platform robot and a phone brain.
 
 The robot's page shows **Open full controls** whenever a brain is running.
 
+When the app opens it asks what this device is doing today (Mounted brain, Brain in hand,
+Controller), with last time's choice highlighted. It checks the robot first: if another device is
+already the brain, it suggests Controller (connected to that brain). Only one brain per robot: a
+brain that notices a second one shows a red card and won't drive itself until one is closed.
+
 ## The full controls
 
 The top bar on every page: robot name, status lights (**Brain**, **Robot**, **Lidar** scans/s,

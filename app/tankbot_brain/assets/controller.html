@@ -885,6 +885,8 @@ function trayCards() {
     text: "Press where the robot really is and drag toward the way it is facing, then let go. The lidar fine-tunes it.",
     actions: [["Cancel", () => { setPosMode = false; posStart = null; cv.classList.remove("aiming"); renderTray(); }]]});
   const ex = t.explore;
+  if (ex && ex.otherBrain) cards.push({sev: "danger", title: "Two brains on one robot",
+    text: "Another brain (" + ex.otherBrain + ") is also connected to this robot. They fight over it, so self-driving is off. Close the TankBot app on one of them, or switch it to Controller."});
   if (ex && ex.active) cards.push({sev: "info", title: "Exploring on its own", text: ex.note + (ex.targets ? " (" + ex.targets + " areas so far)" : ""),
     actions: [["Stop exploring", () => send({type: "explore.stop"}), "danger"]]});
   if (goMode) cards.push({sev: "info", title: "Go to", text: "Click or tap the map where the robot should go. You can drag and zoom first.",

@@ -56,6 +56,9 @@ class RobotStore {
     return r.statusCode == 200;
   }
 
+  /// The brain the robot heard from most recently: {"url": ...} or {}.
+  static Future<Map<String, dynamic>?> brain(String ip) => _json(ip, '/api/brain');
+
   /// Robot-level settings ({} when none have been stored yet).
   static Future<Map<String, dynamic>?> settings(String ip) => _json(ip, '/api/settings');
   static Future<bool> putSettings(String ip, Map<String, dynamic> s) =>
