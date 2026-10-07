@@ -214,7 +214,14 @@ String hardwareJson(bool withLive) {
 static const uint16_t LIDAR_PORT = 5601, MOTION_PORT = 5602, SENSOR_PORT = 5603;
 static const char *HOSTNAME = "tankbot";
 static const char *AP_SSID = "TankBot";
-static const char *AP_PASS = "tankbot2025";
+// Fallback hotspot password: set AP_PASS in secrets.h (8+ characters). The built-in default is
+// published in this repository, so anyone nearby could join while the robot is in hotspot mode.
+#ifdef AP_PASS
+static const char *AP_PASSWORD = AP_PASS;
+#else
+static const char *AP_PASSWORD = "tankbot2025";
+#warning "AP_PASS is not set in secrets.h: the fallback hotspot uses the published default password"
+#endif
 static const uint32_t UDP_CMD_TIMEOUT_MS = 300, WEB_CMD_TIMEOUT_MS = 500;
 
 WebServer server(80);
@@ -912,7 +919,7 @@ void setupNetwork() {
     apMode = true; apSinceMs = millis();
     WiFi.disconnect(true);
     WiFi.mode(WIFI_AP);
-    WiFi.softAP(AP_SSID, AP_PASS);
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
     dnsServer.start(53, "*", WiFi.softAPIP());
     Serial.printf("[wifi] home network unavailable -> access point '%s'\n", AP_SSID);
   }

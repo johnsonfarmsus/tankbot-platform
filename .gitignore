@@ -33,3 +33,11 @@ app/**/android/local.properties
 
 # Build / upload scratch output
 firmware/**/*_log.txt
+
+# Keys, certificates and scratch logs (can contain passwords)
+*.pem
+*.key
+*.der
+*.p12
+*_log.txt
+.env

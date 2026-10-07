@@ -109,6 +109,12 @@ See the [user guide](docs/user-guide.md) for every page, button and map symbol.
 - The wire protocols are in [docs/protocol.md](docs/protocol.md); `tools/lidar_client.py` is a
   minimal reference client.
 
+## Security and privacy
+
+For a trusted home network: the robot's and brain's controls have no login, so never expose them to
+the internet. Everything the app collects stays on your devices. Details, and the pre-commit secret
+check (`git config core.hooksPath .githooks`), in [SECURITY.md](SECURITY.md).
+
 ## License
 
 GNU AGPL 3.0 (inherited from tank-bot-esp32).
