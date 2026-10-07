@@ -508,9 +508,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       case 'clearMap':
         _startNewMap();
         break;
-      case 'reloc':
+      case 'reloc': // "Try again": the person asked, so the whole map may be searched
         _relocAttempts = 0;
-        _relocalize();
+        _relocalize(userAsked: true);
         break;
       case 'atHome':
         _atHome();
@@ -1124,8 +1124,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   /// Search the whole saved map for where the current lidar view fits.
-  Future<void> _relocalize() async {
+  Future<void> _relocalize({bool userAsked = false}) async {
     if (_relocRunning || _loadingMap) return;
+    // While it drives itself, never jump across the map: only look near where it was.
+    final nearOnly = !userAsked && (_exploring || navActive);
     if (active.keyframes.length < 10) {
       locState = 'tracking';
       locNote = '';
@@ -1149,14 +1151,16 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     // 1) quick checks: where I last was on this map, and the home spot
     MatchResult? quick;
     String quickNote = '';
+    final here = robotPose;
     final guesses = <(List<double>, String)>[
-      if (active.lastPose != null) (active.lastPose!, 'picked up where I left off'),
-      (<double>[0, 0, math.pi / 2], 'at the home spot'),
+      if (nearOnly && here != null) ([here.x, here.y, here.heading], 'found my place again nearby'),
+      if (!nearOnly && active.lastPose != null) (active.lastPose!, 'picked up where I left off'),
+      if (!nearOnly) (<double>[0, 0, math.pi / 2], 'at the home spot'),
     ];
     final coarsePts = [for (var i = 0; i < pts.length; i += 2) pts[i]];
     for (final gss in guesses) {
       final g0 = gss.$1;
-      var r = matcher.local(coarsePts, g0[0], g0[1], g0[2], lin: 0.5, linStep: 0.05, ang: 0.35, angStep: 0.035);
+      var r = matcher.local(coarsePts, g0[0], g0[1], g0[2], lin: nearOnly ? 0.6 : 0.5, linStep: 0.05, ang: 0.35, angStep: 0.035);
       if (r.atEdge) continue;
       r = matcher.local(pts, r.x, r.y, r.h, lin: 0.05, linStep: 0.01, ang: 0.035, angStep: 0.007);
       // symmetric rooms: if facing the other way fits almost as well, don't trust the quick answer
@@ -1171,6 +1175,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (quick != null) {
       _relocRunning = false;
       _acceptReloc(quick, raw, 'Found myself on "${active.name}" - $quickNote (${(quick.hitRatio * 100).round()}% of the scan fits)');
+      return;
+    }
+    if (nearOnly) {
+      _relocRunning = false;
+      _relocFailed('lost while driving itself - standing still; use Set position if it stays lost');
       return;
     }
     // 2) search the whole map
@@ -1936,10 +1945,26 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     if (locState != 'tracking' || _rebuilding) {
       _navStopMotors();
-      navNote = _rebuilding ? 'Updating the map...' : 'Lost my position - waiting';
+      navNote = _rebuilding ? 'Updating the map...' : 'Lost my position - standing still';
       _navWhy = _rebuilding ? 'wait: map redraw' : 'wait: position lost';
+      if (!_rebuilding) {
+        if (_lostSinceMs == 0) _lostSinceMs = now;
+        if (now - _lostSinceMs > 15000) {
+          final since = _lostSinceMs - 15000;
+          _lostSinceMs = 0;
+          if (_exploring) {
+            _stopExplore('Exploration stopped: lost track of where it was');
+            _rollbackKeyframesSince(since).then((n) {
+              if (n > 0) _flash('Removed the last $n map scans (made while tracking was going wrong)');
+            });
+          } else {
+            _navCancel("Stopped: lost my position - use Set position");
+          }
+        }
+      }
       return;
     }
+    _lostSinceMs = 0;
     final p = robotPose, goal = navGoal;
     if (p == null || goal == null) return;
     final pos = Offset(p.x, p.y);
@@ -2037,6 +2062,15 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     // which would starve one track below its threshold and just make it whine).
     final cruise = profile.cruisePower;
     final turnP = math.max(profile.minPower, 0.9); // turning on the spot needs nearly everything
+    if (_exploring) {
+      if (_lastNavPos != null) _settleDist += (pos - _lastNavPos!).distance;
+      _lastNavPos = pos;
+      if (_lastKnownFrac < 0.5 && _settleDist > 0.4 && now >= _navSettleUntilMs) {
+        _settleDist = 0;
+        _navSettleUntilMs = now + 1000; // new ground: hold still for clean scans before going on
+        navNote = 'New area - pausing to let the map form';
+      }
+    }
     double f = 0, t = 0;
     // Turn on the spot only when more than 30 deg off course. A turn goes one way only and ends at
     // 12 deg or the moment it overshoots; then the robot sits still briefly so tracking can catch up,
@@ -2361,6 +2395,19 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   // ---------- trust: stop drawing (and stop driving) when the position is doubtful ----------
   bool _scanTrusted = true;
   int _matchMissStreak = 0, wideRecoveries = 0;
+  double _lastKnownFrac = 1, _lostSinceMs = 0, _settleDist = 0;
+  Offset? _lastNavPos;
+
+  /// Share of a scan's points that land on parts of the map already known.
+  double _knownFrac(List<Offset> pts, double x, double y, double h) {
+    if (pts.isEmpty) return 0;
+    final c = math.cos(h), sn = math.sin(h);
+    var k = 0;
+    for (final q in pts) {
+      if (grid.at(x + c * q.dx - sn * q.dy, y + sn * q.dx + c * q.dy).abs() > 0.3) k++;
+    }
+    return k / pts.length;
+  }
   double _lastWideSearchMs = 0;
   double _untrustedSinceMs = 0;
   int untrustedScans = 0;
@@ -2570,7 +2617,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       final coarse = [for (var i = 0; i < pts.length; i += 2) pts[i]];
       var w = matcher.local(coarse, guess.x, guess.y, guess.heading, lin: 0.6, linStep: 0.05, ang: 0.35, angStep: 0.035);
       w = matcher.local(pts, w.x, w.y, w.h, lin: 0.05, linStep: 0.01, ang: 0.035, angStep: 0.007);
-      if (w.hitRatio >= 0.6 && w.hitRatio > r.hitRatio) {
+      if (w.hitRatio >= 0.6 && w.hitRatio > r.hitRatio && _knownFrac(pts, w.x, w.y, w.h) >= 0.5) {
         r = w;
         wideRecoveries++;
       }
@@ -2584,6 +2631,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       if (grid.at(r.x + ch * q.dx - shh * q.dy, r.y + shh * q.dx + ch * q.dy).abs() > 0.3) known++;
     }
     final knownFrac = known / pts.length;
+    _lastKnownFrac = knownFrac;
     final matched = r.hitRatio >= 0.35 && !r.atEdge;
     _scanTrusted = matched ? r.hitRatio >= 0.6 * knownFrac : (knownFrac < 0.25 && !lidarOnly && poses.state == 'normal');
     _noteTrust();
@@ -2597,7 +2645,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     // Camera mode: move halfway to the match each scan (smooth, robust to one bad match) - but when
     // the lidar is confident and the camera is well off, snap to the lidar: the camera has drifted.
     final off = math.sqrt(_sq(r.x - guess.x) + _sq(r.y - guess.y));
-    final a = lidarOnly || (r.hitRatio >= 0.6 && off > 0.1) ? 1.0 : 0.5;
+    final a = lidarOnly || (r.hitRatio >= 0.6 && off > 0.1 && knownFrac >= 0.5) ? 1.0 : 0.5;
     final nx = guess.x + (r.x - guess.x) * a, ny = guess.y + (r.y - guess.y) * a;
     final nh = guess.heading + _angDiff(r.h, guess.heading) * a;
     lastCorrCm = math.sqrt(_sq(r.x - guess.x) + _sq(r.y - guess.y)) * 100;
