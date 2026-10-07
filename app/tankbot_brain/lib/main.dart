@@ -233,10 +233,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   // Mapping mode (saved with the profile): explore | maintain | off. Position tracking always runs;
   // the mode only decides what may be written into the map.
   String get mappingMode => profile.mappingMode;
-  // ignore: prefer_final_fields
-  bool _exploring = false; // autonomous exploration (it may map while driving itself)
-  /// While the robot drives itself, Explore is capped to Maintain (unless it is exploring).
-  String get mappingEffective => (mappingMode == 'explore' && navActive && !_exploring) ? 'maintain' : mappingMode;
+  bool _exploring = false; // autonomous exploration (it maps while driving itself)
+  /// Exploring maps everything; otherwise, while the robot drives itself, Explore is capped to Maintain.
+  String get mappingEffective =>
+      _exploring ? 'explore' : ((mappingMode == 'explore' && navActive) ? 'maintain' : mappingMode);
   bool get mapping => mappingEffective == 'explore';
   void _setMappingMode(String mode) {
     if (!['explore', 'maintain', 'off'].contains(mode)) return;
@@ -364,6 +364,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _lagTimer?.cancel();
     _linkTimer?.cancel();
     _marksTimer?.cancel();
+    _exploreTimer?.cancel();
     final lp = _lastRobotPose;
     if (lp != null && locState == 'tracking') {
       active.lastPose = [lp.x, lp.y, lp.heading];
@@ -398,12 +399,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   void _onRemote(Map<String, dynamic> m) {
     switch (m['type']) {
       case 'drive':
+        _stopExplore('Exploration stopped: manual control');
         if (navActive) _navCancel('Stopped: manual control');
         final f = (m['f'] as num?)?.toDouble() ?? 0;
         final t = (m['t'] as num?)?.toDouble() ?? 0;
         _onStick(f.clamp(-1.0, 1.0), t.clamp(-1.0, 1.0));
         break;
       case 'stop':
+        _stopExplore('Exploration stopped');
         if (navActive) _navCancel('Stopped');
         _onRelease();
         break;
@@ -412,7 +415,22 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (gxv != null && gyv != null) _navGoto(gxv, gyv);
         break;
       case 'nav.cancel':
+        _stopExplore('Exploration stopped');
         _navCancel('Stopped');
+        break;
+      case 'explore.start':
+        if (m['noDrops'] == true && !active.noDrops) {
+          active.noDrops = true;
+          active.renamed = true; // save the map with the confirmation
+        }
+        if (!hasCliffSensor && !active.noDrops) {
+          _flash("Not exploring: no drop-off sensor, and no-drops wasn't confirmed for this map");
+        } else {
+          _startExplore();
+        }
+        break;
+      case 'explore.stop':
+        _stopExplore('Exploration stopped');
         break;
       case 'bot.get':
         server.broadcast({'type': 'bot', 'profile': profile.toJson()});
@@ -592,6 +610,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'fresh': depth.fresh(appClockMs()),
         'obstacles': [for (final q in _depthWorldSplit(false)) [(q.dx * 100).round() / 100, (q.dy * 100).round() / 100]],
         'dropoffs': [for (final q in _depthWorldSplit(true)) [(q.dx * 100).round() / 100, (q.dy * 100).round() / 100]],
+      },
+      'explore': {
+        'active': _exploring,
+        'note': exploreNote,
+        'targets': exploreTargets,
+        'cliffSensor': hasCliffSensor,
+        'noDrops': active.noDrops,
       },
       'nogo': [
         for (final e in active.edits)
@@ -1515,6 +1540,159 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     return out;
   }
 
+  // ---------- autonomous exploration ----------
+  Timer? _exploreTimer;
+  String exploreNote = '';
+  int exploreTargets = 0;
+  double _exploreStartMs = 0;
+  final List<Offset> _exploreSkip = []; // frontiers it could not reach this time
+  bool _exploreGoingHome = false;
+  Offset? _exploreGoal;
+
+  /// A drop-off sensor: any sensor used for cliffs, or the phone's depth camera when it rides the robot.
+  bool get hasCliffSensor =>
+      profile.sensors.any((x) => x.enabled && x.role == 'cliff') || (caps['sceneDepth'] == true && widget.role == AppRole.mounted);
+
+  void _startExplore() {
+    if (_exploring) return;
+    if (locState != 'tracking') {
+      _flash("Can't explore until it knows where it is (use Set position)");
+      return;
+    }
+    _exploring = true;
+    exploreTargets = 0;
+    _exploreStartMs = appClockMs();
+    _exploreSkip.clear();
+    _exploreGoingHome = false;
+    _exploreGoal = null;
+    exploreNote = 'Looking for unexplored areas...';
+    _exploreTimer?.cancel();
+    _exploreTimer = Timer.periodic(const Duration(seconds: 1), (_) => _exploreTick());
+    _flash('Exploring on its own - Stop, the joystick or any key ends it');
+  }
+
+  void _stopExplore(String why) {
+    if (!_exploring) return;
+    _exploring = false;
+    _exploreTimer?.cancel();
+    _exploreTimer = null;
+    exploreNote = why;
+    if (navActive) _navCancel(why);
+    _flash(why);
+  }
+
+  /// Once a second: when the last trip has ended, pick the next unexplored edge and go there.
+  void _exploreTick() {
+    if (!_exploring) return;
+    final now = appClockMs();
+    if (server.clientCount == 0) {
+      _stopExplore('Exploration stopped: no controller connected');
+      return;
+    }
+    if (now - _exploreStartMs > 30 * 60000) {
+      _stopExplore('Exploration stopped after 30 minutes');
+      return;
+    }
+    if (navActive || _rebuilding || _optimizing || _loadingMap) return;
+    if (locState != 'tracking') {
+      exploreNote = 'Waiting until it knows where it is';
+      return;
+    }
+    if (_exploreGoingHome) {
+      final mins = ((now - _exploreStartMs) / 60000).toStringAsFixed(1);
+      _stopExplore(navState == 'arrived'
+          ? 'Exploration finished in $mins min ($exploreTargets areas) - back at the home spot'
+          : 'Exploration finished in $mins min ($exploreTargets areas) - could not drive back home');
+      return;
+    }
+    if (navState == 'failed' && _exploreGoal != null) _exploreSkip.add(_exploreGoal!); // unreachable: skip it
+    final target = _nextFrontier();
+    if (target == null) {
+      exploreNote = 'Everything it can reach is explored - heading home';
+      _exploreGoingHome = true;
+      _navGoto(0, 0);
+      return;
+    }
+    exploreTargets++;
+    _exploreGoal = target;
+    exploreNote = 'Heading for unexplored area #$exploreTargets';
+    _navGoto(target.dx, target.dy);
+  }
+
+  /// Frontiers: open floor next to unexplored space. Groups of at least 40 cm; picks the nearest
+  /// (with a bonus for bigger openings), skipping ones it couldn't reach. Null = nothing left.
+  Offset? _nextFrontier() {
+    final p = robotPose;
+    if (p == null || grid.maxCx < 0) return null;
+    final x0 = grid.minCx, x1 = grid.maxCx, y0 = grid.minCy, y1 = grid.maxCy;
+    final w = x1 - x0 + 1, h = y1 - y0 + 1;
+    bool unknown(int cx, int cy) =>
+        cx < 0 || cy < 0 || cx >= grid.size || cy >= grid.size || grid.cellLo(cx, cy).abs() < 0.3;
+    final front = Uint8List(w * h);
+    for (var cy = y0; cy <= y1; cy++) {
+      for (var cx = x0; cx <= x1; cx++) {
+        if (grid.cellLo(cx, cy) >= -0.5) continue; // only open floor can be a frontier
+        if (unknown(cx + 1, cy) || unknown(cx - 1, cy) || unknown(cx, cy + 1) || unknown(cx, cy - 1)) {
+          front[(cy - y0) * w + (cx - x0)] = 1;
+        }
+      }
+    }
+    final seen = Uint8List(w * h);
+    Offset? best;
+    var bestScore = double.infinity;
+    final res = grid.resolution;
+    for (var i = 0; i < w * h; i++) {
+      if (front[i] == 0 || seen[i] == 1) continue;
+      final cells = <int>[];
+      final queue = <int>[i];
+      seen[i] = 1;
+      while (queue.isNotEmpty) {
+        final c = queue.removeLast();
+        cells.add(c);
+        final cx = c % w, cy = c ~/ w;
+        for (var dy = -1; dy <= 1; dy++) {
+          for (var dx = -1; dx <= 1; dx++) {
+            final nx = cx + dx, ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            final n = ny * w + nx;
+            if (front[n] == 1 && seen[n] == 0) {
+              seen[n] = 1;
+              queue.add(n);
+            }
+          }
+        }
+      }
+      if (cells.length < 8) continue; // a crack, not an opening
+      var mx = 0.0, my = 0.0;
+      for (final c in cells) {
+        mx += c % w;
+        my += c ~/ w;
+      }
+      mx /= cells.length;
+      my /= cells.length;
+      // the frontier cell nearest the group's middle, as a target on known floor
+      var pick = cells.first, pd = double.infinity;
+      for (final c in cells) {
+        final d = _sq((c % w) - mx) + _sq((c ~/ w) - my);
+        if (d < pd) {
+          pd = d;
+          pick = c;
+        }
+      }
+      final tx = grid.cellToWorld(pick % w + x0) + res / 2, ty = grid.cellToWorld(pick ~/ w + y0) + res / 2;
+      final target = Offset(tx, ty);
+      if (_exploreSkip.any((q) => (q - target).distance < 0.6)) continue;
+      final dist = (target - Offset(p.x, p.y)).distance;
+      if (dist < 0.4) continue; // already there
+      final score = dist - 0.02 * cells.length;
+      if (score < bestScore) {
+        bestScore = score;
+        best = target;
+      }
+    }
+    return best;
+  }
+
   // ---------- tap-to-go navigation ----------
   List<List<double>> get _nogoLines => [
         for (final e in active.edits)
@@ -2287,6 +2465,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   void _onStick(double f, double t) {
+    _stopExplore('Exploration stopped: manual control');
     if (navActive) _navCancel('Stopped: manual control');
     _lastDriveMs = appClockMs();
     _wantF = f;

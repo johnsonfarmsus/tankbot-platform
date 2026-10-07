@@ -177,12 +177,21 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
       <div class="hint" id="edithint"></div>
     </div>
     <div class="toasts" id="toasts"></div>
+    <div id="explModal" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,.55);align-items:center;justify-content:center;z-index:5">
+      <div class="card" style="max-width:440px;margin:16px">
+        <h2>Explore on its own</h2>
+        <div id="explText" class="small" style="font-size:13px;color:var(--text);white-space:pre-line"></div>
+        <label class="row" id="explNoDropsRow"><input type="checkbox" id="explNoDrops"> There are no stairs or drops anywhere it can reach (don't ask again for this map)</label>
+        <div class="row"><button id="explGo" class="primary">Start exploring</button><button id="explCancel">Cancel</button></div>
+      </div>
+    </div>
   </div>
   <aside class="panel">
     <canvas id="stick" width="180" height="180"></canvas>
     <div class="grow">
       <button class="danger bigstop" id="stopBtn">Stop</button>
       <label>Max speed <span id="msv" class="muted"></span><input id="ms" type="range" min="0.2" max="1" step="0.05" value="0.9"></label>
+      <button id="explBtn">Explore on its own</button>
       <div class="btnrow">
         <button id="gobtn" class="primary">Go to&hellip;</button>
         <button id="editbtn">Edit map</button>
@@ -432,7 +441,26 @@ $("clearDrops").onclick = () => {
   const n = telem && telem.quality ? telem.quality.dropoffMarks : 0;
   if (confirm("Remove all " + n + " remembered drop-offs from this map? Real stairs will be found again as the robot drives.")) send({type: "map.clearDropoffs"});
 };
-$("stopBtn").onclick = () => { goMode = false; release(); if (telem && telem.nav && (telem.nav.state === "driving" || telem.nav.state === "blocked")) send({type: "nav.cancel"}); renderTray(); };
+$("explBtn").onclick = () => {
+  const ex = telem && telem.explore;
+  if (ex && ex.active) { send({type: "explore.stop"}); return; }
+  const needsOk = ex && !ex.cliffSensor && !ex.noDrops;
+  $("explText").textContent = "The robot drives itself to the edges of what it has mapped, maps as it goes, and comes back to the home spot when nothing reachable is left. " +
+    "Stop, the joystick or any arrow key ends it at once. Keep this page open: it stops if no controller is connected." +
+    (needsOk ? "\n\nWarning: this robot has no drop-off (cliff) sensor, so it cannot see stairs or ledges. Only explore if there are none it could reach, or draw no-go lines across them first." : "");
+  $("explNoDropsRow").style.display = needsOk ? "" : "none";
+  $("explNoDrops").checked = false;
+  $("explGo").disabled = needsOk;
+  $("explModal").style.display = "flex";
+};
+$("explNoDrops").onchange = e => { $("explGo").disabled = !e.target.checked; };
+$("explCancel").onclick = () => { $("explModal").style.display = "none"; };
+$("explGo").onclick = () => {
+  $("explModal").style.display = "none";
+  showPage("drive"); setMode("map");
+  send({type: "explore.start", noDrops: $("explNoDrops").checked});
+};
+$("stopBtn").onclick = () => { goMode = false; release(); send({type: "explore.stop"}); if (telem && telem.nav && (telem.nav.state === "driving" || telem.nav.state === "blocked")) send({type: "nav.cancel"}); renderTray(); };
 $("msv").textContent = Math.round($("ms").value * 100) + "%";
 
 // ---- settings panel ----
@@ -825,6 +853,9 @@ function trayCards() {
   if (setPosMode) cards.push({sev: "info", title: "Set position",
     text: "Press where the robot really is and drag toward the way it is facing, then let go. The lidar fine-tunes it.",
     actions: [["Cancel", () => { setPosMode = false; posStart = null; cv.classList.remove("aiming"); renderTray(); }]]});
+  const ex = t.explore;
+  if (ex && ex.active) cards.push({sev: "info", title: "Exploring on its own", text: ex.note + (ex.targets ? " (" + ex.targets + " areas so far)" : ""),
+    actions: [["Stop exploring", () => send({type: "explore.stop"}), "danger"]]});
   if (goMode) cards.push({sev: "info", title: "Go to", text: "Click or tap the map where the robot should go. You can drag and zoom first.",
     actions: [["Cancel", () => { goMode = false; renderTray(); }]]});
   const nv = t.nav;
@@ -880,6 +911,7 @@ function updateUi() {
   if (!settingsInit && s) { $("ms").value = s.maxSpeed; $("msv").textContent = Math.round(s.maxSpeed * 100) + "%"; settingsInit = true; }
   if (s) {
     $("obs").checked = s.obstacleStop;
+    if (t.explore) $("explBtn").textContent = t.explore.active ? "Stop exploring" : "Explore on its own";
     const mm = s.mappingMode || "maintain";
     document.querySelectorAll("#mapMode button").forEach(b => b.classList.toggle("on", b.dataset.mode === mm));
     $("mapModeHint").textContent = MODE_HINT[mm] + (s.mappingEffective && s.mappingEffective !== mm ? " (Maintain while it drives itself.)" : "");
