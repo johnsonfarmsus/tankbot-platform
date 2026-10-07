@@ -2,7 +2,8 @@
 import json, os, sys
 from PIL import Image, ImageChops
 
-SRC = os.path.expanduser('~/Downloads/file.png')
+SRC = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else '~/Downloads/file.png')
+FILL = float(sys.argv[2]) if len(sys.argv) > 2 else 0.88  # share of the icon the artwork fills
 APP = os.path.expanduser('~/tankbot-work/tankbot-platform/app/tankbot_brain')
 OUT = APP + '/assets/icon'
 os.makedirs(OUT, exist_ok=True)
@@ -19,9 +20,9 @@ art = im.crop(box)
 aw, ah = art.size
 print('source %dx%d, background %s, artwork box %s (%dx%d)' % (w, h, bg, box, aw, ah))
 
-# square master: artwork scaled to fill ~78% of the icon (room for iOS's rounded corners)
+# square master: artwork scaled to fill FILL of the icon (88% keeps the treads clear of iOS's rounded corners)
 S = 1024
-scale = (S * 0.78) / max(aw, ah)
+scale = (S * FILL) / max(aw, ah)
 art = art.resize((round(aw * scale), round(ah * scale)), Image.LANCZOS)
 master = Image.new('RGB', (S, S), bg)
 master.paste(art, ((S - art.width) // 2, (S - art.height) // 2))
