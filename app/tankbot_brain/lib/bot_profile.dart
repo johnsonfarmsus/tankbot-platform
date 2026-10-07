@@ -156,14 +156,14 @@ class BotProfile {
     required this.drive,
     required this.widthMm,
     required this.lengthMm,
-    this.platformHeightMm = 60,
+    this.platformHeightMm = 66,
     required this.trackMm,
     required this.axleFromFrontMm,
     required this.sensors,
     this.minPower = 0.8,
     this.cruisePower = 0.9,
-    this.stopDistMm = 300,
-    this.passDistMm = 100,
+    this.stopDistMm = 100,
+    this.passDistMm = 50,
     this.hardwareDirty = false,
     this.hardwareMigrated = true,
     this.wallAlign = true,
@@ -171,8 +171,8 @@ class BotProfile {
     this.trackingMode = 'auto',
     this.phoneMount = 'portrait',
     this.gpsMaxAccM = 5,
-    this.depthStopMm = 250,
-    this.depthMinHeightMm = 60,
+    this.depthStopMm = 100,
+    this.depthMinHeightMm = 40,
   });
 
   static const drives = ['tank', 'wheelchair', 'mecanum'];
@@ -294,13 +294,13 @@ class BotProfile {
     final minP = num_(pw is Map ? pw['min'] : null, 0.8).clamp(0.3, 1.0).toDouble();
     final cruise = num_(pw is Map ? pw['cruise'] : null, 0.9).clamp(minP, 1.0).toDouble();
     final ob = j['obstacles'];
-    final stopMm = num_(ob is Map ? ob['stopMm'] : null, 300).clamp(100, 2000).toDouble();
-    final passMm = num_(ob is Map ? ob['passMm'] : null, 100).clamp(0, 1000).toDouble();
-    final dStop = num_(ob is Map ? ob['depthStopMm'] : null, 250).clamp(50, 2000).toDouble();
-    final dMinH = num_(ob is Map ? ob['depthMinHeightMm'] : null, 60).clamp(10, 300).toDouble();
+    final stopMm = num_(ob is Map ? ob['stopMm'] : null, 100).clamp(100, 2000).toDouble();
+    final passMm = num_(ob is Map ? ob['passMm'] : null, 50).clamp(0, 1000).toDouble();
+    final dStop = num_(ob is Map ? ob['depthStopMm'] : null, 100).clamp(50, 2000).toDouble();
+    final dMinH = num_(ob is Map ? ob['depthMinHeightMm'] : null, 40).clamp(10, 300).toDouble();
     final width = num_(pf is Map ? pf['widthMm'] : null, 185).clamp(50, 3000).toDouble();
     final length = num_(pf is Map ? pf['lengthMm'] : null, 170).clamp(50, 3000).toDouble();
-    final platH = num_(pf is Map ? pf['heightMm'] : null, 60).clamp(0, 2000).toDouble();
+    final platH = num_(pf is Map ? pf['heightMm'] : null, 66).clamp(0, 2000).toDouble();
     // version 1 profiles stored heights above the floor: make them platform-relative
     final version = (j['version'] as num?)?.toInt() ?? 1;
     if (version < 2) {
