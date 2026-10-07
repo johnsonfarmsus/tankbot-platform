@@ -7,7 +7,11 @@ Add a bumper and distance sensors, and it protects itself. Put a phone on it, an
 brain. Add a lidar, and it maps your house, keeps the map straight, drives itself to wherever you tap,
 and explores rooms it hasn't seen yet, all on hardware you probably already own.
 
-![TankBot in action](docs/images/tankbot-demo.gif)
+<table align="center"><tr>
+<td align="center"><img src="docs/images/tankbot-demo.gif" height="288" alt="TankBot in action"><br><em>In action</em></td>
+<td align="center"><img src="docs/images/tankbot-driving.gif" height="288" alt="TankBot driving"><br><em>Driving</em></td>
+<td align="center"><img src="docs/images/tankbot-bumper.gif" height="288" alt="The bumper reflex"><br><em>Bumper reflex</em></td>
+</tr></table>
 
 TankBot grew out of the original [TankBot ESP32](https://github.com/johnsonfarmsus/tank-bot-esp32), a
 web-controlled tracked robot. This project turns it into a platform: the same software for any robot
@@ -106,9 +110,6 @@ sits). Nothing about a specific robot is hard-coded.
 
 The controller's Settings page shows the current tier and what would unlock the next.
 
-<p align="center"><img src="docs/images/tankbot-bumper.gif" alt="The bumper reflex: TankBot bumps an obstacle and backs off" width="162"><br>
-<em>Reflexes run on the robot itself: the bumper stops it and backs it off, no phone needed.</em></p>
-
 ## Repository layout
 
 | Folder | Contents |
@@ -163,8 +164,6 @@ In Robot mode the brain waits until the phone has sat still in its cradle for 3 
 handling the phone never smears a map. If the phone gets knocked, mapping pauses until it settles.
 
 ## Mapping and driving
-
-<p align="center"><img src="docs/images/tankbot-driving.gif" alt="TankBot driving" width="244"></p>
 
 See the [user guide](docs/user-guide.md) for every page, button and map symbol.
 
