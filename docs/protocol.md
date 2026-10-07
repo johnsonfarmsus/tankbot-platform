@@ -112,6 +112,17 @@ address for 10 s and uses it for `/api/brain` and the `/brain` redirect.
 | `GET /tof/calibrate?id=X` | store the current reading of a floor-facing ToF as its floor distance |
 | `GET /api/brain` | `{"url":"http://<brain>:8080/"}` if a brain announced itself in the last 10 s, else `{}` |
 | `/brain` | 302 redirect to the brain; a help page if none is running |
+| `GET` / `POST /api/settings` | robot-level brain settings (JSON with an `updated` time; the newer side wins). Stored in NVS, max ~3.8 KB |
+| `GET /api/map/info` | `{id, name, updated, size, keyframes}` of the stored compact map, or `{}` |
+| `GET /api/map` | the compact map file (`TCM1`, see below) |
+| `POST /api/map/begin?size=N`, `POST /api/map/chunk` (body: base64, ~6 KB decoded), `POST /api/map/end` (body: info JSON) | chunked upload into LittleFS; the stored map is replaced only when all N bytes arrived. Send bodies as `text/plain` / JSON, not form-encoded |
+
+### Compact map `TCM1`
+
+`TCM1` + u32 header length (little-endian) + header JSON + zlib(cells). Cells: one byte per grid cell
+over the map's bounding box, 0 unexplored, 1 open floor, 2 wall. Header: `id`, `name`, `created`,
+`updated`, `res`, `x0`/`y0` (cell index relative to the grid centre), `w`, `h`, `lidarFwdM`,
+`lidarLeftM`, `lastPose`, `nextEditId`, `edits`. Raw keyframes are not included.
 
 ## Controller WebSocket (brain, port 8080, path `/ws`)
 

@@ -13,6 +13,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'lidar_client.dart';
 import 'pose_graph.dart';
+import 'compact_map.dart';
 
 class Keyframe {
   final double t; // unix ms
@@ -56,6 +57,30 @@ class MapSession {
   int nextEditId = 1;
   /// Where the robot last was on this map [x, y, heading]: first guess when the map loads.
   List<double>? lastPose;
+  /// A map that started from the robot's compact copy: its grid is the base layer under any keyframes.
+  Uint8List? baseBytes;
+  CompactMap? base;
+
+  static MapSession fromCompact(CompactMap cm, Uint8List bytes) {
+    final h = cm.header;
+    double n(dynamic v) => v is num ? v.toDouble() : 0;
+    final m = MapSession(cm.id, cm.name,
+        DateTime.fromMillisecondsSinceEpoch((h['created'] as num?)?.toInt() ?? DateTime.now().millisecondsSinceEpoch),
+        lidarFwdM: n(h['lidarFwdM']), lidarLeftM: n(h['lidarLeftM']));
+    m.baseBytes = bytes;
+    m.base = cm;
+    final ed = h['edits'];
+    if (ed is List) {
+      for (final e in ed) {
+        if (e is Map) m.edits.add(Map<String, dynamic>.from(e));
+      }
+    }
+    m.nextEditId = (h['nextEditId'] as num?)?.toInt() ?? m.edits.length + 1;
+    final lp = h['lastPose'];
+    if (lp is List && lp.length == 3) m.lastPose = [for (final v in lp) (v as num).toDouble()];
+    m.edited = true;
+    return m;
+  }
 
   bool get unsaved => keyframes.length != savedCount || renamed || edited;
 
@@ -247,6 +272,11 @@ class MapStore {
     final gTmp = File('${d.path}/graph.json.tmp');
     await gTmp.writeAsString(jsonEncode({'edges': [for (final e in m.graphEdges) e.toJson()], 'geo': m.geoTags}), flush: true);
     await gTmp.rename('${d.path}/graph.json');
+    if (m.baseBytes != null) {
+      final bTmp = File('${d.path}/base.tcm.tmp');
+      await bTmp.writeAsBytes(m.baseBytes!, flush: true);
+      await bTmp.rename('${d.path}/base.tcm');
+    }
     m.savedCount = count;
     m.renamed = false;
     m.edited = false;
@@ -276,6 +306,12 @@ class MapStore {
         for (final x in (e['edits'] as List? ?? [])) {
           m.edits.add(Map<String, dynamic>.from(x as Map));
         }
+      }
+      final bf = File('${root.path}/$id/base.tcm');
+      if (await bf.exists()) {
+        final bb = await bf.readAsBytes();
+        m.baseBytes = bb;
+        m.base = CompactMap.decode(bb);
       }
       final gf = File('${root.path}/$id/graph.json');
       if (await gf.exists()) {

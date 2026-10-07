@@ -18,6 +18,8 @@
 #include <Preferences.h>
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
+#include <LittleFS.h>
+#include "mbedtls/base64.h"
 #include <math.h>
 #include "esp_timer.h"
 #include "secrets.h"
@@ -731,6 +733,101 @@ void handleHardware() {
 }
 void handleSensors() { server.send(200, "application/json", sensorsJson()); }
 
+// ---- What the robot keeps for its brains ----
+// Settings: robot-level brain settings (platform size, safety distances, power, mapping preferences)
+// as one JSON blob in NVS; the robot doesn't interpret it. Any brain reads it on connect.
+// Map: a compact copy of the most recent map (a few tens of KB) in LittleFS, so a new brain starts
+// out knowing the house. Uploaded in base64 chunks into /map.tmp and committed only when complete.
+bool fsOk = false;
+File mapUpload;
+size_t mapUploadExpected = 0, mapUploadWritten = 0;
+
+void handleSettingsApi() {
+  if (server.method() == HTTP_POST) {
+    String body = server.arg("plain");
+    if (body.length() > 3800) { server.send(413, "application/json", "{\"error\":\"settings too large\"}"); return; }
+    prefs.begin("tankbot", false);
+    prefs.putString("brainset", body);
+    prefs.end();
+    server.send(200, "application/json", "{\"ok\":true}");
+    return;
+  }
+  prefs.begin("tankbot", true);
+  String v = prefs.getString("brainset", "{}");
+  prefs.end();
+  server.send(200, "application/json", v);
+}
+
+void handleMapInfo() {
+  if (!fsOk || !LittleFS.exists("/map.bin") || !LittleFS.exists("/mapinfo.json")) {
+    server.send(200, "application/json", fsOk ? "{}" : "{\"error\":\"no file system\"}");
+    return;
+  }
+  File f = LittleFS.open("/mapinfo.json", "r");
+  String info = f.readString();
+  f.close();
+  server.send(200, "application/json", info);
+}
+
+void handleMapGet() {
+  if (!fsOk || !LittleFS.exists("/map.bin")) { server.send(404, "text/plain", "no map"); return; }
+  File f = LittleFS.open("/map.bin", "r");
+  server.streamFile(f, "application/octet-stream");
+  f.close();
+}
+
+// POST /api/map/begin?size=N  -> start an upload of N bytes
+void handleMapBegin() {
+  if (!fsOk) { server.send(500, "application/json", "{\"error\":\"no file system\"}"); return; }
+  size_t n = server.arg("size").toInt();
+  size_t freeB = LittleFS.totalBytes() - LittleFS.usedBytes();
+  if (LittleFS.exists("/map.tmp")) LittleFS.remove("/map.tmp");
+  size_t oldSize = 0;
+  if (LittleFS.exists("/map.bin")) { File o = LittleFS.open("/map.bin", "r"); oldSize = o.size(); o.close(); }
+  if (n == 0 || n + 4096 > freeB + oldSize) {
+    server.send(413, "application/json", "{\"error\":\"map too large\"}");
+    return;
+  }
+  if (mapUpload) mapUpload.close();
+  mapUpload = LittleFS.open("/map.tmp", "w");
+  mapUploadExpected = n;
+  mapUploadWritten = 0;
+  server.send(mapUpload ? 200 : 500, "application/json", mapUpload ? "{\"ok\":true}" : "{\"error\":\"open failed\"}");
+}
+
+// POST /api/map/chunk  (body: base64) -> append
+void handleMapChunk() {
+  if (!mapUpload) { server.send(409, "application/json", "{\"error\":\"no upload in progress\"}"); return; }
+  String b64 = server.arg("plain");
+  size_t outLen = 0;
+  size_t cap = (b64.length() / 4) * 3 + 4;
+  uint8_t* buf = (uint8_t*)malloc(cap);
+  if (!buf) { server.send(500, "application/json", "{\"error\":\"out of memory\"}"); return; }
+  int rc = mbedtls_base64_decode(buf, cap, &outLen, (const unsigned char*)b64.c_str(), b64.length());
+  if (rc == 0) mapUploadWritten += mapUpload.write(buf, outLen);
+  free(buf);
+  if (rc != 0) { server.send(400, "application/json", "{\"error\":\"bad chunk\"}"); return; }
+  server.send(200, "application/json", "{\"written\":" + String(mapUploadWritten) + "}");
+}
+
+// POST /api/map/end  (body: info JSON) -> commit only if every byte arrived
+void handleMapEnd() {
+  if (!mapUpload) { server.send(409, "application/json", "{\"error\":\"no upload in progress\"}"); return; }
+  mapUpload.close();
+  if (mapUploadWritten != mapUploadExpected) {
+    LittleFS.remove("/map.tmp");
+    server.send(400, "application/json", "{\"error\":\"incomplete upload\"}");
+    return;
+  }
+  if (LittleFS.exists("/map.bin")) LittleFS.remove("/map.bin");
+  LittleFS.rename("/map.tmp", "/map.bin");
+  File f = LittleFS.open("/mapinfo.json", "w");
+  f.print(server.arg("plain"));
+  f.close();
+  Serial.printf("[map] stored %u bytes\n", (unsigned)mapUploadWritten);
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 /// Where the brain's full controls are (empty object if no brain has been seen in 10 s).
 void handleBrainApi() {
   server.send(200, "application/json", brainAlive() ? "{\"url\":\"" + brainUrl() + "\"}" : "{}");
@@ -838,7 +935,16 @@ void setupNetwork() {
   server.on("/api/brain", handleBrainApi);
   server.on("/brain", handleBrainRedirect);
   server.on("/tof/calibrate", handleTofCalibrate);
+  server.on("/api/settings", handleSettingsApi);
+  server.on("/api/map/info", handleMapInfo);
+  server.on("/api/map", HTTP_GET, handleMapGet);
+  server.on("/api/map/begin", HTTP_POST, handleMapBegin);
+  server.on("/api/map/chunk", HTTP_POST, handleMapChunk);
+  server.on("/api/map/end", HTTP_POST, handleMapEnd);
   server.onNotFound(handleRoot);
+  fsOk = LittleFS.begin(true); // formats the spare flash partition the first time
+  Serial.printf("[fs] %s, %u of %u bytes used\n", fsOk ? "ready" : "FAILED",
+                fsOk ? (unsigned)LittleFS.usedBytes() : 0, fsOk ? (unsigned)LittleFS.totalBytes() : 0);
   server.begin();
   udpLidar.begin(LIDAR_PORT);
   udpMotion.begin(MOTION_PORT);

@@ -142,6 +142,8 @@ class BotProfile {
   String mappingMode;
   /// Position tracking: 'auto' (camera + lidar, lidar alone when the camera misbehaves) | 'lidar'
   String trackingMode;
+  /// When the robot-level settings last changed (ms since 1970): the newer copy wins between brain and robot.
+  int settingsUpdated;
   /// The one-time carry-over of pre-hardware-table placements onto the robot's table has happened
   /// (true for built-in defaults: they are not measurements and must never overwrite the robot).
   bool hardwareMigrated;
@@ -169,6 +171,7 @@ class BotProfile {
     this.wallAlign = true,
     this.mappingMode = 'maintain',
     this.trackingMode = 'auto',
+    this.settingsUpdated = 0,
     this.phoneMount = 'portrait',
     this.gpsMaxAccM = 5,
     this.depthStopMm = 100,
@@ -261,6 +264,47 @@ class BotProfile {
   }
 
   /// Planning clearance: body radius plus the pass distance.
+  /// Settings that belong to the robot rather than the phone; the robot keeps a copy so any brain
+  /// picks them up. (Sensors travel in the robot's hardware table; the camera position stays per phone.)
+  Map<String, dynamic> robotSettings() => {
+        'updated': settingsUpdated,
+        'platform': {'widthMm': widthMm, 'lengthMm': lengthMm, 'heightMm': platformHeightMm},
+        'phoneMount': phoneMount,
+        'power': {'min': minPower, 'cruise': cruisePower},
+        'obstacles': {'stopMm': stopDistMm, 'passMm': passDistMm, 'depthStopMm': depthStopMm, 'depthMinHeightMm': depthMinHeightMm},
+        'mapping': {'mode': mappingMode, 'tracking': trackingMode, 'wallAlign': wallAlign, 'gpsMaxAccM': gpsMaxAccM},
+      };
+
+  void applyRobotSettings(Map<String, dynamic> j) {
+    double n(dynamic v, double d) => v is num ? v.toDouble() : d;
+    final pf = j['platform'];
+    if (pf is Map) {
+      widthMm = n(pf['widthMm'], widthMm).clamp(50, 3000).toDouble();
+      lengthMm = n(pf['lengthMm'], lengthMm).clamp(50, 3000).toDouble();
+      platformHeightMm = n(pf['heightMm'], platformHeightMm).clamp(0, 2000).toDouble();
+    }
+    if (j['phoneMount'] == 'portrait' || j['phoneMount'] == 'landscape') phoneMount = j['phoneMount'] as String;
+    final pw = j['power'];
+    if (pw is Map) {
+      minPower = n(pw['min'], minPower).clamp(0.3, 1.0).toDouble();
+      cruisePower = n(pw['cruise'], cruisePower).clamp(minPower, 1.0).toDouble();
+    }
+    final ob = j['obstacles'];
+    if (ob is Map) {
+      stopDistMm = n(ob['stopMm'], stopDistMm).clamp(100, 2000).toDouble();
+      passDistMm = n(ob['passMm'], passDistMm).clamp(0, 1000).toDouble();
+      depthStopMm = n(ob['depthStopMm'], depthStopMm).clamp(50, 2000).toDouble();
+      depthMinHeightMm = n(ob['depthMinHeightMm'], depthMinHeightMm).clamp(10, 300).toDouble();
+    }
+    final mp = j['mapping'];
+    if (mp is Map) {
+      if (['explore', 'maintain', 'off'].contains(mp['mode'])) mappingMode = mp['mode'] as String;
+      if (mp['tracking'] == 'auto' || mp['tracking'] == 'lidar') trackingMode = mp['tracking'] as String;
+      if (mp['wallAlign'] is bool) wallAlign = mp['wallAlign'] as bool;
+      gpsMaxAccM = n(mp['gpsMaxAccM'], gpsMaxAccM).clamp(1, 50).toDouble();
+    }
+  }
+
   double get inflationRadiusM => bodyRadiusM + passDistMm / 1000.0;
 
   Map<String, dynamic> toJson() => {
@@ -275,6 +319,7 @@ class BotProfile {
         'sensors': [for (final s in sensors) s.toJson()],
         'hardwareDirty': hardwareDirty,
         'hardwareMigrated': hardwareMigrated,
+        'settingsUpdated': settingsUpdated,
         'mapping': {'wallAlign': wallAlign, 'gpsMaxAccM': gpsMaxAccM, 'mode': mappingMode, 'tracking': trackingMode},
       };
 
@@ -324,6 +369,7 @@ class BotProfile {
       hardwareDirty: j['hardwareDirty'] == true,
       // profiles saved before this flag existed may still hold measured placements to carry over
       hardwareMigrated: j['hardwareMigrated'] == true,
+      settingsUpdated: (j['settingsUpdated'] as num?)?.toInt() ?? 0,
       wallAlign: !(j['mapping'] is Map && (j['mapping'] as Map)['wallAlign'] == false),
       mappingMode: j['mapping'] is Map && ['explore', 'maintain', 'off'].contains((j['mapping'] as Map)['mode'])
           ? (j['mapping'] as Map)['mode'] as String

@@ -219,6 +219,7 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
     <div id="mapQuality" class="small" style="white-space:pre-line"></div>
     <div class="row"><input id="mapName" placeholder="Map name" style="flex:1;min-width:180px"><button id="mapSave" class="primary">Save</button><button id="mapNew">New map here</button></div>
     <div class="row"><button id="relocBtn">Find me again</button><button id="homeBtn">I'm at home</button><button id="clearDrops">Clear remembered drop-offs</button></div>
+    <div class="small" id="robotKeeps"></div>
     <div class="row" id="cpRow" style="display:none"><label>Restore an earlier version <select id="cpSel"></select></label><button id="cpBtn">Restore</button></div>
     <div class="small">Maps autosave every 20 s, and the last map loads when the brain starts. A restore point is saved automatically before exploring on its own and before switching to Explore. To edit walls or draw no-go lines, use <b>Edit map</b> on the Drive page.</div>
   </div>
@@ -959,7 +960,13 @@ function updateUi() {
   lastIdleNote = nv && nv.state === "idle" ? nv.note : null;
   renderTray();
   if (settingsOpen) { $("capsInfo").textContent = capsText(t.caps, t.tracking); $("robotInfo").textContent = robotText(t.robot); }
-  if (mapsOpen && t.mapInfo) renderCheckpoints(t.mapInfo);
+  if (mapsOpen && t.mapInfo) {
+    renderCheckpoints(t.mapInfo);
+    const r = t.mapInfo.onRobot;
+    $("robotKeeps").textContent = r ? "Kept on the robot: \"" + r.name + "\" (" + Math.round((r.size || 0) / 1024) + " KB" +
+      (r.updated ? ", updated " + new Date(r.updated).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "") + ")" +
+      (r.id === t.mapInfo.id ? " - this map" : "") : "The robot has no map copy yet (it gets one once this map has some driving in it).";
+  }
   if (mapsOpen && t.quality) $("clearDrops").textContent = "Clear remembered drop-offs (" + (t.quality.dropoffMarks || 0) + ")";
   if (botOpen) updateBotLive();
   if (settingsOpen && t.log && t.settings) {

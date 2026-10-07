@@ -167,6 +167,43 @@ class OccupancyGrid {
     dirty = true;
   }
 
+  /// The map as one byte per cell (0 unexplored, 1 open floor, 2 wall) over its bounding box.
+  /// x0 / y0 are cell indices relative to the grid centre.
+  (int, int, int, int, Uint8List) exportKinds() {
+    if (maxCx < 0) return (0, 0, 0, 0, Uint8List(0));
+    final w = maxCx - minCx + 1, h = maxCy - minCy + 1;
+    final out = Uint8List(w * h);
+    for (var y = 0; y < h; y++) {
+      final row = (minCy + y) * size + minCx;
+      for (var x = 0; x < w; x++) {
+        final v = _lo[row + x];
+        out[y * w + x] = v > 0.5 ? 2 : (v < -0.5 ? 1 : 0);
+      }
+    }
+    return (minCx - size ~/ 2, minCy - size ~/ 2, w, h, out);
+  }
+
+  /// Lay a saved map in as the base layer: open floor and walls as firm as hand edits.
+  void loadKinds(int relX0, int relY0, int w, int h, Uint8List kinds, double res) {
+    if ((res - resolution).abs() > 1e-6) return; // a different cell size: not supported
+    final ox = relX0 + size ~/ 2, oy = relY0 + size ~/ 2;
+    for (var y = 0; y < h; y++) {
+      final cy = oy + y;
+      if (cy < 0 || cy >= size) continue;
+      for (var x = 0; x < w; x++) {
+        final k = kinds[y * w + x];
+        if (k == 0) continue;
+        final cx = ox + x;
+        if (cx < 0 || cx >= size) continue;
+        _lo[cy * size + cx] = k == 2 ? 2.0 : -2.0;
+        _touch(cx, cy);
+      }
+    }
+    if (scansIntegrated < 100) scansIntegrated = 100; // an established map for matching and relocalisation
+    _fieldScans = -1000;
+    dirty = true;
+  }
+
   void clear() {
     _lo.fillRange(0, _lo.length, 0);
     minCx = 1 << 30; maxCx = -1; minCy = 1 << 30; maxCy = -1;

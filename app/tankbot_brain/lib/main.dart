@@ -25,6 +25,8 @@ import 'depth_obstacles.dart';
 import 'sensor_log.dart';
 import 'pose_graph.dart';
 import 'frontier.dart';
+import 'compact_map.dart';
+import 'robot_store.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -1001,6 +1003,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _rebuilding = true;
     grid.clear();
     trail.clear();
+    active.base?.applyTo(grid);
     final kfs = List<Keyframe>.from(active.keyframes);
     for (var i = 0; i < kfs.length; i++) {
       final k = kfs[i];
@@ -1067,6 +1070,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'keyframes': active.keyframes.length,
         'unsaved': active.unsaved,
         'checkpoints': checkpoints,
+        'onRobot': robotMapInfo == null || robotMapInfo!['id'] == null
+            ? null
+            : {'id': robotMapInfo!['id'], 'name': robotMapInfo!['name'], 'updated': robotMapInfo!['updated'], 'size': robotMapInfo!['size']},
+        'fromRobot': active.baseBytes != null,
         'savedAgoS': active.savedAt == null ? null : DateTime.now().difference(active.savedAt!).inSeconds,
         'loading': _loadingMap,
       };
@@ -1102,6 +1109,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _corr.reset();
     _lidarPose = null;
     _lastRobotPose = null;
+    m.base?.applyTo(grid); // a map that started from the robot's copy
     for (var i = 0; i < m.keyframes.length; i++) {
       final k = m.keyframes[i];
       grid.integrate(Pose(0, k.x, k.y, k.h, true), k.points(), lidarFwdM: m.lidarFwdM, lidarLeftM: m.lidarLeftM);
@@ -1868,6 +1876,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final heard = (scan != null && !stale) || sensors.fresh;
     if (heard) {
       _lastRobotHeardMs = now;
+      _onRobotHeard();
       final s = widget.settings;
       if (s != null && robotIp != null && s.lastRobotIp != robotIp) {
         s.lastRobotIp = robotIp!;
@@ -1878,6 +1887,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         _stopExplore('Exploration stopped: the robot stopped responding (power? Wi-Fi?)');
         if (navActive) _navCancel('Stopped: the robot stopped responding (power? Wi-Fi?)');
       }
+      if (now - _lastRobotHeardMs > 8000) _robotSynced = false; // sync again when it's back
       if (now - _lastRobotHeardMs > 8000 && now - _lastReconnectMs > 8000) {
         _lastReconnectMs = now; // look for it again every 8 s while it stays quiet
         _connectRobot();
@@ -1914,6 +1924,134 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           '${[t.toIso8601String(), kind, c(fr?.x), c(fr?.y), c(fr?.heading), c(x), c(y), c(h), c(dist), c(dh), _mode, locState, navState, _exploring ? 1 : 0, detail.replaceAll(',', ';')].join(',')}\n',
           mode: FileMode.append);
     } catch (_) {}
+  }
+
+  // ---------- what the robot keeps for its brains: settings + a compact copy of the latest map ----------
+  bool _robotSynced = false, _settingsSynced = false, _robotSyncRunning = false, _uploadingMap = false;
+  String _lastSettingsJs = '', _uploadedMapSig = '';
+  double _lastMapUploadMs = -1e9;
+  Map<String, dynamic>? robotMapInfo;
+  int robotMapUploads = 0;
+
+  String _settingsContent() => jsonEncode(profile.robotSettings()..remove('updated'));
+
+  /// Every few seconds while the robot is talking: sync once after connecting, push settings that
+  /// changed here, and keep the robot's map copy fresh.
+  void _onRobotHeard() {
+    if (!_profileReady || _loadingMap) return;
+    if (!_robotSynced) {
+      _robotSynced = true;
+      _syncWithRobot();
+      return;
+    }
+    final ip = robotIp;
+    if (_settingsSynced && ip != null) {
+      final js = _settingsContent();
+      if (js != _lastSettingsJs) {
+        _lastSettingsJs = js;
+        profile.settingsUpdated = DateTime.now().millisecondsSinceEpoch;
+        BotProfileStore.save(profile, store.robot);
+        RobotStore.putSettings(ip, profile.robotSettings());
+      }
+    }
+    _maybeUploadMap();
+  }
+
+  /// On connect: the newer settings win (robot or brain); a map the robot has that this brain doesn't
+  /// is added, and loaded straight away if this brain has no real map yet.
+  Future<void> _syncWithRobot() async {
+    final ip = robotIp;
+    if (ip == null || _robotSyncRunning) return;
+    _robotSyncRunning = true;
+    try {
+      final remote = await RobotStore.settings(ip);
+      if (remote != null) {
+        final rUpd = (remote['updated'] as num?)?.toInt() ?? 0;
+        final has = remote.containsKey('platform');
+        if (has && rUpd > profile.settingsUpdated) {
+          profile.applyRobotSettings(remote);
+          profile.settingsUpdated = rUpd;
+          BotProfileStore.save(profile, store.robot);
+          maxSpeed = profile.cruisePower;
+          if (robotMode) _lockOrientation();
+          _flash("Loaded this robot's settings from the robot");
+        } else if (!has || rUpd < profile.settingsUpdated) {
+          if (profile.settingsUpdated == 0) {
+            profile.settingsUpdated = DateTime.now().millisecondsSinceEpoch;
+            BotProfileStore.save(profile, store.robot);
+          }
+          await RobotStore.putSettings(ip, profile.robotSettings());
+        }
+        _lastSettingsJs = _settingsContent();
+        _settingsSynced = true;
+      }
+      robotMapInfo = await RobotStore.mapInfo(ip);
+      final rid = robotMapInfo?['id'] as String?;
+      if (rid != null && rid != 'selftest' && rid != active.id && !savedMaps.any((m) => m['id'] == rid)) {
+        final bytes = await RobotStore.downloadMap(ip);
+        final cm = bytes == null ? null : CompactMap.decode(bytes);
+        if (cm != null) {
+          final m = MapSession.fromCompact(cm, bytes!);
+          await store.save(m);
+          await _refreshMapList();
+          if (active.keyframes.length < 30 && active.baseBytes == null) {
+            await _loadMap(m.id);
+            _uploadedMapSig = _mapSig(); // it came from the robot: no need to send it back
+            _flash('Loaded the robot\'s map "${m.name}"');
+          } else {
+            _flash('The robot\'s map "${m.name}" was added to your maps');
+          }
+        }
+      }
+    } finally {
+      _robotSyncRunning = false;
+    }
+  }
+
+  String _mapSig() => '${active.id}|${active.keyframes.length ~/ 20}|${active.edits.length}|${active.nextEditId}|${active.name}';
+
+  /// Send the robot a compact copy of the current map when it has meaningfully changed: at once for a
+  /// different map, otherwise at most every 5 minutes (the robot's flash wears with rewriting).
+  /// Never while driving itself.
+  Future<void> _maybeUploadMap() async {
+    final ip = robotIp;
+    if (ip == null || _uploadingMap || _rebuilding || _loadingMap || navActive || _exploring) return;
+    if (active.keyframes.length < 10 && active.baseBytes == null) return;
+    final sig = _mapSig();
+    if (sig == _uploadedMapSig) return;
+    final now = appClockMs();
+    final otherMap = !_uploadedMapSig.startsWith('${active.id}|');
+    if (!otherMap && now - _lastMapUploadMs < 5 * 60000) return;
+    _uploadingMap = true;
+    try {
+      final p = robotPose;
+      final bytes = CompactMap.encode(grid, {
+        'id': active.id,
+        'name': active.name,
+        'created': active.created.millisecondsSinceEpoch,
+        'updated': DateTime.now().millisecondsSinceEpoch,
+        'lidarFwdM': active.lidarFwdM,
+        'lidarLeftM': active.lidarLeftM,
+        'lastPose': p == null ? active.lastPose : [p.x, p.y, p.heading],
+        'nextEditId': active.nextEditId,
+        'edits': active.edits,
+      });
+      final info = {
+        'id': active.id,
+        'name': active.name,
+        'updated': DateTime.now().millisecondsSinceEpoch,
+        'size': bytes.length,
+        'keyframes': active.keyframes.length,
+      };
+      if (await RobotStore.uploadMap(ip, bytes, info)) {
+        _uploadedMapSig = sig;
+        _lastMapUploadMs = now;
+        robotMapInfo = info;
+        robotMapUploads++;
+      }
+    } finally {
+      _uploadingMap = false;
+    }
   }
 
   // ---------- trip recorder: one CSV row per driving step, Documents/logs/nav_*.csv ----------

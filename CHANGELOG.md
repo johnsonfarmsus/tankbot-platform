@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Interchangeable brains:** firmware stores robot-level settings (`/api/settings`) and a compact
+  map (`/api/map`, LittleFS, chunked all-or-nothing uploads); the brain syncs settings (newer wins),
+  keeps the robot's map copy fresh and starts from it when it has no map. Maps can start from a grid.
+- Defaults that drive well: stop 100 mm, pass 50 mm, depth 100/40 mm, platform height 66 mm.
+- Fixed the flickering Robot not responding card.
+- iPhone 11 Pro as a brain.
+
 ## v0.3 (2026-10-06)
 
 Firmware v3 and a brain that maps, navigates and explores on its own.

@@ -97,6 +97,18 @@ Changes save as soon as you leave a field (a "Saved" note confirms it).
 - **Robot / This brain**: what is attached and what the phone can do.
 - **Sensor log**: record GPS, compass and position for testing.
 
+## Changing brain phones
+
+The robot keeps what a new brain needs: its sensors (positions, roles, thresholds), its robot-level
+settings (platform size, safety distances, power levels, mapping and tracking preferences) and a
+compact copy of the most recent map (walls, open floor, no-go lines, edits). A new brain picks all of
+it up when it connects and, if it has no map of its own yet, loads the robot's map and finds itself
+on it. Measure the new phone's camera position on the Bot page; that one is per phone.
+
+The robot's copy updates when the map changes meaningfully (at most every 5 minutes, never while the
+robot drives itself). The Maps page shows what the robot holds. Full maps, with their raw scans for
+straightening, stay on the brain.
+
 ## Troubleshooting
 
 | You see | Try |
