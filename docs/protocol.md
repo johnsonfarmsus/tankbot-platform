@@ -1,4 +1,6 @@
-# TankBot Platform protocol (v1)
+# TankBot Platform protocol
+
+Last updated: 2026-10-06 (firmware v3, brain v0.3).
 
 All messages are UDP. Multi-byte numbers are little-endian. Devices advertise themselves with mDNS/Bonjour so clients never need hardcoded IP addresses.
 
@@ -70,3 +72,76 @@ Sent every 250 ms to whoever sent a motion command in the last 3 s: `TMH1` + JSO
 {"left":0.00,"right":0.00,"src":"none","wd_trips":0,"speed":220,"trim":18,"cmds":0}
 ```
 `src` is `udp`, `web` or `none`; `wd_trips` counts watchdog stops since boot.
+
+### Ping `TMP1` (4 bytes)
+
+Keeps motion status (`TMH1`) flowing to the sender without moving the robot.
+
+## Sensor feed and capabilities (firmware v3)
+
+- UDP port **5603**.
+
+### Subscribing `TSSUB`
+
+The client sends `TSSUB` (resend every 2 s). The robot replies once with `TCAP1` + a JSON capability
+announce (firmware version, name, drive type and the hardware table, the same as `GET /api/hardware`),
+then streams `TSN1` + JSON at 20 Hz:
+
+```json
+{"t":905654,"sensors":[{"id":"us1","v":1113,"ok":true},{"id":"bump1","v":0,"ok":true}],
+ "block":{"front":"ultrasonic"},"reflexEvents":0}
+```
+
+`block` lists the directions the robot's reflexes currently refuse to drive (front/back/left/right)
+and why. Commands into a blocked direction are dropped on the robot itself.
+
+### Brain announce `TBRN1:<port>`
+
+A brain sends `TBRN1:8080` (ASCII) to port 5603 with each subscribe. The robot remembers the sender's
+address for 10 s and uses it for `/api/brain` and the `/brain` redirect.
+
+## Robot HTTP (port 80)
+
+| Path | What |
+|---|---|
+| `/` | drive page: buttons, joystick, keyboard (arrows/WASD, Space stops), trim, speed, links |
+| `/setup` | Wi-Fi, name, drive type, pins |
+| `GET /api/hardware` | the sensor table (id, name, type, slot, pinA/pinB, role, enabled, yawDeg, floorTilt, stopMm, floorMm, backoffMs, placement) |
+| `POST /api/hardware` | replace the table (the robot restarts to apply) |
+| `GET /api/sensors` | live readings + directional blocks (same as `TSN1`) |
+| `GET /tof/calibrate?id=X` | store the current reading of a floor-facing ToF as its floor distance |
+| `GET /api/brain` | `{"url":"http://<brain>:8080/"}` if a brain announced itself in the last 10 s, else `{}` |
+| `/brain` | 302 redirect to the brain; a help page if none is running |
+
+## Controller WebSocket (brain, port 8080, path `/ws`)
+
+JSON messages. The brain sends:
+
+| type | when | content |
+|---|---|---|
+| `telem` | 5 Hz | pose, live scan, settings, stats, tracking, loc, nav, explore, quality, robot, guard, depth, rangers, marks, no-go lines, log, flash |
+| `map` | when the map image changes | PNG (base64) + `left`, `top` (m) and `res` (m/pixel) |
+| `maps` | on request / change | saved maps + the active map (with its restore points) |
+| `bot` | on request / change | the bot profile |
+
+Controllers send (`type` plus fields):
+
+| type | fields | effect |
+|---|---|---|
+| `drive` | `f`, `t` (-1..1) | manual drive; cancels Go To and exploring |
+| `stop` | | stop everything |
+| `set` | any of `maxSpeed`, `obstacleStop`, `mappingMode`, `trackingMode`, `wallAlign`, `gpsMaxAccM`, `stopDistMm`, `passDistMm`, `depthStopMm`, `depthMinHeightMm`, `trim`, `minPower`, `cruisePower` | change settings (saved) |
+| `nav.goto` / `nav.cancel` | `x`, `y` | Go to / stop |
+| `explore.start` | `ackNoCliff` | start exploring (needs Explore mode; acknowledgment without a cliff sensor) |
+| `explore.stop` / `explore.preview` | | stop / compute the next target without moving |
+| `loc.set` | `x`, `y`, `h` | Set position (fine-tuned by the lidar) |
+| `reloc` / `atHome` | | Try again (whole map) / I'm at home |
+| `clearMap` | | new map here (saves the current one) |
+| `maps.list`, `maps.save`, `maps.load`, `maps.delete` | `name` / `id` | map management |
+| `map.restore` | `id` | put the map back to a restore point |
+| `map.erase` | `x`, `y`, `r`, `stroke` | eraser (also removes marks under it) |
+| `map.nogo` / `map.nogoDelete` | `x1..y2` / `id` | no-go lines |
+| `map.undo` | | undo the last user edit |
+| `map.clearDropoffs` | | remove remembered drop-offs |
+| `bot.get` / `bot.set` / `bot.calibrate` | `profile` / `id` | Bot page |
+| `log.start` / `log.stop` | | sensor log (GPS, compass, pose) |

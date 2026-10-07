@@ -38,11 +38,11 @@ The controller's Settings page shows the current tier and what would unlock the 
 
 | Folder | Contents |
 |---|---|
-| `firmware/tankbot/` | ESP32 firmware v2: configurable pins and sensors, reflexes, lidar bridge, web page, OTA |
+| `firmware/tankbot/` | ESP32 firmware v3: sensor table, directional reflexes, lidar bridge, sensor feed, web page, OTA |
 | `firmware/motion/` | the original TankBot firmware, kept for reference |
 | `app/tankbot_brain/` | the Flutter app: Mounted brain / Brain in hand / Controller roles |
-| `docs/` | [wiring](docs/wiring.md), [protocol](docs/protocol.md), [bot profile](docs/bot-profile.md), [app architecture](docs/app-architecture.md), [roadmap](docs/ROADMAP.md) |
-| `tools/` | desktop helpers (`lidar_client.py` live lidar plot) |
+| `docs/` | [user guide](docs/user-guide.md), [wiring](docs/wiring.md), [protocol](docs/protocol.md), [bot profile](docs/bot-profile.md), [app architecture](docs/app-architecture.md), [diagnostics](docs/diagnostics.md), [roadmap](docs/ROADMAP.md), [changelog](CHANGELOG.md) |
+| `tools/` | desktop helpers: log analysis, brain commands, controller checks ([tools/README](tools/README.md)) |
 
 ## Setting up a robot
 
@@ -73,30 +73,37 @@ The controller's Settings page shows the current tier and what would unlock the 
    positions and heights), **Settings** (trim, power levels, obstacle stop and pass distances,
    what the robot and the phone can do).
 
-### Mounting the phone
+### Which phone, and mounting it
 
-Mount it upright with the back camera facing forward. Enter its position and height in the Bot page.
+Any iPhone with ARKit works as a brain. A LiDAR iPhone (12 Pro and later Pros) adds the depth camera
+(low obstacles, drop-offs); without one (e.g. iPhone SE) the brain runs one tier down and falls back to
+lidar-only tracking when the camera drifts (dim rooms, plain walls).
+
+Mount it upright or on its side (set "Brain phone mounted" on the Bot page; the screen locks to it)
+with the back camera facing forward. Enter the camera's position and height in the Bot page.
 In Robot mode the brain waits until the phone has sat still in its cradle for 3 s before mapping, so
 handling the phone never smears a map. If the phone gets knocked, mapping pauses until it settles.
 
 ## Mapping and driving
 
-- Drive a room with the joystick or arrow keys; the map builds live. Turns are fine; the brain skips
-  scans taken while spinning fast and corrects camera drift against the map ten times a second.
-- Loops close automatically when the robot returns somewhere it mapped earlier.
-- Maps autosave every 20 s and reload on startup; the robot finds itself on the saved map with the
-  lidar (checking where it last was and the home spot first).
-- **Go to...**: tap a spot on the map. The robot plans around walls, no-go lines and anything it sees
-  live, drives there, and re-plans when something is in the way. Space, an arrow key, the joystick,
-  the Stop button, or leaving the page stops it immediately.
-- Safety is layered: ESP32 watchdog (commands must repeat every 300 ms) -> on-board reflexes -> the
-  brain's guardian (lidar around the body's front, depth camera, reflexes) -> the controller's own
-  watchdog. Autonomous driving always runs its own obstacle checks regardless of manual settings.
+See the [user guide](docs/user-guide.md) for every page, button and map symbol.
+
+- **Mapping modes:** Explore (build the map deliberately), Maintain (default: grows into new areas and
+  only changes for persistent changes), Off. Bumps and drop-offs are temporary unless they recur.
+- **Go to...:** click anywhere on the map. It plans around walls, no-go lines and live obstacles,
+  backs away and re-plans when blocked or stalled, and stands still when unsure where it is.
+- **Explore on its own** (Explore mode): drives to unexplored edges room by room and comes home.
+- **Set position** when it's lost; **restore points** undo bad mapping (Maps page).
+- Map straightening keeps long maps square (wall alignment, loop closing, good GPS outdoors).
+- Safety is layered: ESP32 watchdog -> on-board reflexes -> the brain's guardian -> the controller's
+  watchdog. Autonomous driving always runs its own obstacle checks.
+- Trip, position-event and sensor logs record what happened; see [diagnostics](docs/diagnostics.md).
 
 ## Developing
 
 - Firmware: PlatformIO. `pio run -e esp32dev` builds; `pio run -e ota -t upload` deploys over Wi-Fi.
-- App: Flutter 3.32+. `flutter test` runs the mapping, matching, planning and guardian tests;
+- App: Flutter 3.32+. `flutter test` runs the mapping, matching, planning, guardian, pose graph and
+  exploration tests (must pass before every install);
   `flutter build ios` / Xcode for the phone.
 - The wire protocols are in [docs/protocol.md](docs/protocol.md); `tools/lidar_client.py` is a
   minimal reference client.

@@ -1,0 +1,51 @@
+# Changelog
+
+## v0.3 (2026-10-06)
+
+Firmware v3 and a brain that maps, navigates and explores on its own.
+
+**Robot (firmware v3)**
+- Generic sensor table in flash (any number of bumpers and rangers in any direction), directional
+  reflexes, per-bumper back-off duration (default 150 ms, 0 = just stop).
+- Sensor feed (`TSSUB`/`TCAP1`/`TSN1`), brain announce (`TBRN1`), `/api/brain` and the
+  `tankbot.local/brain` redirect; keyboard driving and links on the robot's own page.
+
+**Controller**
+- Redesign: one shell with status lights, pan/zoom/pinch/follow map, colour key, scale bar, status
+  cards and toasts, phone layout. Moved into `assets/controller.html`.
+- Set position, restore points, mapping mode selector, exploration controls, tracking choice,
+  Saved confirmations, Robot not responding card.
+
+**Mapping**
+- Pose graph straightening (Levenberg-Marquardt, skyline solver): driving and loop links, wall
+  alignment, GPS only when better than a threshold and spread over 15 m.
+- Mapping modes Explore / Maintain (default) / Off; Maintain writes only persistent changes and
+  extends into unmapped ground.
+- Bump, stall and drop-off marks are temporary unless they recur; drop-off detection rejects glossy
+  floor reflections; eraser removes marks; undo only undoes user edits.
+- Trust gating: doubtful scans are never drawn. Restore points before Explore / exploring.
+
+**Navigation and exploration**
+- Fixed the Go To stutter (manual drive re-apply commanded stop 10x/s during autonomous driving).
+- Steering while driving, pulsed turns with settling, calmer re-planning.
+- Recovery when blocked (mark, back up, re-plan), stall detection, standing still when unsure.
+- Autonomous exploration: frontiers with gap closing, rooms first, reachability, previews, settle
+  pauses, rollback when lost, confirmed "nothing left", reasons on finish; cliff-sensor acknowledgment.
+
+**Tracking**
+- Robot link finds and re-finds the robot (retry, last address, reconnect after silence).
+- Drift handling: wider windows, wide re-search, lidar snap on solid ground, no whole-map jumps while
+  self-driving, camera glitch filter, drifting-camera fallback to lidar only, no matching on spin-smeared
+  scans; Settings choice camera + lidar / lidar only.
+- iPhone SE support (no depth sensor); landscape phone mounting with orientation lock.
+
+**Diagnostics**
+- Trip recorder, position events log, GPS/compass sensor log; analysis tools in `tools/`.
+
+**Fixes**
+- Startup race that replaced the saved profile with defaults and pushed a default lidar position.
+- Mode switch to lidar-only starting from a stale pose (5 m jumps).
+
+## v0.2 (2025-12-23) and earlier
+
+The original TankBot firmware, lidar bridge and first brain app; see the git history.

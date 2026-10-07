@@ -30,3 +30,6 @@ app/**/android/local.properties
 
 # Firmware backups (large binaries)
 *.bin
+
+# Build / upload scratch output
+firmware/**/*_log.txt
