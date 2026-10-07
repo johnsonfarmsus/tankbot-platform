@@ -24,6 +24,7 @@ import 'guardian.dart';
 import 'depth_obstacles.dart';
 import 'sensor_log.dart';
 import 'pose_graph.dart';
+import 'frontier.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -429,6 +430,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           _startExplore();
         }
         break;
+      case 'explore.preview': // where exploring would go next, without moving
+        final f = _nextFrontierPick();
+        explorePreview = f;
+        _flash(f == null
+            ? 'Exploring: nothing left that it can reach'
+            : 'Next place to explore: ${f.x.toStringAsFixed(1)}, ${f.y.toStringAsFixed(1)} m (${f.inRoom ? 'this room' : 'next room'}) - purple diamond');
+        break;
       case 'explore.stop':
         _stopExplore('Exploration stopped');
         break;
@@ -616,6 +624,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'note': exploreNote,
         'targets': exploreTargets,
         'cliffSensor': hasCliffSensor,
+        'preview': explorePreview == null ? null : [explorePreview!.x, explorePreview!.y, explorePreview!.inRoom ? 1 : 0],
       },
       'nogo': [
         for (final e in active.edits)
@@ -1614,82 +1623,38 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     exploreTargets++;
     _exploreGoal = target;
-    exploreNote = 'Heading for unexplored area #$exploreTargets';
+    exploreNote = 'Heading for unexplored area #$exploreTargets${explorePreview?.inRoom == true ? ' (this room)' : ' (next room)'}';
     _navGoto(target.dx, target.dy);
   }
 
-  /// Frontiers: open floor next to unexplored space. Groups of at least 40 cm; picks the nearest
-  /// (with a bonus for bigger openings), skipping ones it couldn't reach. Null = nothing left.
-  Offset? _nextFrontier() {
+  FrontierPick? explorePreview;
+
+  /// Next exploration target (see frontier.dart): real openings only (gaps under 60 cm count as
+  /// closed wall), leading to real unexplored space, reachable by the robot's body, own room first.
+  FrontierPick? _nextFrontierPick() {
     final p = robotPose;
     if (p == null || grid.maxCx < 0) return null;
-    final x0 = grid.minCx, x1 = grid.maxCx, y0 = grid.minCy, y1 = grid.maxCy;
-    final w = x1 - x0 + 1, h = y1 - y0 + 1;
-    bool unknown(int cx, int cy) =>
-        cx < 0 || cy < 0 || cx >= grid.size || cy >= grid.size || grid.cellLo(cx, cy).abs() < 0.3;
-    final front = Uint8List(w * h);
-    for (var cy = y0; cy <= y1; cy++) {
-      for (var cx = x0; cx <= x1; cx++) {
-        if (grid.cellLo(cx, cy) >= -0.5) continue; // only open floor can be a frontier
-        if (unknown(cx + 1, cy) || unknown(cx - 1, cy) || unknown(cx, cy + 1) || unknown(cx, cy - 1)) {
-          front[(cy - y0) * w + (cx - x0)] = 1;
-        }
-      }
-    }
-    final seen = Uint8List(w * h);
-    Offset? best;
-    var bestScore = double.infinity;
-    final res = grid.resolution;
-    for (var i = 0; i < w * h; i++) {
-      if (front[i] == 0 || seen[i] == 1) continue;
-      final cells = <int>[];
-      final queue = <int>[i];
-      seen[i] = 1;
-      while (queue.isNotEmpty) {
-        final c = queue.removeLast();
-        cells.add(c);
-        final cx = c % w, cy = c ~/ w;
-        for (var dy = -1; dy <= 1; dy++) {
-          for (var dx = -1; dx <= 1; dx++) {
-            final nx = cx + dx, ny = cy + dy;
-            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-            final n = ny * w + nx;
-            if (front[n] == 1 && seen[n] == 0) {
-              seen[n] = 1;
-              queue.add(n);
-            }
-          }
-        }
-      }
-      if (cells.length < 8) continue; // a crack, not an opening
-      var mx = 0.0, my = 0.0;
-      for (final c in cells) {
-        mx += c % w;
-        my += c ~/ w;
-      }
-      mx /= cells.length;
-      my /= cells.length;
-      // the frontier cell nearest the group's middle, as a target on known floor
-      var pick = cells.first, pd = double.infinity;
-      for (final c in cells) {
-        final d = _sq((c % w) - mx) + _sq((c ~/ w) - my);
-        if (d < pd) {
-          pd = d;
-          pick = c;
-        }
-      }
-      final tx = grid.cellToWorld(pick % w + x0) + res / 2, ty = grid.cellToWorld(pick ~/ w + y0) + res / 2;
-      final target = Offset(tx, ty);
-      if (_exploreSkip.any((q) => (q - target).distance < 0.6)) continue;
-      final dist = (target - Offset(p.x, p.y)).distance;
-      if (dist < 0.4) continue; // already there
-      final score = dist - 0.02 * cells.length;
-      if (score < bestScore) {
-        bestScore = score;
-        best = target;
-      }
-    }
-    return best;
+    return FrontierFinder.next(
+      lo: grid.cellLo,
+      x0: grid.minCx,
+      y0: grid.minCy,
+      x1: grid.maxCx,
+      y1: grid.maxCy,
+      res: grid.resolution,
+      cellToWorld: grid.cellToWorld,
+      robotX: p.x,
+      robotY: p.y,
+      robotCx: grid.toCell(p.x),
+      robotCy: grid.toCell(p.y),
+      skip: [for (final q in _exploreSkip) (q.dx, q.dy)],
+      robotRadiusM: profile.bodyRadiusM,
+    );
+  }
+
+  Offset? _nextFrontier() {
+    final f = _nextFrontierPick();
+    explorePreview = f;
+    return f == null ? null : Offset(f.x, f.y);
   }
 
   // ---------- tap-to-go navigation ----------

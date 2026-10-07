@@ -164,6 +164,7 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
       <div><span class="sw" style="background:#f2555a"></span>Drop-offs, no-go lines</div>
       <div><span class="sw" style="border:2px dashed #ff9f43;border-radius:50%;width:12px;height:12px"></span>Bump (dashed = temporary)</div>
       <div><span class="sw" style="background:#4f8cff"></span>Route and goal</div>
+      <div><span class="sw" style="background:#ba68ff;transform:rotate(45deg);width:10px;height:10px"></span>Next place to explore</div>
       <div><span class="sw" style="border:2px solid #fff;border-radius:50%;width:12px;height:12px"></span>Home spot (map start)</div>
     </div>
     <div class="edittools" id="edittools">
@@ -1217,6 +1218,12 @@ function frameInner() {
         const q = toS(ox + ch * f - sh * lf, oy + sh * f + ch * lf);
         ctx.fillRect(q[0] - sz / 2, q[1] - sz / 2, sz, sz);
       }
+    }
+    // next exploration target
+    if (t.explore && t.explore.preview) {
+      const e = toS(t.explore.preview[0], t.explore.preview[1]);
+      ctx.fillStyle = "rgba(186,104,255,0.9)"; ctx.beginPath();
+      ctx.moveTo(e[0], e[1] - 8); ctx.lineTo(e[0] + 8, e[1]); ctx.lineTo(e[0], e[1] + 8); ctx.lineTo(e[0] - 8, e[1]); ctx.closePath(); ctx.fill();
     }
     // route and goal
     if (t.nav && t.nav.path && t.nav.path.length > 1) {
