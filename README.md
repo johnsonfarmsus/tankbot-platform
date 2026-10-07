@@ -106,6 +106,9 @@ sits). Nothing about a specific robot is hard-coded.
 
 The controller's Settings page shows the current tier and what would unlock the next.
 
+<p align="center"><img src="docs/images/tankbot-bumper.gif" alt="The bumper reflex: TankBot bumps an obstacle and backs off" width="162"><br>
+<em>Reflexes run on the robot itself: the bumper stops it and backs it off, no phone needed.</em></p>
+
 ## Repository layout
 
 | Folder | Contents |
