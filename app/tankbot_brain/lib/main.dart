@@ -486,6 +486,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (m['maxSpeed'] is num) maxSpeed = (m['maxSpeed'] as num).toDouble().clamp(0.2, 1.0);
         if (m['obstacleStop'] is bool) obstacleStop = m['obstacleStop'] as bool;
         if (m['mappingMode'] is String) _setMappingMode(m['mappingMode'] as String);
+        if (m['trackingMode'] == 'auto' || m['trackingMode'] == 'lidar') {
+          profile.trackingMode = m['trackingMode'] as String;
+          BotProfileStore.save(profile, store.robot);
+        }
         if (m['mapping'] is bool) _setMappingMode((m['mapping'] as bool) ? 'explore' : 'off');
         if (m['stopDistMm'] is num || m['passDistMm'] is num) {
           if (m['stopDistMm'] is num) profile.stopDistMm = (m['stopDistMm'] as num).toDouble().clamp(100.0, 2000.0);
@@ -690,6 +694,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'untrustedScans': untrustedScans,
         'wideRecoveries': wideRecoveries,
         'stalls': stalls,
+        'cameraDistrusts': cameraDistrusts,
         'tempMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] != 'change' && e['confirmed'] != true).length,
       },
       'blocked': _blocked,
@@ -707,6 +712,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'mapping': mappingEffective != 'off',
         'mappingMode': mappingMode,
         'mappingEffective': mappingEffective,
+        'trackingMode': profile.trackingMode,
         'stopDistMm': stopDistMm,
         'passDistMm': profile.passDistMm,
         'depthStopMm': profile.depthStopMm,
@@ -2350,7 +2356,26 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   /// keeping the pose continuous across the switch.
   void _updateMode() {
     final now = appClockMs();
-    if (_arLive) {
+    // A camera that says the robot moved while the motors were idle is lying (dim light, plain walls,
+    // phones without a depth sensor): stop using it for a while and track with the lidar alone.
+    final l = poses.latest;
+    if (_arLive && l != null && _motorsIdle) {
+      final ref = _idleCamRef;
+      if (ref == null) {
+        _idleCamRef = l;
+      } else if (math.sqrt(_sq(l.x - ref.x) + _sq(l.y - ref.y)) > 0.08) {
+        if (now > _camDistrustUntilMs) {
+          cameraDistrusts++;
+          _flash('Camera tracking is drifting here - using the lidar alone for a while');
+        }
+        _camDistrustUntilMs = now + 30000;
+        _idleCamRef = l;
+      }
+    } else {
+      _idleCamRef = null;
+    }
+    final camOk = _arLive && profile.trackingMode != 'lidar' && now > _camDistrustUntilMs;
+    if (camOk) {
       _arBadSinceMs = -1;
       if (_mode == 'lidar') {
         final lp = _lidarPose;
@@ -2359,11 +2384,30 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       }
     } else {
       if (_arBadSinceMs < 0) _arBadSinceMs = now;
-      if (_mode == 'ar' && now - _arBadSinceMs > 1000) {
-        _lidarPose = _lastRobotPose ?? Pose(now, 0, 0, math.pi / 2, true);
+      final distrusted = profile.trackingMode == 'lidar' || now <= _camDistrustUntilMs;
+      if (_mode == 'ar' && (distrusted || now - _arBadSinceMs > 1000)) {
+        _lidarPose = _poseForSwitch(now, distrusted);
         _mode = 'lidar';
       }
     }
+  }
+
+  Pose? _idleCamRef;
+  double _camDistrustUntilMs = 0;
+  int cameraDistrusts = 0;
+
+  /// Where the robot is right now, for continuing with the lidar alone: the latest lidar-checked pose
+  /// if it is fresh (and always when the camera is the thing being distrusted), else the camera's.
+  Pose _poseForSwitch(double now, bool distrustCamera) {
+    final last = _lastRobotPose;
+    final l = poses.latest;
+    final cam = l == null ? null : _corr.apply(l);
+    final lastFresh = last != null && now - last.t < 1500;
+    if (last != null && (lastFresh || distrustCamera || cam == null)) {
+      return Pose(now, last.x, last.y, last.heading, true);
+    }
+    if (cam != null) return Pose(now, cam.x, cam.y, cam.heading, true);
+    return Pose(now, 0, 0, math.pi / 2, true);
   }
 
   void _processPending() {

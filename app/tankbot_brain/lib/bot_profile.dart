@@ -140,6 +140,8 @@ class BotProfile {
   double gpsMaxAccM;
   /// explore (add everything) | maintain (the map changes only when a change persists) | off
   String mappingMode;
+  /// Position tracking: 'auto' (camera + lidar, lidar alone when the camera misbehaves) | 'lidar'
+  String trackingMode;
   /// The one-time carry-over of pre-hardware-table placements onto the robot's table has happened
   /// (true for built-in defaults: they are not measurements and must never overwrite the robot).
   bool hardwareMigrated;
@@ -166,6 +168,7 @@ class BotProfile {
     this.hardwareMigrated = true,
     this.wallAlign = true,
     this.mappingMode = 'maintain',
+    this.trackingMode = 'auto',
     this.phoneMount = 'portrait',
     this.gpsMaxAccM = 5,
     this.depthStopMm = 250,
@@ -272,7 +275,7 @@ class BotProfile {
         'sensors': [for (final s in sensors) s.toJson()],
         'hardwareDirty': hardwareDirty,
         'hardwareMigrated': hardwareMigrated,
-        'mapping': {'wallAlign': wallAlign, 'gpsMaxAccM': gpsMaxAccM, 'mode': mappingMode},
+        'mapping': {'wallAlign': wallAlign, 'gpsMaxAccM': gpsMaxAccM, 'mode': mappingMode, 'tracking': trackingMode},
       };
 
   static BotProfile? fromJson(dynamic j) {
@@ -325,6 +328,7 @@ class BotProfile {
       mappingMode: j['mapping'] is Map && ['explore', 'maintain', 'off'].contains((j['mapping'] as Map)['mode'])
           ? (j['mapping'] as Map)['mode'] as String
           : 'maintain',
+      trackingMode: j['mapping'] is Map && (j['mapping'] as Map)['tracking'] == 'lidar' ? 'lidar' : 'auto',
       phoneMount: j['phoneMount'] == 'landscape' ? 'landscape' : 'portrait',
       gpsMaxAccM: num_(j['mapping'] is Map ? (j['mapping'] as Map)['gpsMaxAccM'] : null, 5).clamp(1, 50).toDouble(),
       depthStopMm: dStop,
