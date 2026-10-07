@@ -1,12 +1,66 @@
-# TankBot Platform
+# TankBot
 
-A robot platform that scales with what you plug into it. The bare minimum (an ESP32, a motor
-driver and a chassis) is a drivable robot. Add bumpers and distance sensors and it protects itself.
-Add a phone and it gains a brain. Add a lidar and it maps, remembers your house and drives itself to
-where you tap. Any chassis, any sensor layout, one setup flow.
+**A robot platform that scales with what you plug into it, and to whatever size you build it.**
 
-Developed on the [TankBot](https://github.com/johnsonfarmsus/tank-bot-esp32) (TP101 tracked chassis);
-designed to move to a larger wheelchair-based robot next.
+Start with an ESP32, a motor driver and a chassis, and you have a robot you can drive from a browser.
+Add a bumper and distance sensors, and it protects itself. Put a phone on it, and the phone becomes its
+brain. Add a lidar, and it maps your house, keeps the map straight, drives itself to wherever you tap,
+and explores rooms it hasn't seen yet, all on hardware you probably already own.
+
+<!-- Demo GIF goes here: ![TankBot exploring](docs/images/demo.gif) -->
+
+TankBot grew out of the original [TankBot ESP32](https://github.com/johnsonfarmsus/tank-bot-esp32), a
+web-controlled tracked robot. This project turns it into a platform: the same software for any robot
+you build on it.
+
+## One platform, any robot, any size
+
+Nothing in TankBot is written for one particular robot. Each robot is **described** in its *bot
+profile*: how big it is, how it drives, and where every sensor sits and how high. Everything else works
+from that description:
+
+- **Planning and safety use the robot's real footprint.** Routes keep its body (plus the clearance you
+  choose) away from walls; the "is it clear ahead?" check uses its actual front edge and width.
+- **Sensors are placed, not hard-coded.** Any number of bumpers, ultrasonic and ToF sensors, in any
+  direction, each with a role (obstacle, cliff, bump). The robot reacts in the direction each one faces.
+  The lidar and camera positions turn their readings into the robot's frame.
+- **Driving adapts to the machine:** minimum and cruise power, steering trim, stop and pass distances,
+  turn behaviour.
+- **Maps are in metres, not robot sizes:** 5 cm cells, room for a whole house (up to 40 m across).
+- **Brains are interchangeable.** Any iPhone with ARKit can be the brain (tested: SE 2nd gen, 11 Pro,
+  12 Pro; a LiDAR iPhone adds a depth camera), mounted on the robot or held in hand. The robot itself keeps its settings, sensors and a
+  compact copy of its map, so a new phone picks everything up when it connects.
+
+| | TankBot (today) | Wheelchair base (next) | Yours |
+|---|---|---|---|
+| Size | 18.5 x 17 cm platform | wheelchair-sized | describe it in the profile |
+| Drive | tank tracks | two powered wheels + casters | tank or two-wheel (mecanum planned) |
+| Brain | iPhone on a 3D-printed tower | a phone on the chassis | any ARKit iPhone, mounted or in hand |
+| Sensors | lidar, front bumper, ultrasonic | lidar, bumpers, rangers all round | whatever you attach, wherever it sits |
+| Software changes | | none planned: a new profile | none: a new profile |
+
+The **capability tiers** below grow with the hardware: every part you add unlocks more, and the app
+shows what the next part would unlock.
+
+## Build one
+
+1. **Start with the original TankBot.** Its [README](https://github.com/johnsonfarmsus/tank-bot-esp32)
+   has the base parts list (ESP32 DevKit, L298N motor driver, TP101 tracked chassis with motors), the
+   motor wiring, and [3D-printed mounting parts on Printables](https://www.printables.com/model/1516204-tank-bot-esp32).
+   That gets you a robot you can drive.
+2. **Add what this project uses:**
+   - an **RPLidar C1** on a tower (mapping, relocalisation, navigation),
+   - a **phone holder** for the brain (portrait or landscape),
+   - a front **bumper switch** and an **HC-SR04P ultrasonic** (optional: a TOFSense ToF aimed at the floor
+     as a cliff sensor),
+   - a **3S (11.1 V) Li-ion pack** and an ESP32 expansion board with screw terminals and S/V/G headers.
+
+   **3D-printed parts for this version:** coming soon on Printables.
+   <!-- Printables link goes here -->
+3. **Wire it** following [docs/wiring.md](docs/wiring.md), then follow *Setting up a robot* below.
+
+Building something bigger? The same steps apply: a motor driver that suits your motors, the sensors you
+want where you want them, and a profile that describes it.
 
 ## How it fits together
 
@@ -49,14 +103,15 @@ The controller's Settings page shows the current tier and what would unlock the 
 1. **Wire it** following [docs/wiring.md](docs/wiring.md). Start with the motor driver; add sensors
    any time.
 2. **Flash the firmware.** Copy `firmware/tankbot/src/secrets.example.h` to `secrets.h`, enter your
-   2.4 GHz Wi-Fi and an OTA password, then `cd firmware/tankbot && pio run -t upload` over USB once.
+   2.4 GHz Wi-Fi, an OTA password and a hotspot password, then `cd firmware/tankbot && pio run -t upload` over USB once.
    From then on `pio run -e ota -t upload` updates it over Wi-Fi.
 3. **Drive it.** Open `http://tankbot.local/` on any device on your Wi-Fi (buttons, joystick, or the
    arrow keys / W A S D on a computer) (away from home the robot
    broadcasts its own `TankBot` network instead). Speed levels and steering trim live here too.
-4. **Tell it what's attached** at `http://tankbot.local/setup`: name, drive type, sensors, pins.
-   If you followed the standard wiring the pins are already right. Pointing the ToF at the floor?
-   Press "Calibrate ToF floor" once.
+4. **Tell it what's attached.** Once a brain is running (below), the **Bot** page describes the whole
+   robot: its size and drive type, and each sensor's connection, role, facing and position. Save sends
+   it to the robot, which keeps it. `http://tankbot.local/setup` covers Wi-Fi, name and pins. A ToF aimed
+   at the floor? Press Calibrate on its card once.
 
 ## Adding a brain
 
