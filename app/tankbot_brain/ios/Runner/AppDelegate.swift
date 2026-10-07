@@ -95,6 +95,10 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
   private var sink: FlutterEventSink?
   private var lastSent: TimeInterval = 0
   private var depthCounter = 0
+  // Raw gyro: rotation about the vertical, independent of the camera (lens, light, blank walls).
+  private let motion = CMMotionManager()
+  private var gyroYaw = 0.0
+  private var lastMotionT: TimeInterval = 0
   var depthEnabled = true
 
   init(messenger: FlutterBinaryMessenger) {
@@ -146,6 +150,7 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
     guard ARWorldTrackingConfiguration.isSupported else { return }
     let config = ARWorldTrackingConfiguration()
     config.worldAlignment = .gravity
+    config.isAutoFocusEnabled = false // refocusing changes the optics under the tracker
     if #available(iOS 14.0, *), depthEnabled, ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
       config.frameSemantics.insert(.sceneDepth)
     }
@@ -154,6 +159,7 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
 
   func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
     sink = events
+    startGyro()
     run(reset: false)
     return nil
   }
@@ -161,7 +167,24 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
   func onCancel(withArguments arguments: Any?) -> FlutterError? {
     sink = nil
     session.pause()
+    motion.stopDeviceMotionUpdates()
     return nil
+  }
+
+  /// 50 Hz: integrated rotation about "up" (counter-clockwise positive), from the bias-corrected gyro.
+  private func startGyro() {
+    guard motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive else { return }
+    motion.deviceMotionUpdateInterval = 1.0 / 50.0
+    motion.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] dm, _ in
+      guard let self = self, let dm = dm, let sink = self.sink else { return }
+      let g = dm.gravity, w = dm.rotationRate
+      let gn = sqrt(g.x * g.x + g.y * g.y + g.z * g.z)
+      guard gn > 0.1 else { return }
+      let yawRate = -(w.x * g.x + w.y * g.y + w.z * g.z) / gn // gravity points down: about "up"
+      if self.lastMotionT > 0 { self.gyroYaw += yawRate * (dm.timestamp - self.lastMotionT) }
+      self.lastMotionT = dm.timestamp
+      sink(["type": "gyro", "t": dm.timestamp, "sent": ProcessInfo.processInfo.systemUptime, "yaw": self.gyroYaw])
+    }
   }
 
   /// Depth image -> points relative to the camera in a level, heading-aligned frame (fwd, left, up).
@@ -239,6 +262,7 @@ final class ArkitPoseStreamer: NSObject, FlutterStreamHandler, ARSessionDelegate
       "x": Double(pos.x), "y": Double(pos.y), "z": Double(pos.z),
       "fx": Double(-back.x), "fy": Double(-back.y), "fz": Double(-back.z),
       "state": state,
+      "features": frame.rawFeaturePoints?.points.count ?? 0,
     ]
     DispatchQueue.main.async { sink(msg) }
   }

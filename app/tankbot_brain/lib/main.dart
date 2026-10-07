@@ -342,6 +342,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           cameraDistrusts++;
           _event('camera distrusted', '${_camJumpTimes.length} impossible jumps in 5 s');
           _flash('Camera tracking is jumping around (lens covered or smudged?) - using the lidar alone for now');
+          poses.reset(); // a fresh ARKit session often recovers in a second
         }
         _camDistrustUntilMs = now + 60000;
       }
@@ -715,6 +716,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'cameraJumps': poses.jumps,
         'spinSkips': spinSkips,
         'rotationHints': rotationHints,
+        'cameraState': poses.state,
+        'cameraFeatures': poses.features,
+        'gyro': poses.gyro.isNotEmpty,
         'tempMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] != 'change' && e['confirmed'] != true).length,
       },
       'blocked': _blocked,
@@ -1909,7 +1913,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   /// Every few seconds: is the robot talking to us? If not for 8 s, look for it again.
+  String _lastCamState = '';
   Future<void> _checkRobotLink() async {
+    if (poses.state != _lastCamState) {
+      if (poses.state.startsWith('limited') || _lastCamState.startsWith('limited')) {
+        _event('camera tracking', '${poses.state} (${poses.features} visual points)');
+      }
+      _lastCamState = poses.state;
+    }
     final now = appClockMs();
     final heard = (scan != null && !stale) || sensors.fresh;
     if (heard) {
@@ -2712,6 +2723,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   // ---------- trust: stop drawing (and stop driving) when the position is doubtful ----------
   bool _scanTrusted = true;
   int _matchMissStreak = 0, wideRecoveries = 0, spinSkips = 0, rotationHints = 0;
+  double _gyroSign = 1, _lidarVx = 0, _lidarVy = 0;
+  int _gyroAgree = 0;
   double _lastTrackScanMs = 0;
   double _lastKnownFrac = 1, _lostSinceMs = 0, _settleDist = 0;
   Offset? _lastNavPos;
@@ -2913,16 +2926,23 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final lidarOnly = raw == null;
     var guess = lidarOnly ? (_lidarPose ?? Pose(appClockMs(), 0, 0, math.pi / 2, true)) : _corr.apply(raw);
     final scanMs = s.appMs;
+    var hint = 0.0;
+    final prevLidarH = _lidarPose?.heading;
     if (lidarOnly && _lidarPose != null && scanMs != null && _lastTrackScanMs > 0) {
-      // Lidar only: the camera's position is ignored, but the phone still knows how far it turned
-      // since the last scan (mostly from its gyro). Without that, a quick turn (the robot spins at up
-      // to 200 deg/s, ~20 deg per scan) lands outside the matching window and the heading is lost.
-      final a = poses.at(_lastTrackScanMs), b = poses.at(scanMs);
-      if (a != null && b != null) {
-        guess = Pose(guess.t, guess.x, guess.y, wrapAngle(guess.heading + _angDiff(b.heading, a.heading)), true);
+      // Lidar only: turning comes from the phone's raw gyro (a separate chip from the camera: lens,
+      // light and blank walls don't matter). The robot spins up to 200 deg/s, ~20 deg per scan,
+      // beyond the matching window, so without this a quick turn loses the heading.
+      final ya = poses.gyroYawAt(_lastTrackScanMs), yb = poses.gyroYawAt(scanMs);
+      if (ya != null && yb != null) {
+        hint = _gyroSign * (yb - ya);
         rotationHints++;
       }
+      // keep moving at the recent speed while the motors run (no odometry otherwise)
+      final dt = ((scanMs - _lastTrackScanMs) / 1000).clamp(0.0, 0.3);
+      final vx = _motorsIdle ? 0.0 : _lidarVx, vy = _motorsIdle ? 0.0 : _lidarVy;
+      guess = Pose(guess.t, guess.x + vx * dt, guess.y + vy * dt, wrapAngle(guess.heading + hint), true);
     }
+    final prevScanMs = _lastTrackScanMs;
     if (scanMs != null) _lastTrackScanMs = scanMs;
     if (_rebuilding || grid.scansIntegrated < 15) {
       if (lidarOnly) _lidarPose = guess;
@@ -2943,7 +2963,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (pts.length < 40) {
       _scanTrusted = false;
       _noteTrust();
-      return lidarOnly ? null : guess;
+      if (lidarOnly) _lidarPose = guess;
+      return guess;
     }
     // The camera's position can slide (phones without a depth sensor, plain walls, standing still).
     // Matches that keep failing mean it has slid outside the normal window: look wider.
@@ -2979,7 +3000,33 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (!matched) {
       matchMisses++;
       _matchMissStreak++;
-      return lidarOnly ? null : guess; // unsure: keep the camera's guess, or skip the scan
+      if (lidarOnly) _lidarPose = guess; // carry on with gyro turns + recent speed, don't freeze
+      return guess; // unsure: nothing is drawn from it (untrusted)
+    }
+    if (lidarOnly && prevLidarH != null && scanMs != null) {
+      final step = _angDiff(r.h, prevLidarH);
+      // the gyro's direction must agree with the lidar's when it really turns; flip it if not
+      if (hint.abs() > 0.05 && step.abs() > 0.05) {
+        _gyroAgree += (hint * step > 0) ? 1 : -1;
+        if (_gyroAgree <= -6) {
+          _gyroSign = -_gyroSign;
+          _gyroAgree = 0;
+          _event('gyro direction flipped', 'gyro and lidar disagreed on turn direction');
+        } else if (_gyroAgree > 20) {
+          _gyroAgree = 20;
+        }
+      }
+      if (step.abs() > 0.7) {
+        _event('heading jump', '${(step * 180 / math.pi).round()} deg in one scan (gyro said ${(hint * 180 / math.pi).round()}, scan fit ${(r.hitRatio * 100).round()}%)');
+      }
+      // recent speed, for carrying on through missed scans
+      final dt = (scanMs - prevScanMs) / 1000;
+      final lp = _lidarPose;
+      if (lp != null && dt > 0.02 && dt < 0.5) {
+        final vx = ((r.x - lp.x) / dt).clamp(-0.6, 0.6), vy = ((r.y - lp.y) / dt).clamp(-0.6, 0.6);
+        _lidarVx = 0.7 * _lidarVx + 0.3 * vx;
+        _lidarVy = 0.7 * _lidarVy + 0.3 * vy;
+      }
     }
     matchHits++;
     _matchMissStreak = 0;

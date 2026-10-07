@@ -36,6 +36,26 @@ class PoseClient {
   // offset applied to every raw camera pose after a glitch (see _onEvent)
   double _fixX = 0, _fixY = 0, _fixH = 0;
   int jumps = 0;
+  /// Raw gyro yaw (rad, counter-clockwise, integrated) at app-clock times; independent of the camera.
+  final List<(double, double)> gyro = [];
+  int features = 0; // visual points ARKit is following (few = nothing to track)
+
+  /// Gyro yaw at app-clock time t, interpolated; null outside the recent history.
+  double? gyroYawAt(double t) {
+    if (gyro.length < 2 || t < gyro.first.$1 || t > gyro.last.$1) return null;
+    var lo = 0, hi = gyro.length - 1;
+    while (hi - lo > 1) {
+      final mid = (lo + hi) >> 1;
+      if (gyro[mid].$1 <= t) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    final a = gyro[lo], b = gyro[hi];
+    final span = b.$1 - a.$1;
+    return span <= 0 ? a.$2 : a.$2 + (b.$2 - a.$2) * (t - a.$1) / span;
+  }
   void Function(double metres, double degrees)? onJump;
   Pose? get latest => history.isEmpty ? null : history.last;
 
@@ -76,6 +96,14 @@ class PoseClient {
     final off = now - sentMs;
     _offsetMs = _offsetMs == null ? off : math.min(off, _offsetMs! + 0.05);
     final t = (m['t'] as num) * 1000.0 + _offsetMs!;
+    if (m['type'] == 'gyro') {
+      gyro.add((t, (m['yaw'] as num).toDouble()));
+      while (gyro.isNotEmpty && t - gyro.first.$1 > 5000) {
+        gyro.removeAt(0);
+      }
+      return;
+    }
+    features = (m['features'] as num?)?.toInt() ?? features;
     final x = (m['x'] as num).toDouble();
     final z = (m['z'] as num).toDouble();
     final fx = (m['fx'] as num).toDouble();
