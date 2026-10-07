@@ -714,6 +714,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'cameraDistrusts': cameraDistrusts,
         'cameraJumps': poses.jumps,
         'spinSkips': spinSkips,
+        'rotationHints': rotationHints,
         'tempMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] != 'change' && e['confirmed'] != true).length,
       },
       'blocked': _blocked,
@@ -1301,9 +1302,23 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     var r = matcher.local(coarse, x, y, h, lin: 0.5, linStep: 0.05, ang: 0.44, angStep: 0.035);
     await Future<void>.delayed(Duration.zero);
     r = matcher.local(pts, r.x, r.y, r.h, lin: 0.05, linStep: 0.01, ang: 0.035, angStep: 0.007);
+    var turned = 0.0;
+    if (r.hitRatio < 0.5) {
+      // the walls don't fit near the dragged direction: try every heading around the spot pressed
+      // (the position is usually close; the direction is the hard part to drag accurately)
+      var w = matcher.local(coarse, x, y, h, lin: 0.5, linStep: 0.1, ang: math.pi, angStep: 0.05);
+      await Future<void>.delayed(Duration.zero);
+      w = matcher.local(pts, w.x, w.y, w.h, lin: 0.1, linStep: 0.02, ang: 0.07, angStep: 0.01);
+      if (w.hitRatio >= 0.6 && w.hitRatio > r.hitRatio) {
+        turned = _angDiff(w.h, h) * 180 / math.pi;
+        r = w;
+      }
+    }
     if (r.hitRatio >= 0.5) {
       final moved = math.sqrt(_sq(r.x - x) + _sq(r.y - y)) * 100;
-      _acceptReloc(r, raw, 'Position set - the lidar fine-tuned it by ${moved.round()} cm (${(r.hitRatio * 100).round()}% of the scan fits)');
+      _acceptReloc(r, raw, turned.abs() > 1
+          ? 'Position set - the lidar turned it by ${turned.abs().round()} deg ${turned > 0 ? "left" : "right"} and moved it ${moved.round()} cm (${(r.hitRatio * 100).round()}% of the scan fits)'
+          : 'Position set - the lidar fine-tuned it by ${moved.round()} cm (${(r.hitRatio * 100).round()}% of the scan fits)');
     } else {
       _acceptReloc(MatchResult(x, y, h, 0, r.hitRatio, false), raw,
           "Placed where you said - the lidar couldn't confirm it (${(r.hitRatio * 100).round()}% fit). If the walls don't line up, try again.");
@@ -2696,7 +2711,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   // ---------- trust: stop drawing (and stop driving) when the position is doubtful ----------
   bool _scanTrusted = true;
-  int _matchMissStreak = 0, wideRecoveries = 0, spinSkips = 0;
+  int _matchMissStreak = 0, wideRecoveries = 0, spinSkips = 0, rotationHints = 0;
+  double _lastTrackScanMs = 0;
   double _lastKnownFrac = 1, _lostSinceMs = 0, _settleDist = 0;
   Offset? _lastNavPos;
 
@@ -2895,7 +2911,19 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   /// matching the scan against the walls already on the map.
   Pose? _trackScan(LidarScan s, Pose? raw) {
     final lidarOnly = raw == null;
-    final guess = lidarOnly ? (_lidarPose ?? Pose(appClockMs(), 0, 0, math.pi / 2, true)) : _corr.apply(raw);
+    var guess = lidarOnly ? (_lidarPose ?? Pose(appClockMs(), 0, 0, math.pi / 2, true)) : _corr.apply(raw);
+    final scanMs = s.appMs;
+    if (lidarOnly && _lidarPose != null && scanMs != null && _lastTrackScanMs > 0) {
+      // Lidar only: the camera's position is ignored, but the phone still knows how far it turned
+      // since the last scan (mostly from its gyro). Without that, a quick turn (the robot spins at up
+      // to 200 deg/s, ~20 deg per scan) lands outside the matching window and the heading is lost.
+      final a = poses.at(_lastTrackScanMs), b = poses.at(scanMs);
+      if (a != null && b != null) {
+        guess = Pose(guess.t, guess.x, guess.y, wrapAngle(guess.heading + _angDiff(b.heading, a.heading)), true);
+        rotationHints++;
+      }
+    }
+    if (scanMs != null) _lastTrackScanMs = scanMs;
     if (_rebuilding || grid.scansIntegrated < 15) {
       if (lidarOnly) _lidarPose = guess;
       _scanTrusted = true;
