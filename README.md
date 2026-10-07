@@ -7,7 +7,7 @@ Add a bumper and distance sensors, and it protects itself. Put a phone on it, an
 brain. Add a lidar, and it maps your house, keeps the map straight, drives itself to wherever you tap,
 and explores rooms it hasn't seen yet, all on hardware you probably already own.
 
-<!-- Demo GIF goes here: ![TankBot exploring](docs/images/demo.gif) -->
+![TankBot in action](docs/images/tankbot-demo.gif)
 
 TankBot grew out of the original [TankBot ESP32](https://github.com/johnsonfarmsus/tank-bot-esp32), a
 web-controlled tracked robot. This project turns it into a platform: the same software for any robot
@@ -55,9 +55,27 @@ shows what the next part would unlock.
      as a cliff sensor),
    - a **3S (11.1 V) Li-ion pack** and an ESP32 expansion board with screw terminals and S/V/G headers.
 
-   **3D-printed parts for this version:** coming soon on Printables.
-   <!-- Printables link goes here -->
+   **3D-printed parts for this version:** [TankBot on Printables](https://www.printables.com/model/1869360-tankbot)
+   (base plate, lidar tower and base, phone base and clamp, bumper and switch mount, two-part ultrasonic
+   mount, battery and charger clamps, a 2-wire connector, wire management). Backup copies of the model files, with Fusion 360 sources, are in
+   [`hardware/3d-models`](hardware/3d-models).
 3. **Wire it** following [docs/wiring.md](docs/wiring.md), then follow *Setting up a robot* below.
+
+<p align="center">
+<a href="docs/images/tankbot-01.jpg"><img src="docs/images/tankbot-01.jpg" width="200" alt="TankBot photo 1"></a>
+<a href="docs/images/tankbot-02.jpg"><img src="docs/images/tankbot-02.jpg" width="200" alt="TankBot photo 2"></a>
+<a href="docs/images/tankbot-03.jpg"><img src="docs/images/tankbot-03.jpg" width="200" alt="TankBot photo 3"></a>
+<a href="docs/images/tankbot-04.jpg"><img src="docs/images/tankbot-04.jpg" width="200" alt="TankBot photo 4"></a>
+<a href="docs/images/tankbot-05.jpg"><img src="docs/images/tankbot-05.jpg" width="200" alt="TankBot photo 5"></a>
+<a href="docs/images/tankbot-06.jpg"><img src="docs/images/tankbot-06.jpg" width="200" alt="TankBot photo 6"></a>
+<a href="docs/images/tankbot-07.jpg"><img src="docs/images/tankbot-07.jpg" width="200" alt="TankBot photo 7"></a>
+<a href="docs/images/tankbot-08.jpg"><img src="docs/images/tankbot-08.jpg" width="200" alt="TankBot photo 8"></a>
+<a href="docs/images/tankbot-09.jpg"><img src="docs/images/tankbot-09.jpg" width="200" alt="TankBot photo 9"></a>
+<a href="docs/images/tankbot-10.jpg"><img src="docs/images/tankbot-10.jpg" width="200" alt="TankBot photo 10"></a>
+<a href="docs/images/tankbot-11.jpg"><img src="docs/images/tankbot-11.jpg" width="200" alt="TankBot photo 11"></a>
+<a href="docs/images/tankbot-12.jpg"><img src="docs/images/tankbot-12.jpg" width="200" alt="TankBot photo 12"></a>
+<a href="docs/images/tankbot-13.jpg"><img src="docs/images/tankbot-13.jpg" width="200" alt="TankBot photo 13"></a>
+</p>
 
 Building something bigger? The same steps apply: a motor driver that suits your motors, the sensors you
 want where you want them, and a profile that describes it.
@@ -97,6 +115,7 @@ The controller's Settings page shows the current tier and what would unlock the 
 | `app/tankbot_brain/` | the **TankBot** app (Flutter): Mounted brain / Brain in hand / Controller roles |
 | `docs/` | [user guide](docs/user-guide.md), [wiring](docs/wiring.md), [protocol](docs/protocol.md), [bot profile](docs/bot-profile.md), [app architecture](docs/app-architecture.md), [diagnostics](docs/diagnostics.md), [roadmap](docs/ROADMAP.md), [changelog](CHANGELOG.md) |
 | `tools/` | desktop helpers: log analysis, brain commands, controller checks ([tools/README](tools/README.md)) |
+| `hardware/3d-models/` | backup copies of the 3D-printed parts (STL + Fusion 360); get them from [Printables](https://www.printables.com/model/1869360-tankbot) |
 
 ## Setting up a robot
 
@@ -141,6 +160,8 @@ In Robot mode the brain waits until the phone has sat still in its cradle for 3 
 handling the phone never smears a map. If the phone gets knocked, mapping pauses until it settles.
 
 ## Mapping and driving
+
+<p align="center"><img src="docs/images/tankbot-driving.gif" alt="TankBot driving" width="244"></p>
 
 See the [user guide](docs/user-guide.md) for every page, button and map symbol.
 
