@@ -729,7 +729,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       'motion': m == null ? null : {'left': m['left'], 'right': m['right'], 'src': m['src']},
       'stats': {
         'scanRate': _scanRate(),
-        'robotSilentS': _lastRobotHeardMs == 0 ? null : ((appClockMs() - _lastRobotHeardMs) / 1000).round(),
+        'robotSilentS': scan == null && !sensors.fresh ? null : _robotSilentS().floor(),
         'ar': poses.state,
         'mapped': grid.scansIntegrated,
         'remotes': server.clientCount,
@@ -1874,7 +1874,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         s.save();
       }
     } else {
-      if (now - _lastRobotHeardMs > 3000 && (navActive || _exploring)) {
+      if (_robotSilentS() > 3 && (navActive || _exploring)) {
         _stopExplore('Exploration stopped: the robot stopped responding (power? Wi-Fi?)');
         if (navActive) _navCancel('Stopped: the robot stopped responding (power? Wi-Fi?)');
       }
@@ -2807,6 +2807,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   // ---------- driving ----------
+  /// Seconds since anything arrived from the robot (lidar scan or sensor feed): 0 while it's talking.
+  double _robotSilentS() {
+    if (sensors.fresh) return 0;
+    final s = scan;
+    if (s == null) return 1e9;
+    return DateTime.now().difference(s.received).inMilliseconds / 1000.0;
+  }
+
   double _scanRate() {
     final now = DateTime.now();
     _recent.removeWhere((t) => now.difference(t) > const Duration(seconds: 2));
