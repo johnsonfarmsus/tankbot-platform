@@ -213,6 +213,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   double _recoverUntilMs = 0, _blockedSinceMs = 0;
   Offset? _recoverFrom;
   int _navRecoveries = 0;
+  // stall detection
+  double _stallSinceMs = 0, _stallRefH = 0;
+  Offset _stallRefPos = Offset.zero;
+  int stalls = 0;
+  double _manStallSinceMs = 0, _manStallRefH = 0;
+  Offset _manStallRefPos = Offset.zero;
   int _pathBlockedStreak = 0;
   Timer? _navTimer;
   double _cmdF = 0, _cmdT = 0, _navLastBlockReplanMs = 0;
@@ -683,6 +689,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'newTerritoryScans': newTerritoryScans,
         'untrustedScans': untrustedScans,
         'wideRecoveries': wideRecoveries,
+        'stalls': stalls,
         'tempMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] != 'change' && e['confirmed'] != true).length,
       },
       'blocked': _blocked,
@@ -2140,6 +2147,20 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       }
     }
     if (f > 0 && g.forwardClear) _blockedSinceMs = 0;
+    // Stalled: the tracks are driven but the robot isn't moving (caught on something low that the
+    // bumper can't feel, like a fan foot under a track). Treat it like a bumper hit.
+    if (f <= 0 && t == 0) {
+      _stallSinceMs = 0;
+    } else if (_stallSinceMs == 0 || (pos - _stallRefPos).distance > 0.04 || _angDiff(p.heading, _stallRefH).abs() > 0.09) {
+      _stallSinceMs = now;
+      _stallRefPos = pos;
+      _stallRefH = p.heading;
+    } else if (now - _stallSinceMs > 1800) {
+      _stallSinceMs = 0;
+      stalls++;
+      _startRecovery('stalled - tracks turning but not moving', pos, p.heading);
+      return;
+    }
     _cmdF = f;
     _cmdT = t;
     motion.drive(_cmdF, _cmdT);
@@ -2712,6 +2733,30 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     blockReason = veto ? g.reason : '';
     if (_blocked) f = 0;
     motion.drive(f, t);
+    _manualStallCheck(f, t);
+  }
+
+  void _manualStallCheck(double f, double t) {
+    final p = robotPose;
+    final now = appClockMs();
+    if (p == null || locState != 'tracking' || (f.abs() < 0.3 && t.abs() < 0.3)) {
+      _manStallSinceMs = 0;
+      return;
+    }
+    final pos = Offset(p.x, p.y);
+    if (_manStallSinceMs == 0 || (pos - _manStallRefPos).distance > 0.04 || _angDiff(p.heading, _manStallRefH).abs() > 0.09) {
+      _manStallSinceMs = now;
+      _manStallRefPos = pos;
+      _manStallRefH = p.heading;
+    } else if (now - _manStallSinceMs > 2000) {
+      _manStallSinceMs = 0;
+      stalls++;
+      if (f > 0) {
+        final ahead = profile.lengthMm / 2000.0 + 0.08;
+        _addMark('bump', pos.dx + math.cos(p.heading) * ahead, pos.dy + math.sin(p.heading) * ahead, 0.07);
+      }
+      _flash('Not moving - something low may be caught under the robot${f > 0 ? ' (marked on the map)' : ''}');
+    }
   }
 
   void _onStick(double f, double t) {
