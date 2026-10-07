@@ -240,6 +240,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   bool get mapping => mappingEffective == 'explore';
   void _setMappingMode(String mode) {
     if (!['explore', 'maintain', 'off'].contains(mode)) return;
+    if (mode != 'explore') _stopExplore('Exploration stopped: mapping switched to ${mode == 'maintain' ? 'Maintain' : 'Off'}');
     profile.mappingMode = mode;
     BotProfileStore.save(profile, store.robot);
     if (mounted) setState(() {});
@@ -419,12 +420,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         _navCancel('Stopped');
         break;
       case 'explore.start':
-        if (m['noDrops'] == true && !active.noDrops) {
-          active.noDrops = true;
-          active.renamed = true; // save the map with the confirmation
-        }
-        if (!hasCliffSensor && !active.noDrops) {
-          _flash("Not exploring: no drop-off sensor, and no-drops wasn't confirmed for this map");
+        // without a drop-off sensor, the person starting it acknowledges they will watch it (each time)
+        if (!hasCliffSensor && m['ackNoCliff'] != true) {
+          _flash("Not exploring: this robot can't detect drops - the acknowledgment is needed to start");
+        } else if (mappingMode != 'explore') {
+          _flash('Switch mapping to Explore to explore on its own');
         } else {
           _startExplore();
         }
@@ -616,7 +616,6 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'note': exploreNote,
         'targets': exploreTargets,
         'cliffSensor': hasCliffSensor,
-        'noDrops': active.noDrops,
       },
       'nogo': [
         for (final e in active.edits)

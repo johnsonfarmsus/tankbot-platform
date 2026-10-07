@@ -181,7 +181,7 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
       <div class="card" style="max-width:440px;margin:16px">
         <h2>Explore on its own</h2>
         <div id="explText" class="small" style="font-size:13px;color:var(--text);white-space:pre-line"></div>
-        <label class="row" id="explNoDropsRow"><input type="checkbox" id="explNoDrops"> There are no stairs or drops anywhere it can reach (don't ask again for this map)</label>
+        <label class="row" id="explNoDropsRow"><input type="checkbox" id="explNoDrops"> I understand this robot can't detect drops, and I'll watch it the whole time it explores</label>
         <div class="row"><button id="explGo" class="primary">Start exploring</button><button id="explCancel">Cancel</button></div>
       </div>
     </div>
@@ -191,7 +191,6 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
     <div class="grow">
       <button class="danger bigstop" id="stopBtn">Stop</button>
       <label>Max speed <span id="msv" class="muted"></span><input id="ms" type="range" min="0.2" max="1" step="0.05" value="0.9"></label>
-      <button id="explBtn">Explore on its own</button>
       <div class="btnrow">
         <button id="gobtn" class="primary">Go to&hellip;</button>
         <button id="editbtn">Edit map</button>
@@ -202,6 +201,7 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
         <div class="small" style="margin-bottom:4px">Mapping</div>
         <div class="seg" id="mapMode"><button data-mode="explore">Explore</button><button data-mode="maintain">Maintain</button><button data-mode="off">Off</button></div>
         <div class="small" id="mapModeHint" style="margin-top:4px"></div>
+        <button id="explBtn" style="display:none;width:100%;margin-top:8px">Explore on its own</button>
       </div>
       <div class="small hidesmall">Keys: arrows or W A S D to drive, Space stops, Esc cancels. Drag the map to look around, scroll or pinch to zoom, &#9678; to follow the robot again.</div>
       <div class="small hidesmall" id="motors"></div>
@@ -444,10 +444,11 @@ $("clearDrops").onclick = () => {
 $("explBtn").onclick = () => {
   const ex = telem && telem.explore;
   if (ex && ex.active) { send({type: "explore.stop"}); return; }
-  const needsOk = ex && !ex.cliffSensor && !ex.noDrops;
+  const needsOk = ex && !ex.cliffSensor;
   $("explText").textContent = "The robot drives itself to the edges of what it has mapped, maps as it goes, and comes back to the home spot when nothing reachable is left. " +
     "Stop, the joystick or any arrow key ends it at once. Keep this page open: it stops if no controller is connected." +
-    (needsOk ? "\n\nWarning: this robot has no drop-off (cliff) sensor, so it cannot see stairs or ledges. Only explore if there are none it could reach, or draw no-go lines across them first." : "");
+    (needsOk ? "\n\nThis robot's current sensors can't detect stairs, ledges or other drops (it has no cliff sensor). You are responsible for watching it while it explores. " +
+      "Block off any drops it could reach, or draw no-go lines across them on the map first. Adding a cliff sensor (Bot page, a distance sensor aimed at the floor) removes this step." : "");
   $("explNoDropsRow").style.display = needsOk ? "" : "none";
   $("explNoDrops").checked = false;
   $("explGo").disabled = needsOk;
@@ -458,7 +459,7 @@ $("explCancel").onclick = () => { $("explModal").style.display = "none"; };
 $("explGo").onclick = () => {
   $("explModal").style.display = "none";
   showPage("drive"); setMode("map");
-  send({type: "explore.start", noDrops: $("explNoDrops").checked});
+  send({type: "explore.start", ackNoCliff: $("explNoDrops").checked});
 };
 $("stopBtn").onclick = () => { goMode = false; release(); send({type: "explore.stop"}); if (telem && telem.nav && (telem.nav.state === "driving" || telem.nav.state === "blocked")) send({type: "nav.cancel"}); renderTray(); };
 $("msv").textContent = Math.round($("ms").value * 100) + "%";
@@ -911,7 +912,10 @@ function updateUi() {
   if (!settingsInit && s) { $("ms").value = s.maxSpeed; $("msv").textContent = Math.round(s.maxSpeed * 100) + "%"; settingsInit = true; }
   if (s) {
     $("obs").checked = s.obstacleStop;
-    if (t.explore) $("explBtn").textContent = t.explore.active ? "Stop exploring" : "Explore on its own";
+    if (t.explore) {
+      $("explBtn").textContent = t.explore.active ? "Stop exploring" : "Explore on its own";
+      $("explBtn").style.display = (s.mappingMode === "explore" || t.explore.active) ? "" : "none";
+    }
     const mm = s.mappingMode || "maintain";
     document.querySelectorAll("#mapMode button").forEach(b => b.classList.toggle("on", b.dataset.mode === mm));
     $("mapModeHint").textContent = MODE_HINT[mm] + (s.mappingEffective && s.mappingEffective !== mm ? " (Maintain while it drives itself.)" : "");

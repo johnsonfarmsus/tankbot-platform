@@ -56,8 +56,6 @@ class MapSession {
   int nextEditId = 1;
   /// Where the robot last was on this map [x, y, heading]: first guess when the map loads.
   List<double>? lastPose;
-  /// The user confirmed there are no stairs or drops here (exploring without a cliff sensor).
-  bool noDrops = false;
 
   bool get unsaved => keyframes.length != savedCount || renamed || edited;
 
@@ -93,7 +91,6 @@ class MapSession {
         'lidarLeftM': lidarLeftM,
         'version': 1,
         'lastPose': lastPose,
-        'noDrops': noDrops,
       };
 }
 
@@ -200,7 +197,6 @@ class MapStore {
         lidarFwdM: (meta['lidarFwdM'] as num?)?.toDouble() ?? 0,
         lidarLeftM: (meta['lidarLeftM'] as num?)?.toDouble() ?? 0,
       );
-      m.noDrops = meta['noDrops'] == true;
       final lp = meta['lastPose'];
       if (lp is List && lp.length == 3) m.lastPose = [for (final v in lp) (v as num).toDouble()];
       m.keyframes.addAll(_decode(await File('${root.path}/$id/keyframes.bin').readAsBytes()));
