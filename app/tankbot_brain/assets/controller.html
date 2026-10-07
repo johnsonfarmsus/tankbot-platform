@@ -219,7 +219,8 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
     <div id="mapQuality" class="small" style="white-space:pre-line"></div>
     <div class="row"><input id="mapName" placeholder="Map name" style="flex:1;min-width:180px"><button id="mapSave" class="primary">Save</button><button id="mapNew">New map here</button></div>
     <div class="row"><button id="relocBtn">Find me again</button><button id="homeBtn">I'm at home</button><button id="clearDrops">Clear remembered drop-offs</button></div>
-    <div class="small">Maps autosave every 20 s, and the last map loads when the brain starts. To edit walls or draw no-go lines, use <b>Edit map</b> on the Drive page.</div>
+    <div class="row" id="cpRow" style="display:none"><label>Restore an earlier version <select id="cpSel"></select></label><button id="cpBtn">Restore</button></div>
+    <div class="small">Maps autosave every 20 s, and the last map loads when the brain starts. A restore point is saved automatically before exploring on its own and before switching to Explore. To edit walls or draw no-go lines, use <b>Edit map</b> on the Drive page.</div>
   </div>
   <div class="card">
     <h2>Saved maps</h2>
@@ -438,6 +439,24 @@ const MODE_HINT = {
 };
 document.querySelectorAll("#mapMode button").forEach(b => b.onclick = () => send({type: "set", mappingMode: b.dataset.mode}));
 $("clear").onclick = () => { if (confirm("Start a new map here? The current map is saved first.")) send({type: "clearMap"}); };
+let cpKey = "";
+function renderCheckpoints(info) {
+  const cps = (info && info.checkpoints) || [];
+  $("cpRow").style.display = cps.length ? "" : "none";
+  const key = JSON.stringify(cps.map(c => c.id));
+  if (key === cpKey) return;
+  cpKey = key;
+  const sel = $("cpSel"); sel.textContent = "";
+  for (const c of cps) {
+    const o = document.createElement("option"); o.value = c.id;
+    o.textContent = new Date(c.time).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) + " - " + c.label + " (" + c.keyframes + " scans)";
+    sel.append(o);
+  }
+}
+$("cpBtn").onclick = () => {
+  const o = $("cpSel").selectedOptions[0];
+  if (o && confirm("Put the map back to: " + o.textContent + "? Mapping done since then is discarded.")) send({type: "map.restore", id: o.value});
+};
 $("clearDrops").onclick = () => {
   const n = telem && telem.quality ? telem.quality.dropoffMarks : 0;
   if (confirm("Remove all " + n + " remembered drop-offs from this map? Real stairs will be found again as the robot drives.")) send({type: "map.clearDropoffs"});
@@ -931,6 +950,7 @@ function updateUi() {
   lastIdleNote = nv && nv.state === "idle" ? nv.note : null;
   renderTray();
   if (settingsOpen) { $("capsInfo").textContent = capsText(t.caps, t.tracking); $("robotInfo").textContent = robotText(t.robot); }
+  if (mapsOpen && t.mapInfo) renderCheckpoints(t.mapInfo);
   if (mapsOpen && t.quality) $("clearDrops").textContent = "Clear remembered drop-offs (" + (t.quality.dropoffMarks || 0) + ")";
   if (botOpen) updateBotLive();
   if (settingsOpen && t.log && t.settings) {

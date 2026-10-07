@@ -247,6 +247,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   void _setMappingMode(String mode) {
     if (!['explore', 'maintain', 'off'].contains(mode)) return;
     if (mode != 'explore') _stopExplore('Exploration stopped: mapping switched to ${mode == 'maintain' ? 'Maintain' : 'Off'}');
+    if (mode == 'explore' && profile.mappingMode != 'explore') _checkpoint('Before switching to Explore');
     profile.mappingMode = mode;
     BotProfileStore.save(profile, store.robot);
     if (mounted) setState(() {});
@@ -441,6 +442,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         _flash(f == null
             ? 'Exploring: nothing left that it can reach'
             : 'Next place to explore: ${f.x.toStringAsFixed(1)}, ${f.y.toStringAsFixed(1)} m (${f.inRoom ? 'this room' : 'next room'}) - purple diamond');
+        break;
+      case 'map.restore':
+        if (m['id'] is String) _restoreCheckpoint(m['id'] as String);
         break;
       case 'explore.stop':
         _stopExplore('Exploration stopped');
@@ -677,6 +681,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'changesPending': _changeEv.values.where((e) => e.visits >= 2).length,
         'changesCommitted': changesCommitted,
         'newTerritoryScans': newTerritoryScans,
+        'untrustedScans': untrustedScans,
         'tempMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] != 'change' && e['confirmed'] != true).length,
       },
       'blocked': _blocked,
@@ -777,6 +782,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       if (moved < _kfMoveM && _angDiff(p.heading, last.h).abs() < _kfTurnRad) return;
     }
     k.add(Keyframe.fromScan(p.x, p.y, p.heading, pts));
+    _kfAddedMs[k.length - 1] = appClockMs();
     active.updated = DateTime.now();
     if (k.length >= 2) {
       final ka = k[k.length - 2], kb = k.last;
@@ -1041,6 +1047,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'name': active.name,
         'keyframes': active.keyframes.length,
         'unsaved': active.unsaved,
+        'checkpoints': checkpoints,
         'savedAgoS': active.savedAt == null ? null : DateTime.now().difference(active.savedAt!).inSeconds,
         'loading': _loadingMap,
       };
@@ -1061,9 +1068,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   /// Load a saved map and find the robot on it using the lidar.
-  Future<void> _loadMap(String id) async {
-    if (_loadingMap || id == active.id) return;
-    await _saveActive();
+  Future<void> _loadMap(String id, {bool force = false}) async {
+    if (_loadingMap || (!force && id == active.id)) return;
+    if (!force) await _saveActive();
     final m = await store.load(id);
     if (m == null) return;
     _loadingMap = true;
@@ -1082,6 +1089,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       if (i % 40 == 39) await Future<void>.delayed(Duration.zero); // keep the app responsive
     }
     active = m;
+    _kfAddedMs.clear();
+    _refreshCheckpoints();
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     for (final e in m.edits) {
       if (e['type'] == 'obstacle' && e['kind'] != 'change' && !e.containsKey('confirmed')) {
@@ -1568,6 +1577,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   void _startExplore() {
     if (_exploring) return;
+    _checkpoint('Before exploring on its own');
     if (locState != 'tracking') {
       _flash("Can't explore until it knows where it is (use Set position)");
       return;
@@ -1939,6 +1949,23 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     final live = _liveObstacles();
 
+    if (_untrustedSinceMs > 0 && now - _untrustedSinceMs > 2000) {
+      _navStopMotors();
+      _navWhy = 'wait: position doubtful';
+      navNote = 'Not sure exactly where I am - standing still while tracking settles';
+      if (now - _untrustedSinceMs > 17000) {
+        if (_exploring) {
+          final since = _untrustedSinceMs - 15000;
+          _stopExplore('Exploration stopped: lost track of where it was');
+          _rollbackKeyframesSince(since).then((n) {
+            if (n > 0) _flash('Removed the last $n map scans (made while tracking was going wrong)');
+          });
+        } else {
+          _navCancel("Stopped: couldn't confirm where I am - use Set position");
+        }
+      }
+      return;
+    }
     if (_recover == 'back') {
       final moved = (pos - _recoverFrom!).distance;
       if (moved >= 0.25 || now > _recoverUntilMs || !_rearClear()) {
@@ -2314,6 +2341,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         skippedTurning++; // the scan is smeared by the turn: track with it, but don't paint it
         continue;
       }
+      if (!_scanTrusted) {
+        untrustedScans++; // the position is doubtful: draw nothing from this scan
+        continue;
+      }
       switch (mappingEffective) {
         case 'explore':
           grid.integrate(pose, s.points, lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
@@ -2324,6 +2355,71 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           break;
       }
     }
+  }
+
+  // ---------- trust: stop drawing (and stop driving) when the position is doubtful ----------
+  bool _scanTrusted = true;
+  double _untrustedSinceMs = 0;
+  int untrustedScans = 0;
+  final Map<int, double> _kfAddedMs = {}; // keyframe index -> when it was added (this session)
+
+  void _noteTrust() {
+    if (_scanTrusted) {
+      _untrustedSinceMs = 0;
+    } else if (_untrustedSinceMs == 0) {
+      _untrustedSinceMs = appClockMs();
+    }
+  }
+
+  /// Remove keyframes added since a moment (the stretch before tracking went wrong) and redraw.
+  Future<int> _rollbackKeyframesSince(double sinceMs) async {
+    final kfs = active.keyframes;
+    var first = kfs.length;
+    for (var i = kfs.length - 1; i >= 0; i--) {
+      final t = _kfAddedMs[i];
+      if (t == null || t < sinceMs) break;
+      first = i;
+    }
+    final removed = kfs.length - first;
+    if (removed == 0) return 0;
+    kfs.removeRange(first, kfs.length);
+    active.graphEdges.removeWhere((e) => e.i >= first || e.j >= first);
+    active.geoTags.removeWhere((t) => (t['i'] as num) >= first);
+    _kfAddedMs.removeWhere((i, _) => i >= first);
+    active.edited = true;
+    await _rebuildGrid();
+    return removed;
+  }
+
+  List<Map<String, dynamic>> checkpoints = [];
+  Future<void> _refreshCheckpoints() async {
+    checkpoints = await store.listCheckpoints(active.id);
+    _broadcastMaps();
+  }
+
+  /// Save a restore point of the current map (before exploring or switching to Explore).
+  Future<void> _checkpoint(String label) async {
+    if (active.keyframes.isEmpty) return;
+    await _saveActive();
+    await store.checkpoint(active.id, label);
+    await _refreshCheckpoints();
+  }
+
+  Future<void> _restoreCheckpoint(String cid) async {
+    _stopExplore('Exploration stopped: restoring an earlier map');
+    if (navActive) _navCancel('Stopped: restoring an earlier map');
+    _onRelease();
+    // nothing of the current state may be saved over the files being restored
+    active.edited = false;
+    active.renamed = false;
+    active.savedCount = active.keyframes.length;
+    final ok = await store.restoreCheckpoint(active.id, cid);
+    if (!ok) {
+      _flash("Couldn't restore that version");
+      return;
+    }
+    await _loadMap(active.id, force: true);
+    _flash('Restored the earlier version of "${active.name}" - use Set position if it is unsure where it is');
   }
 
   // ---------- maintain mode: the map changes only when a change persists ----------
@@ -2449,13 +2545,31 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final guess = lidarOnly ? (_lidarPose ?? Pose(appClockMs(), 0, 0, math.pi / 2, true)) : _corr.apply(raw);
     if (_rebuilding || grid.scansIntegrated < 15) {
       if (lidarOnly) _lidarPose = guess;
+      _scanTrusted = true;
+      _noteTrust();
       return guess; // not enough map yet to match against
     }
     final pts = ScanMatcher.robotFrame(s.points, fwdM: lidarFwdM, leftM: lidarLeftM, stride: 2);
-    if (pts.length < 40) return lidarOnly ? null : guess;
+    if (pts.length < 40) {
+      _scanTrusted = false;
+      _noteTrust();
+      return lidarOnly ? null : guess;
+    }
     final r = matcher.localCoarseFine(pts, guess.x, guess.y, guess.heading,
         lin: lidarOnly ? 0.16 : 0.12, ang: lidarOnly ? 0.26 : 0.17);
-    if (r.hitRatio < 0.35 || r.atEdge) {
+    // How much of this scan lands on parts of the map we already know? In new territory there is
+    // little to compare with and the camera carries the pose; where the map is known, the scan has to
+    // agree with it before anything is drawn.
+    final ch = math.cos(r.h), shh = math.sin(r.h);
+    var known = 0;
+    for (final q in pts) {
+      if (grid.at(r.x + ch * q.dx - shh * q.dy, r.y + shh * q.dx + ch * q.dy).abs() > 0.3) known++;
+    }
+    final knownFrac = known / pts.length;
+    final matched = r.hitRatio >= 0.35 && !r.atEdge;
+    _scanTrusted = matched ? r.hitRatio >= 0.6 * knownFrac : (knownFrac < 0.25 && !lidarOnly && poses.state == 'normal');
+    _noteTrust();
+    if (!matched) {
       matchMisses++;
       return lidarOnly ? null : guess; // unsure: keep the camera's guess, or skip the scan
     }

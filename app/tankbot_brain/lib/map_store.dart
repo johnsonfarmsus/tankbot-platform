@@ -142,6 +142,75 @@ class MapStore {
     return _root;
   }
 
+  static const _cpFiles = ['meta.json', 'keyframes.bin', 'edits.json', 'graph.json'];
+
+  /// A restore point: a copy of the map files in (map)/restore/(time)/, with a label. Keeps the newest 6.
+  Future<void> checkpoint(String id, String label) async {
+    final root = await _dir();
+    if (root == null) return;
+    final t = DateTime.now().millisecondsSinceEpoch;
+    final d = Directory('${root.path}/$id/restore/$t');
+    try {
+      if (!await File('${root.path}/$id/meta.json').exists()) return; // never saved: nothing to keep
+      await d.create(recursive: true);
+      for (final f in _cpFiles) {
+        final src = File('${root.path}/$id/$f');
+        if (await src.exists()) await src.copy('${d.path}/$f');
+      }
+      await File('${d.path}/label.txt').writeAsString(label);
+      final all = await listCheckpoints(id);
+      for (final old in all.skip(6)) {
+        await Directory('${root.path}/$id/restore/${old['id']}').delete(recursive: true);
+      }
+    } catch (_) {}
+  }
+
+  Future<List<Map<String, dynamic>>> listCheckpoints(String id) async {
+    final root = await _dir();
+    if (root == null) return [];
+    final d = Directory('${root.path}/$id/restore');
+    if (!await d.exists()) return [];
+    final out = <Map<String, dynamic>>[];
+    await for (final e in d.list()) {
+      if (e is! Directory) continue;
+      final cid = e.path.split('/').last;
+      final t = int.tryParse(cid);
+      if (t == null) continue;
+      var label = '';
+      var kf = 0;
+      try {
+        label = await File('${e.path}/label.txt').readAsString();
+      } catch (_) {}
+      try {
+        kf = ((jsonDecode(await File('${e.path}/meta.json').readAsString()) as Map)['keyframes'] as num).toInt();
+      } catch (_) {}
+      out.add({'id': cid, 'time': t, 'label': label, 'keyframes': kf});
+    }
+    out.sort((a, b) => (b['time'] as int).compareTo(a['time'] as int));
+    return out;
+  }
+
+  /// Put a restore point's files back as the map's current files (then load the map again).
+  Future<bool> restoreCheckpoint(String id, String cid) async {
+    final root = await _dir();
+    if (root == null) return false;
+    final d = Directory('${root.path}/$id/restore/$cid');
+    if (!await d.exists()) return false;
+    try {
+      for (final f in _cpFiles) {
+        final src = File('${d.path}/$f'), dst = File('${root.path}/$id/$f');
+        if (await src.exists()) {
+          await src.copy(dst.path);
+        } else if (f != 'meta.json' && await dst.exists()) {
+          await dst.delete();
+        }
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<List<Map<String, dynamic>>> list() async {
     final root = await _dir();
     if (root == null) return [];
