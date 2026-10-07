@@ -22,7 +22,26 @@ class FrontierPick {
   String toString() => 'Frontier(${x.toStringAsFixed(2)}, ${y.toStringAsFixed(2)}, size $size, gain $gain, ${inRoom ? 'this room' : 'elsewhere'})';
 }
 
+class FrontierStats {
+  int openings = 0, tooSmall = 0, leadsNowhere = 0, unreachable = 0, tried = 0, tooClose = 0;
+  int drivableCells = 0;
+  @override
+  String toString() {
+    final why = [
+      if (tooSmall > 0) '$tooSmall too small',
+      if (leadsNowhere > 0) '$leadsNowhere lead nowhere',
+      if (unreachable > 0) '$unreachable not reachable',
+      if (tried > 0) '$tried already tried',
+      if (tooClose > 0) '$tooClose right here',
+    ];
+    return '$openings opening${openings == 1 ? '' : 's'}${why.isEmpty ? '' : ': ${why.join(', ')}'}';
+  }
+}
+
 class FrontierFinder {
+  /// Why the last search picked what it did (or nothing).
+  static FrontierStats lastStats = FrontierStats();
+
   /// lo(cx, cy): occupancy log-odds of a cell (> 0.5 wall, < -0.5 open floor, else unexplored).
   /// [x0..x1, y0..y1]: cell bounds of the map. cellToWorld(c): world coordinate of a cell index.
   static FrontierPick? next({
@@ -126,6 +145,11 @@ class FrontierFinder {
 
     final room = region(doorR); // doorways closed: the robot's own room
     final drivable = region(math.max(1, (robotRadiusM / res).ceil())); // where the robot itself fits
+    final stats = FrontierStats();
+    lastStats = stats;
+    for (var k = 0; k < n; k++) {
+      stats.drivableCells += drivable[k];
+    }
 
     // frontier cells: open floor next to open unexplored space
     final front = Uint8List(n);
@@ -174,14 +198,21 @@ class FrontierFinder {
           }
         }
       }
-      if (cells.length < 6) continue; // too small to be an opening
+      stats.openings++;
+      if (cells.length < 6) {
+        stats.tooSmall++; // too small to be an opening
+        continue;
+      }
       // goal: the cell with the most clearance from walls
       var pick = cells.first;
       for (final k in cells) {
         if (dist[k] > dist[pick]) pick = k;
       }
       final pi = pick % w, pj = pick ~/ w;
-      if (!near(drivable, pi, pj, driveR)) continue; // seen through a gap the robot can't fit through
+      if (!near(drivable, pi, pj, driveR)) {
+        stats.unreachable++; // seen through a gap the robot can't fit through
+        continue;
+      }
       // it must lead somewhere: open unexplored space within 1 m
       var gain = 0;
       for (var dj = -gainR; dj <= gainR; dj++) {
@@ -191,12 +222,21 @@ class FrontierFinder {
           if (openUnknown(j * w + i)) gain++;
         }
       }
-      if (gain < minGain) continue;
+      if (gain < minGain) {
+        stats.leadsNowhere++;
+        continue;
+      }
       final inRoom = near(room, pi, pj, roomR);
       final x = cellToWorld(bx0 + pi) + res / 2, y = cellToWorld(by0 + pj) + res / 2;
-      if (skip.any((q) => math.sqrt((q.$1 - x) * (q.$1 - x) + (q.$2 - y) * (q.$2 - y)) < 0.6)) continue;
+      if (skip.any((q) => math.sqrt((q.$1 - x) * (q.$1 - x) + (q.$2 - y) * (q.$2 - y)) < 0.6)) {
+        stats.tried++;
+        continue;
+      }
       final d = math.sqrt((x - robotX) * (x - robotX) + (y - robotY) * (y - robotY));
-      if (d < 0.4) continue; // already there
+      if (d < 0.4) {
+        stats.tooClose++; // already there
+        continue;
+      }
       final score = d - 0.01 * cells.length - (inRoom ? 3.0 : 0.0);
       if (score < bestScore) {
         bestScore = score;

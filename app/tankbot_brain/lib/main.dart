@@ -440,7 +440,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         final f = _nextFrontierPick();
         explorePreview = f;
         _flash(f == null
-            ? 'Exploring: nothing left that it can reach'
+            ? 'Exploring: nothing left that it can reach (${FrontierFinder.lastStats})'
             : 'Next place to explore: ${f.x.toStringAsFixed(1)}, ${f.y.toStringAsFixed(1)} m (${f.inRoom ? 'this room' : 'next room'}) - purple diamond');
         break;
       case 'map.restore':
@@ -1579,6 +1579,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   double _exploreStartMs = 0;
   final List<Offset> _exploreSkip = []; // frontiers it could not reach this time
   bool _exploreGoingHome = false;
+  int _exploreEmptyLooks = 0;
   Offset? _exploreGoal;
 
   /// A drop-off sensor: any sensor used for cliffs, or the phone's depth camera when it rides the robot.
@@ -1597,6 +1598,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _exploreStartMs = appClockMs();
     _exploreSkip.clear();
     _exploreGoingHome = false;
+    _exploreEmptyLooks = 0;
     _exploreGoal = null;
     exploreNote = 'Looking for unexplored areas...';
     _exploreTimer?.cancel();
@@ -1634,18 +1636,29 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (_exploreGoingHome) {
       final mins = ((now - _exploreStartMs) / 60000).toStringAsFixed(1);
       _stopExplore(navState == 'arrived'
-          ? 'Exploration finished in $mins min ($exploreTargets areas) - back at the home spot'
-          : 'Exploration finished in $mins min ($exploreTargets areas) - could not drive back home');
+          ? 'Exploration finished in $mins min ($exploreTargets areas; ${FrontierFinder.lastStats}) - back at the home spot'
+          : 'Exploration finished in $mins min ($exploreTargets areas; ${FrontierFinder.lastStats}) - could not drive back home');
       return;
     }
     if (navState == 'failed' && _exploreGoal != null) _exploreSkip.add(_exploreGoal!); // unreachable: skip it
     final target = _nextFrontier();
     if (target == null) {
-      exploreNote = 'Everything it can reach is explored - heading home';
+      final st = FrontierFinder.lastStats;
+      if (st.drivableCells == 0) {
+        _stopExplore("Can't explore from here - the robot isn't in open floor on the map (check its position, or drive it into the open)");
+        return;
+      }
+      // nothing found: make sure (a few looks, a second apart) before calling it done
+      if (++_exploreEmptyLooks < 3) {
+        exploreNote = 'Looking for unexplored areas...';
+        return;
+      }
+      exploreNote = 'Everything it can reach is explored ($st) - heading home';
       _exploreGoingHome = true;
       _navGoto(0, 0);
       return;
     }
+    _exploreEmptyLooks = 0;
     exploreTargets++;
     _exploreGoal = target;
     exploreNote = 'Heading for unexplored area #$exploreTargets${explorePreview?.inRoom == true ? ' (this room)' : ' (next room)'}';
