@@ -230,7 +230,20 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   // Mapping
   ViewMode view = ViewMode.radar;
-  bool mapping = true;
+  // Mapping mode (saved with the profile): explore | maintain | off. Position tracking always runs;
+  // the mode only decides what may be written into the map.
+  String get mappingMode => profile.mappingMode;
+  // ignore: prefer_final_fields
+  bool _exploring = false; // autonomous exploration (it may map while driving itself)
+  /// While the robot drives itself, Explore is capped to Maintain (unless it is exploring).
+  String get mappingEffective => (mappingMode == 'explore' && navActive && !_exploring) ? 'maintain' : mappingMode;
+  bool get mapping => mappingEffective == 'explore';
+  void _setMappingMode(String mode) {
+    if (!['explore', 'maintain', 'off'].contains(mode)) return;
+    profile.mappingMode = mode;
+    BotProfileStore.save(profile, store.robot);
+    if (mounted) setState(() {});
+  }
   bool robotMode = false;
 
   // Mount detection (robot mode): only map once the phone sits still in its cradle,
@@ -264,7 +277,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       _recent.removeWhere((t) => now.difference(t) > const Duration(seconds: 2));
       scan = s;
       _checkDisturbance(s);
-      if (mapping && _mapAllowed) _pending.add(s);
+      if (_mapAllowed) _pending.add(s); // tracking always runs; the mapping mode decides what is written
       _processPending();
       // keep manual driving's obstacle stop current - but never while the autonomous driver is
       // driving: this used to command 'stop' 10x a second during Go To, fighting the driver
@@ -303,6 +316,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _subs.add(sensors.readings.listen(_onRobotSensors));
     _startLagMonitor();
+    _marksTimer = Timer.periodic(const Duration(seconds: 60), (_) => _expireMarks());
     _native.invokeMethod<String>('documentsDir').then((d) => _docsDir = d).catchError((_) => null);
     _locSub = const EventChannel('tankbot/location').receiveBroadcastStream().listen(_onLocation, onError: (_) {});
     _subs.add(poses.depth.listen((pts) {
@@ -349,6 +363,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _locSub?.cancel();
     _lagTimer?.cancel();
     _linkTimer?.cancel();
+    _marksTimer?.cancel();
     final lp = _lastRobotPose;
     if (lp != null && locState == 'tracking') {
       active.lastPose = [lp.x, lp.y, lp.heading];
@@ -429,7 +444,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       case 'set':
         if (m['maxSpeed'] is num) maxSpeed = (m['maxSpeed'] as num).toDouble().clamp(0.2, 1.0);
         if (m['obstacleStop'] is bool) obstacleStop = m['obstacleStop'] as bool;
-        if (m['mapping'] is bool) mapping = m['mapping'] as bool;
+        if (m['mappingMode'] is String) _setMappingMode(m['mappingMode'] as String);
+        if (m['mapping'] is bool) _setMappingMode((m['mapping'] as bool) ? 'explore' : 'off');
         if (m['stopDistMm'] is num || m['passDistMm'] is num) {
           if (m['stopDistMm'] is num) profile.stopDistMm = (m['stopDistMm'] as num).toDouble().clamp(100.0, 2000.0);
           if (m['passDistMm'] is num) profile.passDistMm = (m['passDistMm'] as num).toDouble().clamp(0.0, 1000.0);
@@ -507,12 +523,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         }
         break;
       case 'map.undo':
-        if (active.edits.isNotEmpty) {
-          final stroke = active.edits.last['stroke'];
+        final mine = active.edits.where((e) => e['kind'] == null && e['type'] != 'obstacle').toList();
+        if (mine.isNotEmpty) {
+          final stroke = mine.last['stroke'];
           if (stroke != null) {
             active.edits.removeWhere((e) => e['stroke'] == stroke);
           } else {
-            active.edits.removeLast();
+            active.edits.remove(mine.last);
           }
           active.edited = true;
           _rebuildGrid(); // grid edits (erase / obstacle): redraw without it
@@ -597,6 +614,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         for (final e in active.edits)
           if (e['type'] == 'obstacle' && e['kind'] == 'dropoff') [e['x'], e['y']]
       ],
+      'marks': [
+        for (final e in active.edits)
+          if (e['type'] == 'obstacle' && (e['kind'] == 'dropoff' || e['kind'] == null || e['kind'] == 'bump'))
+            [e['x'], e['y'], e['r'], e['kind'] ?? 'bump', e['confirmed'] == true ? 1 : 0]
+      ],
       'quality': {
         'matchHits': matchHits,
         'matchMisses': matchMisses,
@@ -614,6 +636,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'gpsUsed': gpsUsed,
         'geoTags': active.geoTags.length,
         'dropoffMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] == 'dropoff').length,
+        'changesPending': _changeEv.values.where((e) => e.visits >= 2).length,
+        'changesCommitted': changesCommitted,
+        'newTerritoryScans': newTerritoryScans,
+        'tempMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] != 'change' && e['confirmed'] != true).length,
       },
       'blocked': _blocked,
       'blockReason': blockReason,
@@ -627,7 +653,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       'settings': {
         'maxSpeed': maxSpeed,
         'obstacleStop': obstacleStop,
-        'mapping': mapping,
+        'mapping': mappingEffective != 'off',
+        'mappingMode': mappingMode,
+        'mappingEffective': mappingEffective,
         'stopDistMm': stopDistMm,
         'passDistMm': profile.passDistMm,
         'depthStopMm': profile.depthStopMm,
@@ -1016,6 +1044,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       if (i % 40 == 39) await Future<void>.delayed(Duration.zero); // keep the app responsive
     }
     active = m;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    for (final e in m.edits) {
+      if (e['type'] == 'obstacle' && e['kind'] != 'change' && !e.containsKey('confirmed')) {
+        e['confirmed'] = false;
+        e['firstMs'] = nowMs;
+      }
+    }
     _applyEdits();
     _loadingMap = false;
     await store.setLast(m.id);
@@ -1392,10 +1427,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final p = robotPose!;
     final a = p.heading + sn!.yawDeg * math.pi / 180;
     final ox = w.dx + math.cos(a) * 0.05, oy = w.dy + math.sin(a) * 0.05;
-    active.edits.add({'type': 'obstacle', 'id': active.nextEditId++, 'stroke': 'bump${active.nextEditId}', 'x': ox, 'y': oy, 'r': 0.07});
-    grid.markCircle(ox, oy, 0.07);
-    active.edited = true;
-    navNote = 'Bumped something - marked it on the map';
+    _addMark('bump', ox, oy, 0.07);
+    navNote = 'Bumped something - avoiding that spot for now';
   }
 
   // Drop-offs seen repeatedly become permanent map obstacles (stairs don't move).
@@ -1406,7 +1439,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   final Map<int, Offset> _dropFirstSeenFrom = {};
 
   void _rememberDropOffs() {
-    if (locState != 'tracking' || _loadingMap || _rebuilding || !mapping || !_mapAllowed) return;
+    if (locState != 'tracking' || _loadingMap || _rebuilding || mappingEffective == 'off' || !_mapAllowed) return;
     final now = appClockMs();
     if (now - _dropSeenResetMs > 20000) {
       _dropSeen.clear();
@@ -1429,12 +1462,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       if (n < _dropConfirmFrames || (here - from).distance < 0.3) continue;
       _dropSeen[key] = -100000; // remember once
       if (existing.length >= _maxDropEdits) break;
-      if (existing.any((e) => (e - c).distance < 0.12)) continue;
-      final id = active.nextEditId++;
-      active.edits.add({'type': 'obstacle', 'kind': 'dropoff', 'id': id, 'stroke': 'drop$id', 'x': c.dx, 'y': c.dy, 'r': 0.08});
-      grid.markCircle(c.dx, c.dy, 0.08);
+      if (_addMark('dropoff', c.dx, c.dy, 0.08)) added = true;
       existing.add(c);
-      added = true;
     }
     if (added) {
       active.edited = true;
@@ -1939,6 +1968,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       mountState = 'mounted';
       mountNote = note;
     }
+    profile.mappingMode = 'explore'; // a new map has to be explored
+    BotProfileStore.save(profile, store.robot);
     await _saveActive(); // keep the map we had
     active = MapSession.fresh(lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
     await _resetMap();
@@ -2052,9 +2083,132 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         skippedTurning++; // the scan is smeared by the turn: track with it, but don't paint it
         continue;
       }
-      grid.integrate(pose, s.points, lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
-      _maybeKeyframe(pose, s.points);
+      switch (mappingEffective) {
+        case 'explore':
+          grid.integrate(pose, s.points, lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
+          _maybeKeyframe(pose, s.points);
+        case 'maintain':
+          _maintainScan(pose, s.points);
+        default: // off: the map is left alone
+          break;
+      }
     }
+  }
+
+  // ---------- maintain mode: the map changes only when a change persists ----------
+  final Map<int, _CellEv> _changeEv = {};
+  int changesCommitted = 0, newTerritoryScans = 0;
+  double _lastMaintainMs = 0;
+
+  void _maintainScan(Pose pose, List<LidarPoint> pts) {
+    final rp = ScanMatcher.robotFrame(pts, fwdM: lidarFwdM, leftM: lidarLeftM, stride: 2, maxR: 6);
+    if (rp.isEmpty) return;
+    final c = math.cos(pose.heading), sn = math.sin(pose.heading);
+    final ends = [for (final q in rp) Offset(pose.x + c * q.dx - sn * q.dy, pose.y + sn * q.dx + c * q.dy)];
+    var unknown = 0;
+    for (final w in ends) {
+      if (grid.at(w.dx, w.dy).abs() < 0.3) unknown++;
+    }
+    if (unknown > ends.length * 0.3) {
+      // mostly unmapped ground: extend the map (nothing here to overwrite)
+      grid.integrate(pose, pts, lidarFwdM: lidarFwdM, lidarLeftM: lidarLeftM);
+      _maybeKeyframe(pose, pts);
+      newTerritoryScans++;
+      return;
+    }
+    // known ground: compare with the map (a few times a second is plenty: evidence builds over time)
+    final nowMs = appClockMs();
+    if (nowMs - _lastMaintainMs < 300) return;
+    _lastMaintainMs = nowMs;
+    final wall = DateTime.now().millisecondsSinceEpoch;
+    final sx = pose.x + c * lidarFwdM - sn * lidarLeftM, sy = pose.y + sn * lidarFwdM + c * lidarLeftM;
+    const step = 0.05;
+    for (final w in ends) {
+      _observe(w.dx, w.dy, true, wall); // something is here
+      final dx = w.dx - sx, dy = w.dy - sy, d = math.sqrt(dx * dx + dy * dy);
+      final n = ((d - 0.1) / step).floor(); // and open floor on the way to it (stopping 10 cm short)
+      for (var k = 2; k < n && k < 80; k++) {
+        final f = k * step / d;
+        _observe(sx + dx * f, sy + dy * f, false, wall);
+      }
+    }
+  }
+
+  /// One look at one spot, compared with the map. Disagreements collect evidence; a change is written
+  /// only after 3 separate passes (2+ min apart) over 10+ minutes that clearly outweigh the agreements.
+  void _observe(double x, double y, bool occupied, int wall) {
+    final lo = grid.at(x, y);
+    final key = grid.toCell(x) * 100000 + grid.toCell(y);
+    final mapOcc = lo > 1.0, mapFree = lo < -1.0;
+    final disagrees = (occupied && mapFree) || (!occupied && mapOcc);
+    final ev = _changeEv[key];
+    if (ev == null) {
+      if (disagrees) _changeEv[key] = _CellEv(occupied ? 1 : 2, x, y, wall);
+      return;
+    }
+    if ((occupied && mapOcc) || (!occupied && mapFree)) {
+      ev.agree++;
+      return;
+    }
+    if (!disagrees) return;
+    if (wall - ev.lastWall > 120000) ev.visits++;
+    ev.lastWall = wall;
+    ev.disagree++;
+    if (ev.visits >= 3 && wall - ev.firstWall >= 10 * 60000 && ev.disagree >= 4 * ev.agree) _commitChange(key, ev);
+  }
+
+  void _commitChange(int key, _CellEv ev) {
+    _changeEv.remove(key);
+    final id = active.nextEditId++;
+    if (ev.kind == 1) {
+      active.edits.add({'type': 'obstacle', 'kind': 'change', 'id': id, 'stroke': 'chg$id', 'x': ev.x, 'y': ev.y, 'r': 0.03, 'confirmed': true});
+      grid.markCircle(ev.x, ev.y, 0.03);
+    } else {
+      active.edits.add({'type': 'erase', 'kind': 'change', 'id': id, 'stroke': 'chg$id', 'x': ev.x, 'y': ev.y, 'r': 0.03});
+      grid.eraseCircle(ev.x, ev.y, 0.03);
+    }
+    active.edited = true;
+    changesCommitted++;
+  }
+
+  // ---------- bumps and drop-offs: temporary unless they happen again ----------
+  Timer? _marksTimer;
+
+  /// A bump or drop-off is avoided at once but expires after 15 minutes, unless it happens again at
+  /// the same spot on a separate occasion (10+ minutes later), which makes it permanent.
+  bool _addMark(String kind, double x, double y, double r) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final e in active.edits) {
+      if (e['type'] != 'obstacle' || e['kind'] != kind) continue;
+      final d = math.sqrt(_sq((e['x'] as num).toDouble() - x) + _sq((e['y'] as num).toDouble() - y));
+      if (d > 0.15) continue;
+      if (e['confirmed'] == true) return false;
+      final first = (e['firstMs'] as num?)?.toInt() ?? now;
+      if (now - first >= 10 * 60000) {
+        e['confirmed'] = true;
+        active.edited = true;
+        return true;
+      }
+      return false;
+    }
+    final id = active.nextEditId++;
+    active.edits.add({'type': 'obstacle', 'kind': kind, 'id': id, 'stroke': '$kind$id', 'x': x, 'y': y, 'r': r, 'firstMs': now, 'confirmed': false});
+    grid.markCircle(x, y, r);
+    active.edited = true;
+    return true;
+  }
+
+  void _expireMarks() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final before = active.edits.length;
+    active.edits.removeWhere((e) =>
+        e['type'] == 'obstacle' && e['kind'] != 'change' && e['confirmed'] != true &&
+        now - ((e['firstMs'] as num?)?.toInt() ?? now) > 15 * 60000);
+    if (active.edits.length != before) {
+      active.edited = true;
+      if (!_rebuilding && !_loadingMap) _rebuildGrid();
+    }
+    _changeEv.removeWhere((_, ev) => now - ev.lastWall > 30 * 60000); // evidence that went quiet
   }
 
   /// Best pose for this scan: the camera's guess (or the last lidar pose), refined by
@@ -2221,9 +2375,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           ),
           if (view == ViewMode.map)
             IconButton(
-              icon: Icon(mapping ? Icons.pause_circle : Icons.play_circle),
-              tooltip: mapping ? 'Pause mapping' : 'Resume mapping',
-              onPressed: () => setState(() => mapping = !mapping),
+              icon: Icon(mappingMode == 'explore' ? Icons.travel_explore : mappingMode == 'maintain' ? Icons.build_circle : Icons.pause_circle),
+              tooltip: 'Mapping: $mappingMode (tap to change)',
+              onPressed: () => _setMappingMode(mappingMode == 'explore' ? 'maintain' : mappingMode == 'maintain' ? 'off' : 'explore'),
             ),
           if (view == ViewMode.map)
             IconButton(icon: const Icon(Icons.delete_sweep), tooltip: 'New map here', onPressed: () => _startNewMap()),
@@ -2549,4 +2703,14 @@ double _angDiff(double a, double b) {
     d += 2 * math.pi;
   }
   return d;
+}
+
+/// Maintain mode: evidence that one spot no longer matches the map.
+class _CellEv {
+  _CellEv(this.kind, this.x, this.y, this.firstWall) : lastWall = firstWall;
+  final int kind; // 1 = something appeared where the map is open, 2 = gone from where the map has a wall
+  final double x, y;
+  final int firstWall; // wall-clock ms
+  int lastWall;
+  int disagree = 1, agree = 0, visits = 1;
 }

@@ -70,6 +70,9 @@ canvas#map.aiming { cursor: crosshair; }
 #stick { width: 180px; height: 180px; align-self: center; touch-action: none; }
 .bigstop { font-size: 16px; padding: 12px; }
 .btnrow { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.seg { display: grid; grid-template-columns: 1fr 1fr 1fr; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; }
+.seg button { border: none; background: transparent; color: var(--muted); padding: 6px 4px; border-radius: 8px; }
+.seg button.on { background: var(--card2); color: var(--text); outline: 1px solid var(--accent); }
 .panel .grow { display: flex; flex-direction: column; gap: 10px; }
 .panel .grow > button.bigstop { width: 100%; }
 
@@ -159,6 +162,7 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
       <div><span class="sw" style="background:#ffab40"></span>Low obstacles (depth camera)</div>
       <div><span class="sw" style="background:#80cbc4;border-radius:50%"></span>Ultrasonic / ToF readings</div>
       <div><span class="sw" style="background:#f2555a"></span>Drop-offs, no-go lines</div>
+      <div><span class="sw" style="border:2px dashed #ff9f43;border-radius:50%;width:12px;height:12px"></span>Bump (dashed = temporary)</div>
       <div><span class="sw" style="background:#4f8cff"></span>Route and goal</div>
       <div><span class="sw" style="border:2px solid #fff;border-radius:50%;width:12px;height:12px"></span>Home spot (map start)</div>
     </div>
@@ -182,9 +186,13 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
       <div class="btnrow">
         <button id="gobtn" class="primary">Go to&hellip;</button>
         <button id="editbtn">Edit map</button>
-        <button id="mapping">Pause mapping</button>
+        <button id="setposbtn">Set position&hellip;</button>
         <button id="clear">New map here</button>
-        <button id="setposbtn" style="grid-column: 1 / span 2">Set position&hellip;</button>
+      </div>
+      <div>
+        <div class="small" style="margin-bottom:4px">Mapping</div>
+        <div class="seg" id="mapMode"><button data-mode="explore">Explore</button><button data-mode="maintain">Maintain</button><button data-mode="off">Off</button></div>
+        <div class="small" id="mapModeHint" style="margin-top:4px"></div>
       </div>
       <div class="small hidesmall">Keys: arrows or W A S D to drive, Space stops, Esc cancels. Drag the map to look around, scroll or pinch to zoom, &#9678; to follow the robot again.</div>
       <div class="small hidesmall" id="motors"></div>
@@ -413,7 +421,12 @@ window.addEventListener("blur", () => { if (knob || keys.size) release(); });
 // ================= drive panel =================
 $("ms").oninput = e => { $("msv").textContent = Math.round(e.target.value * 100) + "%"; send({type: "set", maxSpeed: parseFloat(e.target.value)}); };
 $("obs").onchange = e => send({type: "set", obstacleStop: e.target.checked});
-$("mapping").onclick = () => send({type: "set", mapping: !(telem && telem.settings.mapping)});
+const MODE_HINT = {
+  explore: "Explore: everything you drive past is added. Use it to build the map or add new rooms.",
+  maintain: "Maintain: the map stays as it is; it extends into unmapped areas and only changes when a change persists (moved furniture, not people).",
+  off: "Off: the map is never changed. The robot still uses it to know where it is.",
+};
+document.querySelectorAll("#mapMode button").forEach(b => b.onclick = () => send({type: "set", mappingMode: b.dataset.mode}));
 $("clear").onclick = () => { if (confirm("Start a new map here? The current map is saved first.")) send({type: "clearMap"}); };
 $("clearDrops").onclick = () => {
   const n = telem && telem.quality ? telem.quality.dropoffMarks : 0;
@@ -741,6 +754,8 @@ function renderActive() {
     " rejected, " + q.skippedTurning + " scans skipped while spinning, " + q.loopClosures + " loop closures" +
     (q.loopClosures ? " (last one fixed " + q.lastLoopCm.toFixed(0) + " cm / " + q.lastLoopDeg.toFixed(1) + " deg)" : "") +
     (q.rebuilding ? " - redrawing map..." : "") +
+    (q.changesCommitted != null ? "\nMaintain: " + q.changesPending + " spots being watched, " + q.changesCommitted + " changes written, " +
+      q.newTerritoryScans + " scans extended the map; " + q.tempMarks + " temporary bump/drop-off marks" : "") +
     (q.optimizations != null ? "\nStraightened " + q.optimizations + " times (last moved up to " + q.lastOptCm.toFixed(0) + " cm / " +
       q.lastOptDeg.toFixed(1) + " deg), " + q.wallAligned + " keyframes wall-aligned, " + q.gpsUsed + " GPS fixes used" : "");
 }
@@ -792,8 +807,8 @@ function updateHeader() {
   pill("pLidar", rate > 5 ? true : rate > 0 ? null : false, rate > 0 ? "Lidar " + Math.round(rate) + "/s" : "No lidar");
   const ls = t.loc ? t.loc.state : "";
   pill("pTrack", ls === "tracking" ? true : ls === "lost" ? false : null, ls === "tracking" ? "Position OK" : ls === "localizing" ? "Finding position" : "Position lost");
-  const mapping = t.settings && t.settings.mapping;
-  pill("pMap", mapping ? true : null, mapping ? "Mapping" : "Mapping paused");
+  const mm = t.settings ? (t.settings.mappingEffective || t.settings.mappingMode) : null;
+  pill("pMap", mm === "explore" ? true : mm === "maintain" ? true : null, mm === "explore" ? "Map: Explore" : mm === "maintain" ? "Map: Maintain" : "Map: Off");
   if (t.bot && t.bot.name) $("robotName").textContent = t.bot.name;
   if (t.robotIp) for (const id of ["robotPageLink", "robotPageLink2"]) $(id).href = "http://" + t.robotIp + "/";
   if (t.robotIp) $("robotSetupLink").href = "http://" + t.robotIp + "/setup";
@@ -865,7 +880,9 @@ function updateUi() {
   if (!settingsInit && s) { $("ms").value = s.maxSpeed; $("msv").textContent = Math.round(s.maxSpeed * 100) + "%"; settingsInit = true; }
   if (s) {
     $("obs").checked = s.obstacleStop;
-    $("mapping").textContent = s.mapping ? "Pause mapping" : "Resume mapping";
+    const mm = s.mappingMode || "maintain";
+    document.querySelectorAll("#mapMode button").forEach(b => b.classList.toggle("on", b.dataset.mode === mm));
+    $("mapModeHint").textContent = MODE_HINT[mm] + (s.mappingEffective && s.mappingEffective !== mm ? " (Maintain while it drives itself.)" : "");
   }
   updateHeader();
   $("stat").textContent = (t.tracking ? "Tracking: " + t.tracking.source : "") + (st.remotes ? " \u00b7 " + st.remotes + " controller" + (st.remotes > 1 ? "s" : "") : "");
@@ -1133,10 +1150,16 @@ function frameInner() {
       ctx.strokeStyle = "#f2555a"; ctx.lineWidth = 3;
       for (const l of t.nogo) { const a = toS(l[0], l[1]), b = toS(l[2], l[3]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
     }
-    // remembered drop-offs
-    if (t.dropoffs && t.dropoffs.length) {
-      ctx.strokeStyle = "#f2555a"; ctx.lineWidth = 2;
-      for (const q of t.dropoffs) { const s3 = toS(q[0], q[1]); ctx.beginPath(); ctx.arc(s3[0], s3[1], 0.08 * ppm + 2, 0, Math.PI * 2); ctx.stroke(); }
+    // bumps (orange) and drop-offs (red): dashed = temporary, solid = confirmed
+    if (t.marks && t.marks.length) {
+      ctx.lineWidth = 2;
+      for (const q of t.marks) {
+        const s3 = toS(q[0], q[1]);
+        ctx.strokeStyle = q[3] === "dropoff" ? "#f2555a" : "#ff9f43";
+        ctx.setLineDash(q[4] ? [] : [4, 3]);
+        ctx.beginPath(); ctx.arc(s3[0], s3[1], q[2] * ppm + 2, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.setLineDash([]);
     }
     // live: depth camera, rangers, lidar
     if (t.depth && t.depth.fresh) {

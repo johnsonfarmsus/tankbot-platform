@@ -138,6 +138,8 @@ class BotProfile {
   /// Map straightening: keep walls square (houses), and use GPS only when better than this (m).
   bool wallAlign;
   double gpsMaxAccM;
+  /// explore (add everything) | maintain (the map changes only when a change persists) | off
+  String mappingMode;
   /// The one-time carry-over of pre-hardware-table placements onto the robot's table has happened
   /// (true for built-in defaults: they are not measurements and must never overwrite the robot).
   bool hardwareMigrated;
@@ -163,6 +165,7 @@ class BotProfile {
     this.hardwareDirty = false,
     this.hardwareMigrated = true,
     this.wallAlign = true,
+    this.mappingMode = 'maintain',
     this.phoneMount = 'portrait',
     this.gpsMaxAccM = 5,
     this.depthStopMm = 250,
@@ -269,7 +272,7 @@ class BotProfile {
         'sensors': [for (final s in sensors) s.toJson()],
         'hardwareDirty': hardwareDirty,
         'hardwareMigrated': hardwareMigrated,
-        'mapping': {'wallAlign': wallAlign, 'gpsMaxAccM': gpsMaxAccM},
+        'mapping': {'wallAlign': wallAlign, 'gpsMaxAccM': gpsMaxAccM, 'mode': mappingMode},
       };
 
   static BotProfile? fromJson(dynamic j) {
@@ -319,6 +322,9 @@ class BotProfile {
       // profiles saved before this flag existed may still hold measured placements to carry over
       hardwareMigrated: j['hardwareMigrated'] == true,
       wallAlign: !(j['mapping'] is Map && (j['mapping'] as Map)['wallAlign'] == false),
+      mappingMode: j['mapping'] is Map && ['explore', 'maintain', 'off'].contains((j['mapping'] as Map)['mode'])
+          ? (j['mapping'] as Map)['mode'] as String
+          : 'maintain',
       phoneMount: j['phoneMount'] == 'landscape' ? 'landscape' : 'portrait',
       gpsMaxAccM: num_(j['mapping'] is Map ? (j['mapping'] as Map)['gpsMaxAccM'] : null, 5).clamp(1, 50).toDouble(),
       depthStopMm: dStop,
