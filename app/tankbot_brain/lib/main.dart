@@ -697,6 +697,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'stalls': stalls,
         'cameraDistrusts': cameraDistrusts,
         'cameraJumps': poses.jumps,
+        'spinSkips': spinSkips,
         'tempMarks': active.edits.where((e) => e['type'] == 'obstacle' && e['kind'] != 'change' && e['confirmed'] != true).length,
       },
       'blocked': _blocked,
@@ -2137,11 +2138,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       if (alpha.abs() < 0.21 || wantDir != _navTurnDir) {
         _navRotating = false; // close enough, or overshot: stop and look again
         _navSettleUntilMs = now + 350;
-      } else if (alpha.abs() > 0.6) {
-        t = _navTurnDir * turnP; // far off: turn continuously
       } else {
-        final phase = ((now - _navTurnStartMs) % 350).toInt();
-        t = phase < 100 ? _navTurnDir * turnP : 0; // closing in: short nudges, time to see each one land
+        // Pulses, never a continuous spin: at the power the tracks need, the robot spins at 200+ deg/s,
+        // which smears every lidar scan. Bigger pulses when far off, small ones when closing in.
+        final far = alpha.abs() > 0.6;
+        final phase = ((now - _navTurnStartMs) % (far ? 300 : 350)).toInt();
+        t = phase < (far ? 120 : 90) ? _navTurnDir * turnP : 0;
       }
     } else if (alpha.abs() > 0.52) {
       _navRotating = true;
@@ -2505,7 +2507,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   // ---------- trust: stop drawing (and stop driving) when the position is doubtful ----------
   bool _scanTrusted = true;
-  int _matchMissStreak = 0, wideRecoveries = 0;
+  int _matchMissStreak = 0, wideRecoveries = 0, spinSkips = 0;
   double _lastKnownFrac = 1, _lostSinceMs = 0, _settleDist = 0;
   Offset? _lastNavPos;
 
@@ -2710,6 +2712,15 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       _scanTrusted = true;
       _noteTrust();
       return guess; // not enough map yet to match against
+    }
+    if (raw != null && s.appMs != null) {
+      // spinning faster than 60 deg/s: a lidar sweep (0.1 s) is smeared across the turn; matching it
+      // can lock onto a wall 90 deg off. Let the camera carry the heading until the scan is sharp.
+      final before = poses.at(s.appMs! - 150);
+      if (before != null && _angDiff(raw.heading, before.heading).abs() / 0.15 > 1.05) {
+        spinSkips++;
+        return guess;
+      }
     }
     final pts = ScanMatcher.robotFrame(s.points, fwdM: lidarFwdM, leftM: lidarLeftM, stride: 2);
     if (pts.length < 40) {

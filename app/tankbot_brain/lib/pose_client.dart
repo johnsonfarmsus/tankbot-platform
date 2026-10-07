@@ -98,7 +98,8 @@ class PoseClient {
       var turn = (fh0 - prev.heading) % (2 * math.pi);
       if (turn > math.pi) turn -= 2 * math.pi;
       if (turn < -math.pi) turn += 2 * math.pi;
-      if (dt < 1.0 && (jump > 0.6 * dt + 0.04 || turn.abs() > math.pi * dt + 0.06)) {
+      // limits well beyond anything the robot can do (it can spin at 250 deg/s): only real glitches
+      if (dt < 1.0 && (jump > 1.0 * dt + 0.10 || turn.abs() > 4 * math.pi * dt + 0.35)) {
         _fixH += -turn;
         final c1 = math.cos(_fixH), s1 = math.sin(_fixH);
         _fixX = prev.x - (c1 * rx - s1 * ry);
