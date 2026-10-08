@@ -391,6 +391,10 @@ const char MAIN_page[] PROGMEM = R"=====(
           Adjust this slider to compensate for uneven track tension. If your robot drifts left, move the slider right, and vice versa.
         </div>
       </div>
+
+      <div id="robotInfo" style="margin-top: 22px; padding-top: 14px; border-top: 1px solid #ddd; font-size: 0.85em; color: #555; line-height: 1.7; text-align: left;">
+        Looking up this robot's address...
+      </div>
     </div>
   </div>
 
@@ -416,6 +420,7 @@ const char MAIN_page[] PROGMEM = R"=====(
     // Settings modal controls
     settingsBtn.addEventListener('click', function() {
       settingsModal.classList.add('show');
+      showRobotInfo();
     });
 
     closeModal.addEventListener('click', function() {
@@ -648,6 +653,20 @@ const char MAIN_page[] PROGMEM = R"=====(
     }
     checkBrain();
     setInterval(checkBrain, 3000);
+
+    // ---- This robot: its address (useful if tankbot.local ever stops working) ----
+    function showRobotInfo() {
+      const box = document.getElementById('robotInfo');
+      fetch('/api/info').then(r => r.json()).then(i => {
+        const signal = i.rssi == null ? '' : ' (signal ' + (i.rssi > -60 ? 'good' : i.rssi > -70 ? 'OK' : 'weak') + ', ' + i.rssi + ' dBm)';
+        box.innerHTML = '<b style="color:#333">This robot</b><br>' +
+          'Address: <a href="http://' + i.ip + '/">http://' + i.ip + '/</a><br>' +
+          'Name: <a href="http://' + i.host + '/">' + i.host + '</a><br>' +
+          (i.mode === 'hotspot' ? 'Running its own hotspot: ' + i.ssid : 'Wi-Fi: ' + i.ssid + signal) + '<br>' +
+          (i.brain ? 'Brain: <a href="' + i.brain + '">' + i.brain + '</a><br>' : '') +
+          'Firmware ' + i.fw;
+      }).catch(() => { box.textContent = "Couldn't look up the address."; });
+    }
 
     // Load saved trim value on page load
     fetch('/getTrim')

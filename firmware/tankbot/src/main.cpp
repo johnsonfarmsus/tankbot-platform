@@ -25,7 +25,7 @@
 #include "secrets.h"
 #include "web_ui.h"
 
-static const char *FW_VERSION = "3.0";
+static const char *FW_VERSION = "3.1";
 
 // ================= hardware description =================
 enum SType { ST_BUMPER, ST_TOF, ST_ULTRASONIC, ST_IMU, ST_LIDAR, ST_CAMERA, ST_OTHER };
@@ -792,6 +792,22 @@ void handleHardware() {
 }
 void handleSensors() { server.send(200, "application/json", sensorsJson()); }
 
+/// GET /api/info - how to reach this robot (shown in the drive page's settings panel).
+void handleInfo() {
+  JsonDocument doc;
+  doc["name"] = hw.name;
+  doc["host"] = String(HOSTNAME) + ".local";
+  doc["ip"] = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  doc["mode"] = apMode ? "hotspot" : "wifi";
+  doc["ssid"] = apMode ? String(AP_SSID) : WiFi.SSID();
+  if (!apMode) doc["rssi"] = WiFi.RSSI();
+  doc["fw"] = FW_VERSION;
+  if (brainAlive()) doc["brain"] = brainUrl();
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
 /// GET /api/test/motor?motor=a|b&dir=1|-1&ms=400 - run one motor briefly (wiring check).
 /// Motor A = IN1 / IN2 / ENA, motor B = IN3 / IN4 / ENB. The reflexes still apply.
 void handleTestMotor() {
@@ -1004,6 +1020,7 @@ void setupNetwork() {
   server.on("/api/hardware", handleHardware);
   server.on("/api/capabilities", handleHardware);
   server.on("/api/sensors", handleSensors);
+  server.on("/api/info", handleInfo);
   server.on("/api/test/motor", handleTestMotor);
   server.on("/api/brain", handleBrainApi);
   server.on("/brain", handleBrainRedirect);
