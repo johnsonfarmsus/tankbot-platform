@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.4 (2026-10-07)
+
+Interchangeable brains, the Wiring view, lidar + gyro tracking, and a public release.
 
 - **Interchangeable brains:** firmware stores robot-level settings (`/api/settings`) and a compact
   map (`/api/map`, LittleFS, chunked all-or-nothing uploads); the brain syncs settings (newer wins),
