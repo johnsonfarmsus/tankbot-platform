@@ -40,6 +40,7 @@ struct Sensor {
   int pinA = -1, pinB = -1;  // resolved from slot (or custom): bumper pin / trig,echo / rx,tx
   SRole role = ROLE_NONE;
   bool enabled = true;
+  char err[56] = "";         // wiring problem found at startup: the sensor is not started
   float yawDeg = 0;          // 0 front, +left
   bool floorTilt = false;    // pointed at the floor (cliff sensing)
   int stopMm = 150;          // obstacle role: block when closer
@@ -198,6 +199,7 @@ String hardwareJson(bool withLive) {
     Sensor &s = sensors[i];
     JsonObject o = arr.add<JsonObject>();
     o["id"] = s.id; o["name"] = s.name; o["type"] = typeName(s.type); o["slot"] = s.slot;
+    if (s.err[0]) o["error"] = s.err;
     o["pinA"] = s.pinA; o["pinB"] = s.pinB; o["role"] = roleName(s.role); o["enabled"] = s.enabled;
     o["yawDeg"] = s.yawDeg; o["floorTilt"] = s.floorTilt; o["stopMm"] = s.stopMm; o["floorMm"] = s.floorMm; o["backoffMs"] = s.backoffMs;
     o["left"] = s.left; o["front"] = s.front; o["height"] = s.height; o["width"] = s.width;
@@ -541,10 +543,60 @@ void usTick(Sensor &s) {
   }
 }
 
-void setupSensors() {
+// ---- Pin rule-book (ESP32-WROOM DevKit) ----
+// Usable: 0 2 4 5 12-19 21-23 25-27 32-36 39. Not usable: 1 and 3 (USB serial), 6-11 (flash),
+// 20 24 28-31 37 38 (don't exist on the module). 34-39 are inputs only.
+bool pinUsable(int p) {
+  return p >= 0 && p <= 39 && p != 1 && p != 3 && !(p >= 6 && p <= 11) && p != 20 && p != 24 &&
+         !(p >= 28 && p <= 31) && p != 37 && p != 38;
+}
+bool pinCanOutput(int p) { return pinUsable(p) && p < 34; }
+
+/// Check every sensor's pins against the rule-book, the motor driver, the lidar and each other.
+/// A sensor whose wiring can't work is not started (its err says why); everything else still runs.
+void validateWiring() {
+  int8_t owner[40];
+  memset(owner, -1, sizeof(owner)); // -1 free, -2 motor driver, -3 lidar, i = sensor i
+  int motor[] = {hw.in1, hw.in2, hw.in3, hw.in4, hw.ena, hw.enb};
+  for (int p : motor) {
+    if (!pinCanOutput(p)) Serial.printf("[wiring] motor driver pin %d can't be an output\n", p);
+    else owner[p] = -2;
+  }
+  if (pinUsable(hw.lidarRx)) owner[hw.lidarRx] = -3;
+  if (pinCanOutput(hw.lidarTx)) owner[hw.lidarTx] = -3;
+  int tofs = 0;
   for (int i = 0; i < nSensors; i++) {
     Sensor &s = sensors[i];
-    if (!s.enabled) continue;
+    s.err[0] = 0;
+    if (!s.enabled || s.type == ST_LIDAR || !strcmp(s.slot, "NONE")) continue;
+    int need = 0, pins[2] = {s.pinA, s.pinB};
+    bool out[2] = {false, false};
+    switch (s.type) {
+      case ST_BUMPER: need = 1; break;
+      case ST_ULTRASONIC: need = 2; out[0] = true; break; // trig out, echo in
+      case ST_TOF: need = 2; out[1] = true; tofs++; break; // ToF T -> rx in, R <- tx out
+      default: continue; // I2C devices share the bus pins
+    }
+    if (s.type == ST_TOF && tofs > 1) { snprintf(s.err, sizeof(s.err), "only one ToF serial port"); continue; }
+    for (int k = 0; k < need && !s.err[0]; k++) {
+      int pn = pins[k];
+      if (!pinUsable(pn)) snprintf(s.err, sizeof(s.err), "pin %d can't be used", pn);
+      else if (out[k] && !pinCanOutput(pn)) snprintf(s.err, sizeof(s.err), "pin %d is input-only", pn);
+      else if (owner[pn] != -1) {
+        int o = owner[pn];
+        snprintf(s.err, sizeof(s.err), "pin %d is used by %s", pn, o == -2 ? "the motor driver" : o == -3 ? "the lidar" : sensors[o].name);
+      }
+    }
+    if (!s.err[0]) for (int k = 0; k < need; k++) owner[pins[k]] = i;
+    else Serial.printf("[wiring] %s not started: %s\n", s.name, s.err);
+  }
+}
+
+void setupSensors() {
+  validateWiring();
+  for (int i = 0; i < nSensors; i++) {
+    Sensor &s = sensors[i];
+    if ((!s.enabled || s.err[0])) continue;
     switch (s.type) {
       case ST_BUMPER: if (s.pinA >= 0) pinMode(s.pinA, INPUT_PULLUP); break;
       case ST_TOF:
@@ -566,7 +618,7 @@ void readSensors() {
   uint32_t now = millis();
   for (int i = 0; i < nSensors; i++) {
     Sensor &s = sensors[i];
-    if (!s.enabled) continue;
+    if ((!s.enabled || s.err[0])) continue;
     switch (s.type) {
       case ST_BUMPER:
         if (s.pinA >= 0) { s.value = digitalRead(s.pinA) == HIGH ? 1 : 0; s.ok = true; s.lastMs = now; } // NC wiring: HIGH = pressed
@@ -590,7 +642,7 @@ void reflexUpdate() {
   bool newBump = false; int bumpDir = DIR_FRONT, bumpBackoffMs = 150;
   for (int i = 0; i < nSensors; i++) {
     Sensor &s = sensors[i];
-    if (!s.enabled) continue;
+    if ((!s.enabled || s.err[0])) continue;
     Dir d = dirOf(s.yawDeg);
     bool hit = false;
     if (s.role == ROLE_BUMP && s.type == ST_BUMPER) hit = s.ok && s.value == 1;
@@ -640,7 +692,7 @@ String sensorsJson() {
   JsonArray arr = doc["sensors"].to<JsonArray>();
   for (int i = 0; i < nSensors; i++) {
     Sensor &s = sensors[i];
-    if (!s.enabled || s.type == ST_LIDAR || s.type == ST_CAMERA) continue;
+    if ((!s.enabled || s.err[0]) || s.type == ST_LIDAR || s.type == ST_CAMERA) continue;
     JsonObject o = arr.add<JsonObject>();
     o["id"] = s.id; o["v"] = s.value; o["ok"] = s.ok;
   }
@@ -739,6 +791,19 @@ void handleHardware() {
   server.send(200, "application/json", hardwareJson(true));
 }
 void handleSensors() { server.send(200, "application/json", sensorsJson()); }
+
+/// GET /api/test/motor?motor=a|b&dir=1|-1&ms=400 - run one motor briefly (wiring check).
+/// Motor A = IN1 / IN2 / ENA, motor B = IN3 / IN4 / ENB. The reflexes still apply.
+void handleTestMotor() {
+  String m = server.arg("motor");
+  float d = server.arg("dir").toInt() < 0 ? -0.85f : 0.85f;
+  int ms = constrain(server.arg("ms").toInt() > 0 ? server.arg("ms").toInt() : 400, 100, 1000);
+  if (m != "a" && m != "b") { server.send(400, "application/json", "{\"error\":\"motor must be a or b\"}"); return; }
+  applyMotors(m == "a" ? d : 0, m == "b" ? d : 0);
+  cmdSrc = SRC_REFLEX;               // nothing else drives until the test ends
+  backoffUntilMs = millis() + ms;    // then the normal back-off end stops the motors
+  server.send(200, "application/json", "{\"ok\":true}");
+}
 
 // ---- What the robot keeps for its brains ----
 // Settings: robot-level brain settings (platform size, safety distances, power, mapping preferences)
@@ -939,6 +1004,7 @@ void setupNetwork() {
   server.on("/api/hardware", handleHardware);
   server.on("/api/capabilities", handleHardware);
   server.on("/api/sensors", handleSensors);
+  server.on("/api/test/motor", handleTestMotor);
   server.on("/api/brain", handleBrainApi);
   server.on("/brain", handleBrainRedirect);
   server.on("/tof/calibrate", handleTofCalibrate);

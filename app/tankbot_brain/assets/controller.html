@@ -73,6 +73,15 @@ canvas#map.aiming { cursor: crosshair; }
 .seg { display: grid; grid-template-columns: 1fr 1fr 1fr; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; }
 .seg button { border: none; background: transparent; color: var(--muted); padding: 6px 4px; border-radius: 8px; }
 .seg button.on { background: var(--card2); color: var(--text); outline: 1px solid var(--accent); }
+.pinmap { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
+.pincol { display: flex; flex-direction: column; gap: 3px; }
+.pin { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }
+.pin b { min-width: 34px; font-weight: 600; }
+.pin span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pin.used { border-color: var(--accent); } .pin.used span { color: var(--text); }
+.pin.err { border-color: var(--danger); background: rgba(242,85,90,.12); }
+.pin.warn { border-color: var(--warn); }
+.pin.na { opacity: .45; }
 .panel .grow { display: flex; flex-direction: column; gap: 10px; }
 .panel .grow > button.bigstop { width: 100%; }
 
@@ -247,6 +256,8 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
     </div>
     <div class="small">One place for the whole robot: for each sensor, what it is plugged into, what it is used for, which way it faces, and where it sits. Positions are from the platform's front and left edges (negative = sticking out ahead); heights are from the platform top (negative = below it). Saving stores the layout and sends sensor changes to the robot (it restarts once to apply them).</div>
   </div>
+  <div class="seg" id="botView" style="max-width:320px;grid-template-columns:1fr 1fr"><button data-v="sensors" class="on">Sensors</button><button data-v="wiring">Wiring</button></div>
+  <div id="botSensorsView" style="display:flex;flex-direction:column;gap:var(--gap)">
   <div class="grid2">
     <div class="card"><h3>Top view &middot; front is up &middot; drag sensors</h3><canvas id="botTop" class="botcanvas" width="460" height="460"></canvas></div>
     <div class="card"><h3>Side view from the left &middot; drag up or down for height</h3><canvas id="botSide" class="botcanvas" width="460" height="320"></canvas></div>
@@ -255,6 +266,19 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
     <h2>Sensors</h2>
     <div id="botSensors" style="display:flex;flex-direction:column;gap:8px"></div>
     <div class="row"><select id="botAddType"><option value="lidar">Lidar</option><option value="camera">Phone camera</option><option value="bumper">Bumper</option><option value="tof">ToF distance</option><option value="ultrasonic">Ultrasonic</option><option value="imu">IMU</option><option value="depth">Depth camera</option></select><button id="botAdd">Add sensor</button></div>
+  </div>
+  </div>
+  <div id="botWiringView" style="display:none;flex-direction:column;gap:var(--gap)">
+    <div class="card">
+      <h2>Wiring</h2>
+      <div class="small">How each part connects to the ESP32. <b>Default</b> is the standard TankBot wiring
+        (docs/wiring.md); choose <b>Custom</b> to pick your own pins. Pins are named as printed on the
+        expansion board. Problems in red block saving; amber is a caution. Save sends the wiring to the
+        robot (it restarts once), then use the Test buttons and live readings to check each part.</div>
+      <div id="wireSummary" class="small"></div>
+    </div>
+    <div class="card"><h3>Expansion board pins</h3><div id="wirePinMap"></div></div>
+    <div id="wireCards" style="display:flex;flex-direction:column;gap:var(--gap)"></div>
   </div>
   <div class="row"><button id="botSave" class="primary">Save to robot</button><button id="botCancel">Back to Drive (discards unsaved changes)</button><span id="botInfo" class="muted"></span></div>
 </div></div></section>
@@ -565,7 +589,7 @@ function openBot() {
   $("botMount").value = botDraft.phoneMount || "portrait";
   $("botW").value = botDraft.platform.widthMm; $("botL").value = botDraft.platform.lengthMm;
   $("botH").value = botDraft.platform.heightMm == null ? 60 : botDraft.platform.heightMm;
-  renderBotSensors(); drawBot();
+  renderBotSensors(); drawBot(); renderWiring();
 }
 
 $("botCancel").onclick = () => showPage("drive");
@@ -576,7 +600,7 @@ $("botSave").onclick = () => {
   botDraft.platform.widthMm = parseFloat($("botW").value); botDraft.platform.lengthMm = parseFloat($("botL").value);
   botDraft.platform.heightMm = parseFloat($("botH").value) || 0;
   const probs = Object.keys(botProblems());
-  if (probs.length) { $("botInfo").textContent = "Fix the problems marked in red first"; return; }
+  if (probs.length) { $("botInfo").textContent = "Fix the problems marked in red first (Sensors and Wiring)"; return; }
   send({type: "bot.set", profile: botDraft});
   $("botInfo").textContent = "Saved";
   setTimeout(() => { $("botInfo").textContent = ""; }, 2000);
@@ -619,15 +643,13 @@ $("botAdd").onclick = () => {
 };
 /// Problems that would make the robot's setup not work: two sensors on one slot, wrong slot for the type.
 function botProblems() {
-  const probs = {}, seen = {};
+  const probs = {};
   for (const x of botDraft.sensors) {
     if (x.enabled === false) continue;
     if (!SLOT_OK[x.type].includes(x.slot)) probs[x.id] = "needs one of: " + SLOT_OK[x.type].map(k => SLOT_INFO[k]).join(", ");
-    if (x.slot !== "NONE" && x.slot !== "CUSTOM") {
-      if (seen[x.slot]) { probs[x.id] = "shares " + SLOT_INFO[x.slot] + " with " + seen[x.slot].name; probs[seen[x.slot].id] = probs[seen[x.slot].id] || "shares " + SLOT_INFO[x.slot] + " with " + x.name; }
-      else seen[x.slot] = x;
-    }
   }
+  const w = wiring();
+  for (const [k, v] of Object.entries(w.errors)) probs[k] = probs[k] || v;
   return probs;
 }
 function numInput(v, min, max, w, onchange) {
@@ -649,7 +671,7 @@ function renderBotSensors() {
   };
   const rerender = () => { renderBotSensors(); drawBot(); };
   botDraft.sensors.forEach((sn, idx) => {
-    if (sn.slot == null) sn.slot = SLOT_OK[sn.type][0];
+    if (sn.slot == null) sn.slot = freeSlot(sn);
     if (sn.role == null) sn.role = (SENSOR_DEFAULTS[sn.type] || {}).role || "none";
     const card = document.createElement("div");
     card.style.cssText = "border:1px solid " + (probs[sn.id] ? "#ff5252" : "#2c3a44") + ";border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:6px";
@@ -668,8 +690,8 @@ function renderBotSensors() {
     if (sn.type === "camera" || sn.type === "depth") {
       r2.append(lab("On the phone (mounted brain): sits where the phone camera is."));
     } else {
-      r2.append(lab("connected to"), select(SLOT_OK[sn.type].map(k => [k, SLOT_INFO[k]]), sn.slot, v => { sn.slot = v; rerender(); }));
-      if (sn.slot === "CUSTOM") r2.append(lab("pin A"), numInput(sn.pinA, -1, 39, 50, v => { sn.pinA = v; }), lab("pin B"), numInput(sn.pinB, -1, 39, 50, v => { sn.pinB = v; }));
+      const wb = document.createElement("button"); wb.textContent = "Wiring..."; wb.onclick = () => setBotView("wiring");
+      r2.append(lab("wired: " + wiringText(sn)), wb);
       r2.append(lab("used for"), select(ROLE_OK[sn.type].map(k => [k, ROLE_LABEL[k]]), sn.role, v => {
         sn.role = v; if (v === "cliff") sn.floorTilt = true; else if (v === "obstacle") sn.floorTilt = false; rerender(); }));
       const facings = [[0, "front"], [90, "left"], [180, "back"], [-90, "right"]];
@@ -711,7 +733,249 @@ function updateBotLive() {
     const x = live.find(y => y.id === sn.id);
     el.textContent = x ? "live: " + liveText(sn.type, x) : (sn.enabled === false ? "" : "not reporting yet");
   }
+  for (const sn of botDraft.sensors) {
+    const el = $("wireLive_" + sn.id); if (!el) continue;
+    if (sn.type === "lidar") { el.textContent = telem.stats && telem.stats.scanRate > 1 ? "streaming: wired right" : "no data"; continue; }
+    const x = live.find(y => y.id === sn.id);
+    el.textContent = x ? "now: " + liveText(sn.type, x) : (sn.enabled === false ? "not attached" : "not reporting");
+  }
 }
+// ================= wiring =================
+// The ESP32 pin rule-book (WROOM DevKit). 1 and 3 are the USB serial port, 6-11 the flash chip.
+const PIN_USABLE = [0, 2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33, 34, 35, 36, 39];
+const INPUT_ONLY = new Set([34, 35, 36, 39]);
+const BOOT_PINS = {0: "boot pin: must not be held low at power-on", 2: "boot pin: must not be held high at power-on",
+  5: "boot pin: avoid parts that pull it low at power-on", 12: "sets the flash voltage at boot: anything pulling it high stops the ESP32 starting",
+  15: "boot pin: avoid parts that pull it low at power-on"};
+const pinLabel = p => ({36: "SVP", 39: "SVN"}[p] || "P" + p);
+const DEFAULT_PINS = {in1: 16, in2: 17, in3: 18, in4: 19, ena: 25, enb: 26, lidarRx: 4, lidarTx: 27};
+const MOTOR_KEYS = [["in1", "IN1"], ["in2", "IN2"], ["ena", "ENA"], ["in3", "IN3"], ["in4", "IN4"], ["enb", "ENB"]];
+const SLOT_PINS = {BUMP1: [13], BUMP2: [23], TOF: [32, 33], US1: [14, 34], US2: [2, 35], I2C: [21, 22]};
+const PIN_ROLES = {
+  bumper: [["signal", "in"]],
+  ultrasonic: [["TRIG", "out"], ["ECHO", "in"]],
+  tof: [["T (ToF sends)", "in"], ["R (ToF receives)", "out"]],
+  imu: [["SDA", "io"], ["SCL", "io"]],
+};
+const WIRE_HINT = {
+  bumper: "Test: press the bumper - the reading changes to pressed.",
+  ultrasonic: "Test: hold a hand about 20 cm in front - the reading drops to about 200 mm. Power: 3.3 V on this board keeps the echo safe.",
+  tof: "Test: hold a hand in front of it - the distance changes. Power: 5 V (4.3-5.2 V); 3.3 V logic.",
+  imu: "Test: tilt the robot - the reading changes. Shares the I2C bus (SDA/SCL) with other I2C parts.",
+};
+// the expansion board's two inner header columns, top to bottom, as printed
+const BOARD_LEFT = ["CLK", "SD0", "SD1", 15, 2, 0, 4, 16, 17, 5, 18, 19, "GND", 21, "RX", "TX", 22, 23, "GND"];
+const BOARD_RIGHT = ["5V", "CMD", "SD3", "SD2", 13, "GND", 12, 14, 27, 26, 25, 33, 32, 35, 34, 39, 36, "EN", "3V3"];
+
+function boardPins() { return Object.assign({}, DEFAULT_PINS, botDraft.pins || {}); }
+function sensorPins(x) {
+  const n = (PIN_ROLES[x.type] || []).length;
+  if (x.slot === "CUSTOM") return [x.pinA, x.pinB].slice(0, n);
+  return (SLOT_PINS[x.slot] || []).slice(0, n);
+}
+function wiringText(x) {
+  if (!PIN_ROLES[x.type]) return x.type === "lidar" ? "lidar serial (Wiring)" : "on the phone";
+  const pins = sensorPins(x);
+  const parts = PIN_ROLES[x.type].map(([r], k) => r.split(" ")[0] + " " + (pins[k] >= 0 ? pinLabel(pins[k]) : "?"));
+  return (x.slot === "CUSTOM" ? "custom: " : "default: ") + parts.join(", ");
+}
+// a new sensor gets the first default wiring nobody else uses, else custom
+function freeSlot(sn) {
+  const taken = new Set(botDraft.sensors.filter(x => x !== sn && x.enabled !== false).map(x => x.slot));
+  return SLOT_OK[sn.type].find(k => k !== "CUSTOM" && !taken.has(k)) || (SLOT_OK[sn.type].includes("CUSTOM") ? "CUSTOM" : SLOT_OK[sn.type][0]);
+}
+
+/// Every pin claim checked against the rule-book and each other: errors block saving, warnings caution.
+function wiring() {
+  const errors = {}, warns = {}, used = {};
+  const P = boardPins();
+  const claim = (pin, who, key, role, out, shareable) => {
+    (used[pin] = used[pin] || []).push({who, key, role, shareable});
+    if (!PIN_USABLE.includes(pin)) {
+      errors[key] = errors[key] || (pinLabel(pin) + " can't be used (" + (pin === 1 || pin === 3 ? "USB serial" : pin >= 6 && pin <= 11 ? "flash memory" : "no such pin") + ")");
+    } else if (out && INPUT_ONLY.has(pin)) {
+      errors[key] = errors[key] || (pinLabel(pin) + " is input-only, so it can't be " + role);
+    } else if (BOOT_PINS[pin]) {
+      warns[key] = warns[key] || (pinLabel(pin) + ": " + BOOT_PINS[pin]);
+    }
+  };
+  for (const [k, n] of MOTOR_KEYS) claim(P[k], "Motor driver", "motor", n, true, false);
+  claim(P.lidarRx, "Lidar", "lidar", "RX", false, false);
+  claim(P.lidarTx, "Lidar", "lidar", "TX", true, false);
+  let tofs = 0;
+  for (const x of botDraft.sensors) {
+    if (x.enabled === false || !PIN_ROLES[x.type]) continue;
+    if (x.type === "tof" && ++tofs > 1) errors[x.id] = "the ESP32 has only one serial port free for a ToF";
+    const pins = sensorPins(x);
+    PIN_ROLES[x.type].forEach(([role, dir], k) => {
+      if (pins[k] == null || pins[k] < 0 || isNaN(pins[k])) { errors[x.id] = errors[x.id] || "choose a pin for " + role; return; }
+      claim(pins[k], x.name, x.id, role, dir === "out", x.type === "imu");
+    });
+  }
+  for (const [pin, list] of Object.entries(used)) {
+    if (list.length < 2 || list.every(u => u.shareable)) continue;
+    for (const u of list) {
+      const others = list.filter(o => o !== u).map(o => o.who === u.who ? "its own " + o.role : o.who + " (" + o.role + ")");
+      errors[u.key] = errors[u.key] || pinLabel(+pin) + " is also used by " + [...new Set(others)].join(" and ");
+    }
+  }
+  return {errors, warns, used, P};
+}
+
+let botView = "sensors";
+function setBotView(v) {
+  botView = v;
+  $("botSensorsView").style.display = v === "sensors" ? "flex" : "none";
+  $("botWiringView").style.display = v === "wiring" ? "flex" : "none";
+  document.querySelectorAll("#botView button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+  if (v === "wiring") renderWiring(); else renderBotSensors();
+}
+document.querySelectorAll("#botView button").forEach(b => b.onclick = () => setBotView(b.dataset.v));
+
+function renderWiring() {
+  if (!botDraft || botView !== "wiring") return;
+  const w = wiring();
+  const el = (tag, txt, css) => { const e = document.createElement(tag); if (txt != null) e.textContent = txt; if (css) e.style.cssText = css; return e; };
+  const pinSelect = (cur, dir, onchange) => {
+    const sel = document.createElement("select");
+    const opts = PIN_USABLE.filter(p => dir !== "out" || !INPUT_ONLY.has(p));
+    if (!opts.includes(cur)) { const o = document.createElement("option"); o.value = cur; o.textContent = cur >= 0 ? pinLabel(cur) + " (not usable)" : "choose"; o.selected = true; sel.append(o); }
+    for (const p of opts) { const o = document.createElement("option"); o.value = p; o.textContent = pinLabel(p) + (INPUT_ONLY.has(p) ? " (input)" : "") + (BOOT_PINS[p] ? " (boot pin)" : ""); if (p === cur) o.selected = true; sel.append(o); }
+    sel.onchange = () => { onchange(parseInt(sel.value)); renderWiring(); };
+    return sel;
+  };
+  const issues = (card, key) => {
+    if (w.errors[key]) card.append(el("div", "Problem: " + w.errors[key], "color:var(--danger)"));
+    if (w.warns[key]) card.append(el("div", "Caution: " + w.warns[key], "color:var(--warn)"));
+  };
+  const modeSelect = (opts, cur, onchange) => {
+    const sel = document.createElement("select");
+    for (const [v, t] of opts) { const o = document.createElement("option"); o.value = v; o.textContent = t; if (v === cur) o.selected = true; sel.append(o); }
+    sel.onchange = () => { onchange(sel.value); renderWiring(); renderBotSensors(); };
+    return sel;
+  };
+
+  // summary + pin budget
+  const free = PIN_USABLE.filter(p => !w.used[p]).length;
+  const nErr = Object.keys(w.errors).length, nWarn = Object.keys(w.warns).length;
+  $("wireSummary").textContent = (PIN_USABLE.length - free) + " of " + PIN_USABLE.length + " usable pins in use, " + free + " free. " +
+    (nErr ? nErr + " problem" + (nErr > 1 ? "s" : "") + " to fix before saving." : "No problems.") + (nWarn ? " " + nWarn + " caution" + (nWarn > 1 ? "s" : "") + "." : "");
+  $("wireSummary").style.color = nErr ? "var(--danger)" : "";
+
+  // the board, as printed
+  const map = $("wirePinMap"); map.textContent = "";
+  const grid = el("div"); grid.className = "pinmap";
+  for (const col of [BOARD_LEFT, BOARD_RIGHT]) {
+    const c = el("div"); c.className = "pincol";
+    for (const p of col) {
+      const d = el("div"); d.className = "pin";
+      if (typeof p === "number") {
+        const u = w.used[p] || [];
+        const bad = u.some(x => w.errors[x.key] && (w.errors[x.key].startsWith(pinLabel(p)) || u.length > 1 && !u.every(y => y.shareable)));
+        d.className += u.length ? (bad ? " used err" : BOOT_PINS[p] ? " used warn" : " used") : "";
+        d.append(el("b", pinLabel(p)), el("span", u.length ? u.map(x => x.who + " " + x.role).join(", ") : (INPUT_ONLY.has(p) ? "free (input only)" : "free")));
+      } else {
+        d.className += " na";
+        d.append(el("b", p), el("span", ["CLK", "SD0", "SD1", "SD2", "SD3", "CMD"].includes(p) ? "flash: don't use" : ["RX", "TX"].includes(p) ? "USB serial: don't use" : p === "EN" ? "reset" : "power"));
+      }
+      c.append(d);
+    }
+    grid.append(c);
+  }
+  map.append(grid);
+
+  const box = $("wireCards"); box.textContent = "";
+  const card = (title, sub) => {
+    const c = el("div"); c.className = "card";
+    const h = el("div"); h.className = "row"; h.append(el("b", title)); if (sub) h.append(el("span", sub, "color:var(--muted)"));
+    c.append(h); return c;
+  };
+  const P = w.P;
+  const isDefault = keys => keys.every(k => P[k] === DEFAULT_PINS[k]);
+
+  // motor driver
+  {
+    const keys = MOTOR_KEYS.map(k => k[0]);
+    const c = card("Motor driver (L298N)", "A = IN1 / IN2 / ENA (left track), B = IN3 / IN4 / ENB (right track)");
+    const r = el("div"); r.className = "row";
+    r.append(modeSelect([["default", "Default: IN1 P16, IN2 P17, ENA P25, IN3 P18, IN4 P19, ENB P26"], ["custom", "Custom pins"]],
+      isDefault(keys) && !botDraft._motorCustom ? "default" : "custom",
+      v => { if (v === "default") { botDraft.pins = Object.assign({}, botDraft.pins || {}); keys.forEach(k => botDraft.pins[k] = DEFAULT_PINS[k]); botDraft._motorCustom = false; } else botDraft._motorCustom = true; }));
+    c.append(r);
+    if (!isDefault(keys) || botDraft._motorCustom) {
+      const rr = el("div"); rr.className = "row";
+      for (const [k, n] of MOTOR_KEYS) rr.append(el("span", n, "color:var(--muted)"), pinSelect(P[k], "out", v => { botDraft.pins = Object.assign({}, botDraft.pins || {}); botDraft.pins[k] = v; }));
+      c.append(rr);
+    }
+    const t = el("div"); t.className = "row";
+    t.append(el("span", "Test (half a second, give it room):", "color:var(--muted)"));
+    for (const [m, d, txt] of [["a", 1, "A forward"], ["a", -1, "A back"], ["b", 1, "B forward"], ["b", -1, "B back"]]) {
+      const b = el("button", txt); b.onclick = () => send({type: "wiring.testMotor", motor: m, dir: d}); t.append(b);
+    }
+    c.append(t);
+    const fix = el("div"); fix.className = "row";
+    fix.append(el("span", "A forward should drive the left track forward. Wrong track:", "color:var(--muted)"));
+    const sw = el("button", "Swap A and B"); sw.onclick = () => { botDraft.pins = Object.assign({}, P); [["in1", "in3"], ["in2", "in4"], ["ena", "enb"]].forEach(([a, b]) => { const t2 = botDraft.pins[a]; botDraft.pins[a] = botDraft.pins[b]; botDraft.pins[b] = t2; }); botDraft._motorCustom = true; renderWiring(); };
+    fix.append(sw, el("span", "Wrong direction:", "color:var(--muted)"));
+    const ra = el("button", "Reverse A"); ra.onclick = () => { botDraft.pins = Object.assign({}, P); [botDraft.pins.in1, botDraft.pins.in2] = [P.in2, P.in1]; botDraft._motorCustom = true; renderWiring(); };
+    const rb = el("button", "Reverse B"); rb.onclick = () => { botDraft.pins = Object.assign({}, P); [botDraft.pins.in3, botDraft.pins.in4] = [P.in4, P.in3]; botDraft._motorCustom = true; renderWiring(); };
+    fix.append(ra, rb, el("span", "(then Save and test again)", "color:var(--muted)"));
+    c.append(fix);
+    issues(c, "motor");
+    box.append(c);
+  }
+
+  // lidar
+  {
+    const keys = ["lidarRx", "lidarTx"];
+    const c = card("Lidar (serial)", "lidar TX -> ESP32 RX, lidar RX <- ESP32 TX; 5 V power");
+    const r = el("div"); r.className = "row";
+    r.append(modeSelect([["default", "Default: RX P4, TX P27"], ["custom", "Custom pins"]], isDefault(keys) && !botDraft._lidarCustom ? "default" : "custom",
+      v => { if (v === "default") { botDraft.pins = Object.assign({}, botDraft.pins || {}); keys.forEach(k => botDraft.pins[k] = DEFAULT_PINS[k]); botDraft._lidarCustom = false; } else botDraft._lidarCustom = true; }));
+    const lid = botDraft.sensors.find(x => x.type === "lidar");
+    if (lid) { const lv = el("span", "", "color:var(--accent)"); lv.id = "wireLive_" + lid.id; r.append(lv); }
+    c.append(r);
+    if (!isDefault(keys) || botDraft._lidarCustom) {
+      const rr = el("div"); rr.className = "row";
+      rr.append(el("span", "RX (from lidar TX)", "color:var(--muted)"), pinSelect(P.lidarRx, "in", v => { botDraft.pins = Object.assign({}, botDraft.pins || {}); botDraft.pins.lidarRx = v; }),
+        el("span", "TX (to lidar RX)", "color:var(--muted)"), pinSelect(P.lidarTx, "out", v => { botDraft.pins = Object.assign({}, botDraft.pins || {}); botDraft.pins.lidarTx = v; }));
+      c.append(rr);
+    }
+    issues(c, "lidar");
+    box.append(c);
+  }
+
+  // each sensor
+  const rc = telem && telem.robot && telem.robot.caps;
+  for (const x of botDraft.sensors) {
+    if (!PIN_ROLES[x.type]) continue;
+    const c = card(x.name, SENSOR_LABEL[x.type] + (x.enabled === false ? " - not attached" : ""));
+    const r = el("div"); r.className = "row";
+    const defaults = SLOT_OK[x.type].filter(k => SLOT_PINS[k]).map(k => [k, "Default: " + SLOT_INFO[k].replace(/ \(.*\)/, "") + " (" +
+      PIN_ROLES[x.type].map(([role], i) => role.split(" ")[0] + " " + pinLabel(SLOT_PINS[k][i])).join(", ") + ")"]);
+    const opts = defaults.concat(SLOT_OK[x.type].includes("CUSTOM") ? [["CUSTOM", "Custom pins"]] : []);
+    r.append(modeSelect(opts, x.slot, v => {
+      if (v === "CUSTOM") { const cur = sensorPins(x); x.pinA = cur[0] == null ? -1 : cur[0]; x.pinB = cur[1] == null ? -1 : cur[1]; }
+      x.slot = v;
+    }));
+    const live = el("span", "", "color:var(--accent)"); live.id = "wireLive_" + x.id; r.append(live);
+    c.append(r);
+    if (x.slot === "CUSTOM") {
+      const rr = el("div"); rr.className = "row";
+      PIN_ROLES[x.type].forEach(([role, dir], i) => {
+        rr.append(el("span", role, "color:var(--muted)"), pinSelect(i === 0 ? x.pinA : x.pinB, dir, v => { if (i === 0) x.pinA = v; else x.pinB = v; renderBotSensors(); }));
+      });
+      c.append(rr);
+    }
+    c.append(el("div", WIRE_HINT[x.type] || "", "color:var(--muted);font-size:12px"));
+    const rs = rc && Array.isArray(rc.sensors) ? rc.sensors.find(y => y.id === x.id) : null;
+    if (rs && rs.error) c.append(el("div", "The robot didn't start it: " + rs.error, "color:var(--danger)"));
+    issues(c, x.id);
+    box.append(c);
+  }
+  updateBotLive();
+}
+
 function botTopScale() {
   const cv2 = $("botTop"), W = botDraft.platform.widthMm, L = botDraft.platform.lengthMm;
   const sc = (cv2.width - 70) / Math.max(W, L);

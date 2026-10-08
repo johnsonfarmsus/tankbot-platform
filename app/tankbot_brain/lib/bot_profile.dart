@@ -144,6 +144,8 @@ class BotProfile {
   String trackingMode;
   /// When the robot-level settings last changed (ms since 1970): the newer copy wins between brain and robot.
   int settingsUpdated;
+  /// Motor driver and lidar wiring (in1..in4, ena, enb, lidarRx, lidarTx); null = the robot's own.
+  Map<String, int>? pins;
   /// The one-time carry-over of pre-hardware-table placements onto the robot's table has happened
   /// (true for built-in defaults: they are not measurements and must never overwrite the robot).
   bool hardwareMigrated;
@@ -172,6 +174,7 @@ class BotProfile {
     this.mappingMode = 'maintain',
     this.trackingMode = 'auto',
     this.settingsUpdated = 0,
+    this.pins,
     this.phoneMount = 'portrait',
     this.gpsMaxAccM = 5,
     this.depthStopMm = 100,
@@ -320,6 +323,7 @@ class BotProfile {
         'hardwareDirty': hardwareDirty,
         'hardwareMigrated': hardwareMigrated,
         'settingsUpdated': settingsUpdated,
+        if (pins != null) 'pins': pins,
         'mapping': {'wallAlign': wallAlign, 'gpsMaxAccM': gpsMaxAccM, 'mode': mappingMode, 'tracking': trackingMode},
       };
 
@@ -370,6 +374,9 @@ class BotProfile {
       // profiles saved before this flag existed may still hold measured placements to carry over
       hardwareMigrated: j['hardwareMigrated'] == true,
       settingsUpdated: (j['settingsUpdated'] as num?)?.toInt() ?? 0,
+      pins: j['pins'] is Map
+          ? {for (final e in (j['pins'] as Map).entries) if (e.value is num) e.key.toString(): (e.value as num).toInt()}
+          : null,
       wallAlign: !(j['mapping'] is Map && (j['mapping'] as Map)['wallAlign'] == false),
       mappingMode: j['mapping'] is Map && ['explore', 'maintain', 'off'].contains((j['mapping'] as Map)['mode'])
           ? (j['mapping'] as Map)['mode'] as String

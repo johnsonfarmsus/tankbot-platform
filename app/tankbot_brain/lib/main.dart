@@ -475,6 +475,18 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       case 'bot.get':
         server.broadcast({'type': 'bot', 'profile': profile.toJson()});
         break;
+      case 'wiring.testMotor': // wiring check: run one motor briefly
+        final mot = m['motor'] == 'b' ? 'b' : 'a';
+        final dir = (m['dir'] as num?)?.toInt() == -1 ? -1 : 1;
+        if (navActive) _navCancel('Stopped: motor test');
+        _stopExplore('Exploration stopped: motor test');
+        _robotHttp('GET', '/api/test/motor?motor=$mot&dir=$dir&ms=500', '').then((r) {
+          final (code, text) = r;
+          _flash(code == 200
+              ? 'Motor ${mot.toUpperCase()} ${dir > 0 ? 'forward' : 'backward'} for half a second'
+              : "Couldn't run the motor test: ${code == 0 ? text : 'HTTP $code $text'}");
+        });
+        break;
       case 'bot.set':
         final np = BotProfile.fromJson(m['profile']);
         if (np != null) {
@@ -1366,6 +1378,12 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   void _mergeRobotHardware() {
     if (!_profileReady) return; // never merge into the built-in default while the saved profile loads
     final caps = sensors.caps;
+    if (caps != null && caps['pins'] is Map && !profile.hardwareDirty) {
+      profile.pins = {
+        for (final e in (caps['pins'] as Map).entries)
+          if (e.value is num) e.key.toString(): (e.value as num).toInt()
+      };
+    }
     final list = caps?['sensors'];
     if (list is! List) return; // older firmware: nothing to merge
     final key = jsonEncode(list);
@@ -1436,14 +1454,17 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
       for (final h in caps['sensors'] as List)
         if (h is Map) BotSensor.fromHardware(h)?.toHardware()
     ].whereType<Map<String, dynamic>>().toList();
-    if (jsonEncode(mine) == jsonEncode(theirs)) {
+    final theirPins = caps['pins'] is Map ? Map<String, dynamic>.from(caps['pins'] as Map) : <String, dynamic>{};
+    final myPins = <String, dynamic>{...theirPins, ...?profile.pins};
+    final pinsSame = myPins.entries.every((e) => theirPins[e.key] == e.value);
+    if (jsonEncode(mine) == jsonEncode(theirs) && pinsSame) {
       if (profile.hardwareDirty) {
         profile.hardwareDirty = false; // the robot has it
         BotProfileStore.save(profile, store.robot);
       }
       return;
     }
-    final body = jsonEncode({'name': caps['name'], 'drive': profile.drive, 'pins': caps['pins'], 'sensors': mine});
+    final body = jsonEncode({'name': caps['name'], 'drive': profile.drive, 'pins': myPins, 'sensors': mine});
     final (code, text) = await _robotHttp('POST', '/api/hardware', body);
     if (code == 200) {
       profile.hardwareDirty = false;
