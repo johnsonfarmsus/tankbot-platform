@@ -10,13 +10,11 @@ sources. It is not updated as often as Printables.
 
 **In the pack:** base plate, lidar tower and lidar base, phone base and phone clamp, bumper and bumper
 switch mount, two-part ultrasonic mount, battery clamp, charger clamp (with and without a switch),
-2-wire connector, wire management, and the 6x3x3 spacer.
+2-wire connector, wire management, and spacers (they sit between an electronics board and the base,
+with the screw passing through both, to lift the board off).
 
 **One screw for everything:** every printed part, board and module mounts with **M3 x 6 mm socket head
 cap screws**.
-
-**Spacer 6x3x3:** lifts an electronics board off the tank base. It sits between the board and the base,
-and the M3 screw passes through the board, then the spacer, into the base.
 
 The base robot (chassis, motors, original mounting parts) comes from the original
 [TankBot ESP32](https://github.com/johnsonfarmsus/tank-bot-esp32) project and its

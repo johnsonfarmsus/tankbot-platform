@@ -83,7 +83,6 @@ shows what the next part would unlock.
 |---|---|---|---|
 | **M3 x 6 mm socket head cap screws** | a pack (a full build uses under 50) | everything | the only fastener: every printed part, board and module mounts with these |
 | [**3D-printed parts**](https://www.printables.com/model/1869360-tankbot) | 1 set | tower, mounts, clamps, bumper | on Printables |
-| **Spacer 6x3x3** (printed) | as needed | electronics boards | lifts a board off the base: the screw goes through the board, then the spacer, into the base. Print as many as your boards need |
 
 **Recommended upgrade:** a **12 V to 5 V buck converter** (2 A or more) for the 5 V rail. The expansion
 board's onboard 5 V is a small linear regulator that runs hot feeding the lidar and the ESP32 from a 12 V
@@ -96,8 +95,8 @@ though the battery above is better kept for driving.
    lidar tower and base, phone base and clamp, bumper and switch mount, two-part ultrasonic mount, battery
    and charger clamps, a 2-wire connector, wire management, spacers). If Printables is ever unavailable,
    a backup zip of the model files is in [`hardware/`](hardware).
-2. **Assemble** the chassis and mount the printed parts, the boards (on spacers) and the sensors, all with
-   M3 x 6 mm screws.
+2. **Assemble** the chassis and mount the printed parts, the boards and the sensors, all with M3 x 6 mm
+   screws. The printed spacers sit between each board and the base to lift it off.
 3. **Wire it** following [docs/wiring.md](docs/wiring.md): battery through the rocker switch to the
    expansion board and the L298N, then the motors, lidar, ultrasonic and bumper with Dupont wires.
 4. **Flash and set it up** following *Setting up a robot* below.
