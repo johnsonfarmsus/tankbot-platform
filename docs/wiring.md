@@ -1,7 +1,7 @@
 # Standard wiring (ESP32 DevKit, 38-pin)
 
-The default pin map baked into the firmware. Change it on the robot's setup page
-(`http://tankbot.local/setup`) if your build differs.
+The default pin map baked into the firmware. If your build differs, change it in the controller's
+**Bot > Wiring** view (see *The Wiring view* below).
 
 | Function | ESP32 pin | Notes |
 |---|---|---|
@@ -43,3 +43,35 @@ ESP32.
 - `http://tankbot.local/api/capabilities` : what is attached and how it is wired (JSON)
 - `http://tankbot.local/api/sensors` : live readings (JSON)
 - UDP 5603: send `TSSUB` (repeat every few seconds); receive `TCAP1`+JSON once, then `TSN1`+JSON at 20 Hz
+
+## Defaults for more sensors
+
+Each sensor type has default pins, given in order as you add sensors on the Bot page:
+
+| Sensor | 1st | 2nd |
+|---|---|---|
+| Bumper | P13 | P23 |
+| Ultrasonic | TRIG P14, ECHO P34 | TRIG P2, ECHO P35 (P2 is a boot pin: fine for a trigger) |
+| ToF (serial) | T P32, R P33 | (one serial port: one ToF) |
+| I2C (IMU) | SDA P21, SCL P22 (shared by all I2C parts) | |
+
+Beyond these, choose **Custom** pins.
+
+## The Wiring view
+
+Controller > **Bot** > **Wiring**: how every part connects to the ESP32.
+
+- **Pin map:** the expansion board's two header columns as printed, each used pin labelled with
+  what's on it; flash, USB-serial and power pins greyed out; conflicts red, boot pins amber.
+- **Pin budget:** how many of the 24 usable pins are in use.
+- **Default or Custom** for the motor driver, the lidar and each sensor. Custom pickers only offer pins
+  that can do the job (34, 35, 36 and 39 are inputs only).
+- **Checks** before saving: two parts on one pin, an output on an input-only pin, flash or USB-serial
+  pins, more than one ToF, a pin left unchosen. Boot pins (0, 2, 5, 12, 15) get a caution.
+- **The robot checks too:** at startup it refuses to start a sensor whose wiring can't work, and the
+  view shows why ("The robot didn't start it: pin 34 is input-only"). Everything else keeps running.
+- **Tests:** motor A / B forward and back for half a second (A forward should drive the left track
+  forward; **Swap A and B** and **Reverse A / B** fix it if not), and live readings for each sensor
+  (press the bumper, wave a hand in front of the ultrasonic).
+
+Save sends the wiring to the robot, which restarts once to apply it.

@@ -66,8 +66,25 @@ Each lidar scan is matched against the map around the predicted pose (camera, or
   a camera that reports motion while the motors are idle is distrusted for 30 s (lidar only). Settings
   can force lidar only.
 - **Spins:** scans taken while turning faster than 60 deg/s are not matched or drawn (they are smeared).
+- **Lidar only** (by choice, or while the camera is benched): turning between scans comes from the
+  phone's raw gyro (CoreMotion, independent of the camera, direction checked against the lidar), and
+  the robot carries on at its recent speed through missed scans instead of freezing.
+- **A broken camera is benched:** 3+ impossible jumps within 5 s, or motion reported while the motors
+  are idle, switch to lidar only for a while and restart ARKit; autofocus is locked; ARKit's
+  tracking-state reason and visual-feature count are logged.
+- **Set position** fine-tunes within 50 cm / 25 deg, and searches every heading around the pressed
+  spot when the dragged direction doesn't fit.
 - **Relocalisation:** quick checks (last pose, home spot), then a whole-map search; while self-driving
   only near the current pose (never a jump across the map).
+
+## Wiring
+
+The robot's hardware table holds each sensor's pins (a default slot or custom pins) and the motor
+driver and lidar pins; the brain carries them in the profile. The controller's Bot > Wiring view edits
+them against a pin rule-book (usable, input-only, boot, flash and USB-serial pins) and blocks saving
+on conflicts; the firmware runs the same checks at startup and doesn't start a sensor whose wiring
+can't work (reporting why). `tools/wiring_check_test.js` runs the controller's checker against known
+scenarios.
 
 ## Mapping
 

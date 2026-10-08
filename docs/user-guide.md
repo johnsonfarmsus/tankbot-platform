@@ -10,7 +10,10 @@ How to drive, map and explore with a TankBot-platform robot and a phone brain.
 | `http://tankbot.local/brain` | **bookmark this.** Takes you to the brain's full controls wherever the brain is |
 | the app, Controller role | the same full controls on a phone |
 
-The robot's page shows **Open full controls** whenever a brain is running.
+The robot's page shows **Open full controls** whenever a brain is running. Its **gear** panel (where
+the steering trim is) shows how to reach the robot right now: its address, name, Wi-Fi and signal,
+the brain's address and the firmware version, looked up live each time it opens. Handy when
+`tankbot.local` doesn't work on a device, or after the router hands out new addresses.
 
 When the app opens it asks what this device is doing today (Mounted brain, Brain in hand,
 Controller), with last time's choice highlighted. It checks the robot first: if another device is
@@ -91,13 +94,21 @@ The robot's size, drive type, how the phone is mounted (upright or on its side) 
 what it is plugged into, what it's used for, which way it faces, where it sits, its live reading.
 Drag sensors in the top and side views. **Save to robot** sends sensor changes to the robot.
 
+The **Wiring** switch at the top of the Bot page shows how each part connects to the ESP32: a map of
+the expansion board's pins, Default or Custom pins for the motor driver, the lidar and every sensor
+(only pins that can do the job are offered), checks that block saving a wiring that can't work, and
+Test buttons (run each motor briefly, watch each sensor's live reading). Details in
+[wiring.md](wiring.md).
+
 ### Settings
 
 Changes save as soon as you leave a field (a "Saved" note confirms it).
 
 - **Driving**: steering trim, minimum power to move, cruise power.
 - **Safety**: obstacle stop, stop and pass distances, depth camera stop distance and height.
-- **Position tracking**: camera + lidar (lidar alone when the camera drifts) or lidar only.
+- **Position tracking**: camera + lidar (lidar alone when the camera drifts or jumps) or lidar only.
+  Lidar only uses the phone's gyro for turning and the lidar for everything else; it's the steadier
+  choice on phones without a depth sensor or when the camera struggles.
 - **Map straightening**: wall alignment; use GPS when better than N metres (outdoors).
 - **Robot / This brain**: what is attached and what the phone can do.
 - **Sensor log**: record GPS, compass and position for testing.
@@ -127,3 +138,6 @@ straightening, stay on the brain.
 | the robot keeps stopping in front of something | it backs up and goes around by itself; after 4 tries it gives up on that spot |
 | it drives but doesn't move (caught on something low) | detected after ~2 s: marked and backed away from automatically |
 | it can't find the brain | open `tankbot.local/brain`; on the brain phone check Wi-Fi and Settings > Privacy > Local Network |
+| you need the robot's address | `tankbot.local`, gear icon: the address is at the bottom |
+| a sensor never reports, or "The robot didn't start it" | Bot > Wiring: the card says what's wrong with its pins |
+| a track runs the wrong way or the wrong track moves | Bot > Wiring > Motor driver: Test, then Swap A and B or Reverse A / B |

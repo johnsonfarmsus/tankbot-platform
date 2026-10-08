@@ -170,8 +170,9 @@ The controller's Settings page shows the current tier and what would unlock the 
    arrow keys / W A S D on a computer) (away from home the robot
    broadcasts its own `TankBot` network instead). Speed levels and steering trim live here too.
 4. **Tell it what's attached.** Once a brain is running (below), the **Bot** page describes the whole
-   robot: its size and drive type, and each sensor's connection, role, facing and position. Save sends
-   it to the robot, which keeps it. `http://tankbot.local/setup` covers Wi-Fi, name and pins. A ToF aimed
+   robot: its size and drive type, and each sensor's role, facing and position; its **Wiring** view
+   sets and checks the pins (defaults match docs/wiring.md) with test buttons. Save sends it to the
+   robot, which keeps it. `http://tankbot.local/setup` covers Wi-Fi, name and pins. A ToF aimed
    at the floor? Press Calibrate on its card once.
 
 ## Adding a brain

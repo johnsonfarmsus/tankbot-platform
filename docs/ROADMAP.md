@@ -56,6 +56,11 @@ that a newcomer can follow.
   wide lidar re-search, no relocalisation jumps while self-driving, no lidar corrections from scans
   smeared by fast spins, Settings choice of camera + lidar or lidar only.
 - **Diagnostics.** Trip recorder, position events log, sensor/GPS/compass log, analysis tools.
+- **Wiring tools.** Bot > Wiring: pin map, default or custom pins, checks in the controller and the
+  firmware, motor tests and live readings. The robot page shows how to reach the robot.
+- **Lidar + gyro tracking** for phones whose camera struggles; a broken camera is benched
+  automatically; Set position searches every heading.
+- **The app** asks for its role on every launch and keeps one brain per robot.
 - **Interchangeable brains.** The robot keeps its robot-level settings (newer side wins) and a compact
   copy of the most recent map (~40 KB for a whole house); a new brain picks both up on connect.
 

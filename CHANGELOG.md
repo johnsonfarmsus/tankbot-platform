@@ -11,6 +11,19 @@
 - The app asks for its role on every launch (last choice highlighted), checks whether the robot
   already has a brain and suggests Controller; a running brain that sees a second brain warns and
   won't self-drive.
+- **Wiring view** (Bot > Wiring): the expansion board's pin map, a pin budget, Default or Custom pins
+  for the motor driver, lidar and each sensor, checks that block impossible wiring, motor tests,
+  swap / reverse helpers and live readings. Firmware 3.1 validates the wiring at startup (miswired
+  sensors aren't started and say why) and adds `/api/test/motor`.
+- The robot page's gear panel shows the robot's address, name, Wi-Fi and signal, brain and firmware
+  (`/api/info`).
+- **Lidar + gyro tracking:** in lidar-only mode turning comes from the phone's raw gyro; no freezing
+  on missed scans; a camera making impossible jumps is benched for a minute and ARKit restarted;
+  autofocus locked; Set position searches every heading.
+- The app is called **TankBot**; the README has media, a parts list and build steps; the model files
+  are a backup zip next to the Printables link.
+- Security: hotspot password in `secrets.h`, a pre-commit secret check, `SECURITY.md`; history
+  cleaned of an upload log and an old key before going public.
 
 ## v0.3 (2026-10-06)
 

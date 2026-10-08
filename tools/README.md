@@ -12,3 +12,6 @@ for how to pull logs off the brain phone.
 | `nopath_check.py` | rebuilds what the planner sees from the live map and shows what boxes the robot in |
 | `cdp_check.py URL [seconds] [js]` | loads the controller in headless Chrome, reports state and errors, optionally evaluates JS |
 | `lidar_client.py` | minimal lidar client with a live plot (reference implementation of the protocol) |
+| `wiring_check_test.js CONTROLLER_HTML` | runs the controller's wiring checker against 10 known scenarios (node) |
+| `check_secrets.py` | the pre-commit secret check (enable with `git config core.hooksPath .githooks`) |
+| `make_icon.py [artwork] [fill]` | regenerates the app icon at every iOS and Android size from one image |

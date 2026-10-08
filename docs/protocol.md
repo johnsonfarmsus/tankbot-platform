@@ -1,6 +1,6 @@
 # TankBot Platform protocol
 
-Last updated: 2026-10-06 (firmware v3, brain v0.3).
+Last updated: 2026-10-07 (firmware v3.1).
 
 All messages are UDP. Multi-byte numbers are little-endian. Devices advertise themselves with mDNS/Bonjour so clients never need hardcoded IP addresses.
 
@@ -106,8 +106,10 @@ address for 10 s and uses it for `/api/brain` and the `/brain` redirect.
 |---|---|
 | `/` | drive page: buttons, joystick, keyboard (arrows/WASD, Space stops), trim, speed, links |
 | `/setup` | Wi-Fi, name, drive type, pins |
-| `GET /api/hardware` | the sensor table (id, name, type, slot, pinA/pinB, role, enabled, yawDeg, floorTilt, stopMm, floorMm, backoffMs, placement) |
-| `POST /api/hardware` | replace the table (the robot restarts to apply) |
+| `GET /api/hardware` | the sensor table (id, name, type, slot, pinA/pinB, role, enabled, yawDeg, floorTilt, stopMm, floorMm, backoffMs, placement) and `pins` (in1-in4, ena, enb, lidarRx, lidarTx). A sensor whose wiring failed the startup check carries `error` (and isn't started) |
+| `POST /api/hardware` | replace the table and the pins (the robot restarts to apply) |
+| `GET /api/info` | how to reach the robot: `name`, `host`, `ip`, `mode` (wifi / hotspot), `ssid`, `rssi`, `fw`, `brain` |
+| `GET /api/test/motor?motor=a\|b&dir=1\|-1&ms=400` | run one motor briefly (wiring check; reflexes still apply). A = IN1/IN2/ENA, B = IN3/IN4/ENB |
 | `GET /api/sensors` | live readings + directional blocks (same as `TSN1`) |
 | `GET /tof/calibrate?id=X` | store the current reading of a floor-facing ToF as its floor distance |
 | `GET /api/brain` | `{"url":"http://<brain>:8080/"}` if a brain announced itself in the last 10 s, else `{}` |
@@ -154,5 +156,6 @@ Controllers send (`type` plus fields):
 | `map.nogo` / `map.nogoDelete` | `x1..y2` / `id` | no-go lines |
 | `map.undo` | | undo the last user edit |
 | `map.clearDropoffs` | | remove remembered drop-offs |
-| `bot.get` / `bot.set` / `bot.calibrate` | `profile` / `id` | Bot page |
+| `bot.get` / `bot.set` / `bot.calibrate` | `profile` / `id` | Bot page (the profile's `pins` carry the motor driver and lidar wiring) |
+| `wiring.testMotor` | `motor` (a / b), `dir` (1 / -1) | run one motor for half a second |
 | `log.start` / `log.stop` | | sensor log (GPS, compass, pose) |
