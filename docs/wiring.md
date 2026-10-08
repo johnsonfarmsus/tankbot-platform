@@ -19,9 +19,14 @@ Pins 34-39 are input-only (fine for ECHO).
 
 ## Power
 
-The lidar, the ToF and the ultrasonic all share the 5 V rail. Feed it from a proper 5 V buck
-converter (2 A or more) off the battery; the L298N's small onboard regulator is marginal for the
-lidar alone.
+**Power as built:** the 3S battery (9-12.6 V) goes through the rocker switch to the expansion board's
+DC input and to the L298N's 12 V input (the battery kit's lever connectors and barrel-to-terminal adapters
+make the joins). The expansion board's 5 V powers the lidar; the ultrasonic runs from 3.3 V.
+
+**Recommended:** feed the 5 V rail (lidar, ToF) from a 12 V to 5 V buck converter (2 A or more) instead of
+the expansion board's onboard 5 V. That is a small linear regulator: from a 12 V battery it turns several
+volts into heat, runs hot with the lidar and the ESP32 on it, and an overheating regulator browns out the
+ESP32.
 
 ## Sensor jobs
 

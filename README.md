@@ -48,43 +48,59 @@ shows what the next part would unlock.
 
 ## Build one
 
-1. **Start with the original TankBot.** Its [README](https://github.com/johnsonfarmsus/tank-bot-esp32)
-   has the base parts list (ESP32 DevKit, L298N motor driver, TP101 tracked chassis with motors), the
-   motor wiring, and [3D-printed mounting parts on Printables](https://www.printables.com/model/1516204-tank-bot-esp32).
-   That gets you a robot you can drive.
-2. **Add what this project uses:**
-   - an **RPLidar C1** on a tower (mapping, relocalisation, navigation),
-   - a **phone holder** for the brain (portrait or landscape),
-   - a front **bumper switch** and an **HC-SR04P ultrasonic** (optional: a TOFSense ToF aimed at the floor
-     as a cliff sensor),
-   - a **3S (11.1 V) Li-ion pack** and an ESP32 expansion board with screw terminals and S/V/G headers.
-
-   **3D-printed parts for this version:** [TankBot on Printables](https://www.printables.com/model/1869360-tankbot)
-   (base plate, lidar tower and base, phone base and clamp, bumper and switch mount, two-part ultrasonic
-   mount, battery and charger clamps, a 2-wire connector, wire management, board spacers). Get them there; a backup zip of
-   the model files is in [`hardware/`](hardware) in case Printables is ever unavailable.
-3. **Wire it** following [docs/wiring.md](docs/wiring.md), then follow *Setting up a robot* below.
-
 ### Parts list
 
-| Part | Used for | Notes |
-|---|---|---|
-| **ESP32 DevKit**, 38-pin (CP2102, USB-C) | the robot's controller | as in the original TankBot |
-| **ESP32 38-pin expansion board** ("ESP32S 38P V4" style) | mounts the ESP32; power and wiring | DC input 6.5-16 V, onboard 5 V / 3.3 V, an S/V/G header for every pin (a jumper sets V to 3.3 V or 5 V) |
-| **L298N** H-bridge motor driver | drives both tracks | ENA / ENB jumpers removed so the ESP32 sets the speed |
-| **TP101 tracked chassis** with 2x **33GB-520-18.7F** DC motors | the robot base | as in the original TankBot |
-| **3S Li-ion pack**, 11.1 V (12.6 V full) | power | we use a 5600 mAh (62 Wh) pack with a barrel connector; replaces the original 2x 18650 |
-| **Slamtec RPLidar C1** | mapping, position, navigation | on the printed lidar tower |
-| **HC-SR04P** ultrasonic (wide-voltage, 3-5.5 V) | low obstacles ahead | powered from 3.3 V so its echo is safe for the ESP32 |
-| **V-153-1C25** micro switch | front bumper | behind the printed bumper bar |
-| *Optional:* **TOFSense-F2 Mini** ToF sensor | cliff (drop-off) sensor, aimed at the floor | JST GH 1.25 mm connector |
-| **An iPhone with ARKit** | the brain | tested: SE (2nd gen), 11 Pro, 12 Pro; LiDAR iPhones add the depth camera |
-| **M3 x 6 mm socket head cap screws** | everything | the only fastener: all printed parts, boards and modules mount with these |
-| **Spacer 6x3x3** (printed) | electronics boards | lifts a board off the base: board, spacer, base, with the screw through all three |
-| Jumper wires (Dupont) | sensor and motor-driver connections | the expansion board's S/V/G headers take standard Dupont plugs |
-| [3D-printed parts](https://www.printables.com/model/1869360-tankbot) | tower, mounts, clamps, bumper | on Printables |
+**Electronics**
 
-Pins and power: [docs/wiring.md](docs/wiring.md).
+| Part | Qty | Used for | Notes |
+|---|---|---|---|
+| **ESP32 DevKit**, 38-pin (CP2102, USB-C) | 1 | the robot's controller | |
+| **ESP32 38-pin expansion board** ("ESP32S 38P V4" style) | 1 | mounts the ESP32; power and wiring | DC input 6.5-16 V, onboard 5 V and 3.3 V, an S/V/G header for every pin (a jumper sets V to 3.3 V or 5 V). Also powers the lidar (5 V) |
+| **L298N** H-bridge motor driver | 1 | drives both tracks | remove the ENA / ENB jumpers so the ESP32 controls speed |
+| **TP101 tracked chassis** with 2x **33GB-520-18.7F** DC motors | 1 | the robot base | |
+| **12 V Li-ion battery pack**, 3S (11.1 V, 9-12.6 V), ~5600 mAh, 5 A | 1 | power | we use a Mspalocell XZ01 kit: it comes with a 12.6 V 1 A charger, bare leads, a DC barrel connector, lever connectors and barrel-to-screw-terminal adapters, which cover all the power wiring |
+| **Mini rocker switch**, SPST on/off, 2-pin pre-wired (KCD1-101 type) | 1 | main power switch | fits the printed charger clamp with switch; sold in packs (e.g. AKVIBG 10-pack) |
+| **Dupont jumper wires** (female-female and male-female) | a pack | every signal and sensor connection | the expansion board's S/V/G headers take standard Dupont plugs |
+
+**Sensors**
+
+| Part | Qty | Used for | Notes |
+|---|---|---|---|
+| **Slamtec RPLidar C1** | 1 | mapping, position, navigation | on the printed lidar tower; 5 V from the expansion board |
+| **HC-SR04P** ultrasonic (wide-voltage 3-5.5 V) | 1 | low obstacles ahead | powered from 3.3 V so its echo is safe for the ESP32 |
+| **V-153-1C25** micro switch | 1 | front bumper | behind the printed bumper bar |
+| *Optional:* **TOFSense-F2 Mini** ToF sensor | 1 | cliff (drop-off) sensor, aimed at the floor | JST GH 1.25 mm connector |
+
+**Brain**
+
+| Part | Qty | Used for | Notes |
+|---|---|---|---|
+| **An iPhone with ARKit** | 1 | the brain | tested: SE (2nd gen), 11 Pro, 12 Pro; a LiDAR iPhone adds the depth camera. It runs on its own battery |
+
+**Hardware**
+
+| Part | Qty | Used for | Notes |
+|---|---|---|---|
+| **M3 x 6 mm socket head cap screws** | a pack (a full build uses under 50) | everything | the only fastener: every printed part, board and module mounts with these |
+| [**3D-printed parts**](https://www.printables.com/model/1869360-tankbot) | 1 set | tower, mounts, clamps, bumper | on Printables |
+| **Spacer 6x3x3** (printed) | as needed | electronics boards | lifts a board off the base: the screw goes through the board, then the spacer, into the base. Print as many as your boards need |
+
+**Recommended upgrade:** a **12 V to 5 V buck converter** (2 A or more) for the 5 V rail. The expansion
+board's onboard 5 V is a small linear regulator that runs hot feeding the lidar and the ESP32 from a 12 V
+battery; a buck converter runs cool. It is also what you would need to charge the phone from the robot,
+though the battery above is better kept for driving.
+
+### Build steps
+
+1. **Print the parts** from [Printables](https://www.printables.com/model/1869360-tankbot) (base plate,
+   lidar tower and base, phone base and clamp, bumper and switch mount, two-part ultrasonic mount, battery
+   and charger clamps, a 2-wire connector, wire management, spacers). If Printables is ever unavailable,
+   a backup zip of the model files is in [`hardware/`](hardware).
+2. **Assemble** the chassis and mount the printed parts, the boards (on spacers) and the sensors, all with
+   M3 x 6 mm screws.
+3. **Wire it** following [docs/wiring.md](docs/wiring.md): battery through the rocker switch to the
+   expansion board and the L298N, then the motors, lidar, ultrasonic and bumper with Dupont wires.
+4. **Flash and set it up** following *Setting up a robot* below.
 
 <p align="center">
 <a href="docs/images/tankbot-01.jpg"><img src="docs/images/tankbot-01.jpg" width="200" alt="TankBot photo 1"></a>
@@ -102,6 +118,8 @@ Pins and power: [docs/wiring.md](docs/wiring.md).
 <a href="docs/images/tankbot-13.jpg"><img src="docs/images/tankbot-13.jpg" width="200" alt="TankBot photo 13"></a>
 </p>
 
+TankBot grew out of the original [TankBot ESP32](https://github.com/johnsonfarmsus/tank-bot-esp32)
+(a browser-driven tracked robot, with its own [Printables parts](https://www.printables.com/model/1516204-tank-bot-esp32)).
 Building something bigger? The same steps apply: a motor driver that suits your motors, the sensors you
 want where you want them, and a profile that describes it.
 
