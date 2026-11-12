@@ -46,6 +46,11 @@ from that description:
 The **capability tiers** below grow with the hardware: every part you add unlocks more, and the app
 shows what the next part would unlock.
 
+**Three ways to build, one software stack:** put a phone on the robot and let it bring the sensors;
+put the sensors on the robot and keep the brain in your hand (no spare phone needed); or both, for
+the most accuracy. [docs/hardware-guide.md](docs/hardware-guide.md) covers what to buy for each, and
+why.
+
 ## Build one
 
 ### Parts list
@@ -84,10 +89,13 @@ shows what the next part would unlock.
 | **M3 x 6 mm socket head cap screws** | a pack (a full build uses under 50) | everything | the only fastener: every printed part, board and module mounts with these |
 | [**3D-printed parts**](https://www.printables.com/model/1869360-tankbot) | 1 set | tower, mounts, clamps, bumper | on Printables |
 
-**Recommended upgrade:** a **12 V to 5 V buck converter** (2 A or more) for the 5 V rail. The expansion
-board's onboard 5 V is a small linear regulator that runs hot feeding the lidar and the ESP32 from a 12 V
-battery; a buck converter runs cool. It is also what you would need to charge the phone from the robot,
-though the battery above is better kept for driving.
+**Recommended upgrade:** a **12 V to 5 V buck converter** for the 5 V side: a fixed-5 V mini module
+(5.5-30 V in, about 1.8 A, wired leads) is plenty. The expansion board's onboard 5 V is a small linear
+regulator that runs hot feeding the lidar and the ESP32 from a 12 V battery; a buck converter runs
+cool. Wiring in [docs/wiring.md](docs/wiring.md).
+
+**Choosing parts** (IMU, cliff sensing, cheaper lidars, which phones work as brains, a wired brain for
+a phone with dead Wi-Fi): [docs/hardware-guide.md](docs/hardware-guide.md).
 
 ### Build steps
 
@@ -155,7 +163,7 @@ The controller's Settings page shows the current tier and what would unlock the 
 | `firmware/tankbot/` | ESP32 firmware v3: sensor table, directional reflexes, lidar bridge, sensor feed, web page, OTA |
 | `firmware/motion/` | the original TankBot firmware, kept for reference |
 | `app/tankbot_brain/` | the **TankBot** app (Flutter): Mounted brain / Brain in hand / Controller roles |
-| `docs/` | [user guide](docs/user-guide.md), [wiring](docs/wiring.md), [protocol](docs/protocol.md), [bot profile](docs/bot-profile.md), [app architecture](docs/app-architecture.md), [diagnostics](docs/diagnostics.md), [roadmap](docs/ROADMAP.md), [changelog](CHANGELOG.md) |
+| `docs/` | [user guide](docs/user-guide.md), [hardware guide](docs/hardware-guide.md), [wiring](docs/wiring.md), [protocol](docs/protocol.md), [bot profile](docs/bot-profile.md), [app architecture](docs/app-architecture.md), [diagnostics](docs/diagnostics.md), [roadmap](docs/ROADMAP.md), [changelog](CHANGELOG.md) |
 | `tools/` | desktop helpers: log analysis, brain commands, controller checks ([tools/README](tools/README.md)) |
 | `hardware/` | a backup zip of the 3D-printed parts (STL + Fusion 360); get the parts from [Printables](https://www.printables.com/model/1869360-tankbot) |
 

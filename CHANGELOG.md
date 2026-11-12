@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Docs: **hardware guide** (three ways to build; IMU, cliff sensing, lidars, cheap odometry, phones as
+  brains incl. Android, the wired brain via a travel router, LoRa); roadmap reorganised into tracks
+  (tracking and the indoor platform, brains and connectivity, outdoor autonomy) led by a state
+  estimator; buck converter wiring.
+
 ## v0.4 (2026-10-07)
 
 Interchangeable brains, the Wiring view, lidar + gyro tracking, and a public release.

@@ -23,10 +23,21 @@ Pins 34-39 are input-only (fine for ECHO).
 DC input and to the L298N's 12 V input (the battery kit's lever connectors and barrel-to-terminal adapters
 make the joins). The expansion board's 5 V powers the lidar; the ultrasonic runs from 3.3 V.
 
-**Recommended:** feed the 5 V rail (lidar, ToF) from a 12 V to 5 V buck converter (2 A or more) instead of
-the expansion board's onboard 5 V. That is a small linear regulator: from a 12 V battery it turns several
-volts into heat, runs hot with the lidar and the ESP32 on it, and an overheating regulator browns out the
-ESP32.
+**Recommended: a 12 V to 5 V buck converter for the whole 5 V side.** The expansion board's onboard
+5 V is a small linear regulator: from a 12 V battery it turns several volts into heat, runs hot with
+the lidar and the ESP32 on it, and an overheating regulator browns out the ESP32. A fixed-5 V mini
+buck module (5.5-30 V in, about 1.8 A) runs cool; the 5 V side draws under about 0.7 A.
+
+1. Battery (after the rocker switch) to the buck's input, and to the L298N as before.
+2. Buck 5 V output to the expansion board's **5V pin** (powering the ESP32 and the board's 5 V
+   headers) and to the lidar.
+3. **Don't also feed the board's barrel jack** from the battery: the onboard regulator then sits idle,
+   instead of two 5 V supplies meeting on one rail.
+4. All grounds common (battery, buck, L298N, ESP32). The ultrasonic stays on 3.3 V; plugging in USB
+   for programming is still fine.
+
+A travel router and phone charging (a wired brain) get their own buck module: together with the
+robot's load they would overload one.
 
 ## Sensor jobs
 
