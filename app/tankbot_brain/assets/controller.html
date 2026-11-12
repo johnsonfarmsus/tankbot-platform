@@ -233,6 +233,14 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
     <div class="small">Maps autosave every 20 s, and the last map loads when the brain starts. A restore point is saved automatically before exploring on its own and before switching to Explore. To edit walls or draw no-go lines, use <b>Edit map</b> on the Drive page.</div>
   </div>
   <div class="card">
+    <h2>Where in the world</h2>
+    <div class="small" id="geoStatus">Not anchored yet.</div>
+    <div class="row"><input id="geoInput" placeholder="47.4812, -118.2551" style="flex:1;min-width:180px"><button id="geoGo" class="primary">Go to coordinates</button></div>
+    <h3>Places</h3>
+    <div class="row"><input id="placeName" placeholder="Name this spot (e.g. Front door)" style="flex:1;min-width:180px"><button id="placeAdd">Save the robot&#39;s spot</button></div>
+    <div id="placeList" class="small"></div>
+  </div>
+  <div class="card">
     <h2>Saved maps</h2>
     <div id="mapList" style="display:flex;flex-direction:column;gap:8px"></div>
     <div class="small">Load switches to a saved map; the robot finds itself on it with the lidar. If it can't, drive a little, or put it on the home spot (white circle, facing along its line) and press I'm at home.</div>
@@ -976,6 +984,34 @@ function renderWiring() {
   updateBotLive();
 }
 
+// ---- where in the world: anchor status, coordinates, places ----
+function renderGeo(t) {
+  const g = t.explore && t.explore.geo;
+  const st = $("geoStatus");
+  if (!g || !g.anchor) {
+    st.textContent = "Not anchored yet. It anchors itself: drive outdoors with GPS better than the GPS setting (" +
+      (g && g.gpsAcc ? "now " + g.gpsAcc.toFixed(0) + " m" : "no fix now") + ") for about 15 m. " + (g ? g.samples : 0) + " GPS fixes so far.";
+  } else {
+    const a = g.anchor;
+    let txt = "Anchored to GPS: +/-" + a.sigmaM.toFixed(1) + " m, rotation +/-" + a.sigmaDeg.toFixed(1) + " deg (" + a.samples + " fixes over " + Math.round(a.spanM) + " m).";
+    if (g.robot) txt += " Robot at " + g.robot[0].toFixed(6) + ", " + g.robot[1].toFixed(6) + " (+/-" + g.robot[2].toFixed(1) + " m), heading " + Math.round(g.robot[3]) + " deg.";
+    st.textContent = txt;
+  }
+  const list = $("placeList"), places = (t.mapInfo && t.mapInfo.places) || [];
+  const sig = JSON.stringify(places);
+  if (list.dataset.sig === sig) return;
+  list.dataset.sig = sig; list.textContent = places.length ? "" : "No places yet.";
+  for (const p of places) {
+    const row = document.createElement("div"); row.className = "row";
+    const go = document.createElement("button"); go.textContent = "Go"; go.onclick = () => send({type: "nav.gotoPlace", name: p.name});
+    const rm = document.createElement("button"); rm.textContent = "Remove"; rm.onclick = () => send({type: "place.remove", name: p.name});
+    const lab = document.createElement("span"); lab.textContent = p.name;
+    row.append(lab, go, rm); list.append(row);
+  }
+}
+$("geoGo").onclick = () => { const v = $("geoInput").value.trim(); if (v) send({type: "nav.gotoGeo", text: v}); };
+$("placeAdd").onclick = () => { const v = $("placeName").value.trim(); if (v) { send({type: "place.add", name: v}); $("placeName").value = ""; } };
+
 function botTopScale() {
   const cv2 = $("botTop"), W = botDraft.platform.widthMm, L = botDraft.platform.lengthMm;
   const sc = (cv2.width - 70) / Math.max(W, L);
@@ -1228,6 +1264,7 @@ function updateUi() {
   if (settingsOpen) { $("capsInfo").textContent = capsText(t.caps, t.tracking); $("robotInfo").textContent = robotText(t.robot); }
   if (mapsOpen && t.mapInfo) {
     renderCheckpoints(t.mapInfo);
+    renderGeo(t);
     const r = t.mapInfo.onRobot;
     $("robotKeeps").textContent = r ? "Kept on the robot: \"" + r.name + "\" (" + Math.round((r.size || 0) / 1024) + " KB" +
       (r.updated ? ", updated " + new Date(r.updated).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "") + ")" +
@@ -1479,6 +1516,16 @@ function frameInner() {
     for (let gx = Math.floor(x0 / g) * g; gx <= x1; gx += g) { const a = toS(gx, 0)[0]; ctx.moveTo(a, 0); ctx.lineTo(a, H); }
     for (let gy = Math.floor(y0 / g) * g; gy <= y1; gy += g) { const b = toS(0, gy)[1]; ctx.moveTo(0, b); ctx.lineTo(W, b); }
     ctx.stroke();
+    // named places
+    const pl = (t && t.mapInfo && t.mapInfo.places) || [];
+    if (pl.length) {
+      ctx.font = "12px system-ui"; ctx.textAlign = "left";
+      for (const p of pl) {
+        const s = toS(p.x, p.y);
+        ctx.fillStyle = "#7cc4ff"; ctx.beginPath(); ctx.arc(s[0], s[1], 4, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.85)"; ctx.fillText(p.name, s[0] + 7, s[1] + 4);
+      }
+    }
     // home spot
     const hm = toS(0, 0);
     ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;

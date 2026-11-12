@@ -14,6 +14,7 @@ import 'package:flutter/services.dart';
 import 'lidar_client.dart';
 import 'pose_graph.dart';
 import 'compact_map.dart';
+import 'geo_anchor.dart';
 
 class Keyframe {
   final double t; // unix ms
@@ -54,6 +55,11 @@ class MapSession {
   final List<PGEdge> graphEdges = [];
   /// GPS fixes tagged to keyframes: {i, lat, lon, hAcc}.
   final List<Map<String, dynamic>> geoTags = [];
+  /// Where the map is in the world: GPS fixes paired with map positions, and the fitted anchor.
+  final List<GeoSample> geoSamples = [];
+  GeoAnchor? anchor;
+  /// Named places on this map: {name, x, y}.
+  final List<Map<String, dynamic>> places = [];
   int nextEditId = 1;
   /// Where the robot last was on this map [x, y, heading]: first guess when the map loads.
   List<double>? lastPose;
@@ -78,6 +84,13 @@ class MapSession {
     m.nextEditId = (h['nextEditId'] as num?)?.toInt() ?? m.edits.length + 1;
     final lp = h['lastPose'];
     if (lp is List && lp.length == 3) m.lastPose = [for (final v in lp) (v as num).toDouble()];
+    m.anchor = GeoAnchor.fromJson(h['anchor']);
+    final pl = h['places'];
+    if (pl is List) {
+      for (final p in pl) {
+        if (p is Map && p['name'] is String) m.places.add(Map<String, dynamic>.from(p));
+      }
+    }
     m.edited = true;
     return m;
   }
@@ -272,6 +285,11 @@ class MapStore {
     final gTmp = File('${d.path}/graph.json.tmp');
     await gTmp.writeAsString(jsonEncode({'edges': [for (final e in m.graphEdges) e.toJson()], 'geo': m.geoTags}), flush: true);
     await gTmp.rename('${d.path}/graph.json');
+    final geoTmp = File('${d.path}/geo.json.tmp');
+    await geoTmp.writeAsString(
+        jsonEncode({'samples': [for (final g in m.geoSamples) g.toJson()], 'anchor': m.anchor?.toJson(), 'places': m.places}),
+        flush: true);
+    await geoTmp.rename('${d.path}/geo.json');
     if (m.baseBytes != null) {
       final bTmp = File('${d.path}/base.tcm.tmp');
       await bTmp.writeAsBytes(m.baseBytes!, flush: true);
@@ -322,6 +340,18 @@ class MapStore {
         }
         for (final t in (gj['geo'] as List? ?? [])) {
           if (t is Map) m.geoTags.add(Map<String, dynamic>.from(t));
+        }
+      }
+      final geof = File('${root.path}/$id/geo.json');
+      if (await geof.exists()) {
+        final gj = jsonDecode(await geof.readAsString()) as Map<String, dynamic>;
+        for (final t in (gj['samples'] as List? ?? [])) {
+          final g = GeoSample.fromJson(t);
+          if (g != null) m.geoSamples.add(g);
+        }
+        m.anchor = GeoAnchor.fromJson(gj['anchor']);
+        for (final p in (gj['places'] as List? ?? [])) {
+          if (p is Map && p['name'] is String) m.places.add(Map<String, dynamic>.from(p));
         }
       }
       m.savedCount = m.keyframes.length;

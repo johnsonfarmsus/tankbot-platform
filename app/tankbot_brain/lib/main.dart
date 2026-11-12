@@ -27,6 +27,7 @@ import 'pose_graph.dart';
 import 'frontier.dart';
 import 'compact_map.dart';
 import 'robot_store.dart';
+import 'geo_anchor.dart';
 
 void main() => runApp(const TankBotApp());
 
@@ -149,6 +150,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         gpsFixes++;
         lastGps = m;
         lastGpsMs = appClockMs();
+        _geoSample(m);
         sensorLog.write('gps', [m['t'], m['lat'], m['lon'], m['hAcc'], m['alt'], m['vAcc'], m['speed'], m['course'], p?.x, p?.y, p?.heading]);
       case 'heading':
         headingReads++;
@@ -163,6 +165,59 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         sensorLog.write('error', [m['msg']]);
     }
   }
+  // ---------- where the map is in the world: automatic GPS anchoring, coordinates, places ----------
+  double _lastGeoSampleMs = -1e9;
+
+  /// Pair a good GPS fix with where the robot is on the map, and refit the map's anchor.
+  /// Only while tracking is good, one sample per ~2 m driven (or 15 s standing).
+  void _geoSample(Map<String, dynamic> m) {
+    final p = robotPose;
+    final acc = (m['hAcc'] as num?)?.toDouble() ?? 99;
+    final lat = (m['lat'] as num?)?.toDouble(), lon = (m['lon'] as num?)?.toDouble();
+    if (p == null || lat == null || lon == null || locState != 'tracking' || _loadingMap || _rebuilding) return;
+    if (acc <= 0 || acc > profile.gpsMaxAccM) return;
+    final now = appClockMs();
+    final ss = active.geoSamples;
+    if (ss.isNotEmpty) {
+      final l = ss.last;
+      if (math.sqrt(_sq(p.x - l.x) + _sq(p.y - l.y)) < 2 && now - _lastGeoSampleMs < 15000) return;
+    }
+    _lastGeoSampleMs = now;
+    ss.add(GeoSample(p.x, p.y, lat, lon, acc));
+    if (ss.length > 800) {
+      // keep the spread: thin the older half
+      final keep = <GeoSample>[for (var i = 0; i < 400; i++) if (i.isEven) ss[i], ...ss.sublist(400)];
+      ss
+        ..clear()
+        ..addAll(keep);
+    }
+    final was = active.anchor;
+    final a = GeoAnchor.fit(ss, nowMs: DateTime.now().millisecondsSinceEpoch);
+    if (a == null) return;
+    active.anchor = a;
+    active.edited = true;
+    if (was == null) {
+      _event('map anchored', '+/-${a.sigmaM.toStringAsFixed(1)} m from ${ss.length} GPS fixes over ${a.spanM.round()} m');
+      _flash('Map anchored to GPS (+/-${a.sigmaM.toStringAsFixed(1)} m): coordinates work on this map now');
+    }
+  }
+
+  Map<String, dynamic>? _geoInfo() {
+    final a = active.anchor, p = robotPose;
+    final out = <String, dynamic>{
+      'samples': active.geoSamples.length,
+      'gpsAcc': lastGps == null || appClockMs() - lastGpsMs > 5000 ? null : (lastGps!['hAcc'] as num?)?.toDouble(),
+    };
+    if (a != null) {
+      out['anchor'] = {'sigmaM': a.sigmaM, 'sigmaDeg': a.sigmaRot * 180 / math.pi, 'spanM': a.spanM, 'samples': a.samples};
+      if (p != null) {
+        final (la, lo) = a.toLatLon(p.x, p.y);
+        out['robot'] = [la, lo, a.sigmaAt(p.x, p.y), a.bearingDeg(p.heading)];
+      }
+    }
+    return out;
+  }
+
   final poses = PoseClient();
   final grid = OccupancyGrid();
   final store = MapStore();
@@ -445,6 +500,50 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         final gxv = (m['x'] as num?)?.toDouble(), gyv = (m['y'] as num?)?.toDouble();
         if (gxv != null && gyv != null) _navGoto(gxv, gyv);
         break;
+      case 'nav.gotoGeo': // a destination as latitude / longitude
+        final ll = m['text'] is String
+            ? parseLatLon(m['text'] as String)
+            : ((m['lat'] as num?)?.toDouble() != null && (m['lon'] as num?)?.toDouble() != null
+                ? ((m['lat'] as num).toDouble(), (m['lon'] as num).toDouble())
+                : null);
+        final an = active.anchor;
+        if (ll == null) {
+          _flash("Couldn't read those coordinates (try 47.4812, -118.2551)");
+        } else if (an == null) {
+          navState = 'failed';
+          navNote = "This map isn't anchored to GPS yet: drive outdoors with a good GPS fix for 15 m or so first";
+        } else {
+          final (gx2, gy2) = an.toMap(ll.$1, ll.$2);
+          _navGoto(gx2, gy2);
+        }
+        break;
+      case 'place.add': // name a spot (the robot's, unless x / y are given)
+        final name = (m['name'] as String? ?? '').trim();
+        final rp = robotPose;
+        final px = (m['x'] as num?)?.toDouble() ?? rp?.x, py = (m['y'] as num?)?.toDouble() ?? rp?.y;
+        if (name.isEmpty || px == null || py == null) break;
+        active.places.removeWhere((q) => (q['name'] as String).toLowerCase() == name.toLowerCase());
+        active.places.add({'name': name, 'x': px, 'y': py});
+        active.edited = true;
+        _flash('Saved "$name"');
+        break;
+      case 'place.remove':
+        final name = (m['name'] as String? ?? '').toLowerCase();
+        active.places.removeWhere((q) => (q['name'] as String).toLowerCase() == name);
+        active.edited = true;
+        break;
+      case 'nav.gotoPlace':
+        final name = (m['name'] as String? ?? '').toLowerCase();
+        Map<String, dynamic>? q;
+        for (final c in active.places) {
+          if ((c['name'] as String).toLowerCase() == name) q = c;
+        }
+        if (q == null) {
+          _flash('No place called "${m['name']}" on this map');
+        } else {
+          _navGoto((q['x'] as num).toDouble(), (q['y'] as num).toDouble());
+        }
+        break;
       case 'nav.cancel':
         _stopExplore('Exploration stopped');
         _navCancel('Stopped');
@@ -672,6 +771,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'note': exploreNote,
         'targets': exploreTargets,
         'cliffSensor': hasCliffSensor,
+        'geo': _geoInfo(),
         'otherBrain': otherBrainActive ? otherBrain : null,
         'preview': explorePreview == null ? null : [explorePreview!.x, explorePreview!.y, explorePreview!.inRoom ? 1 : 0],
       },
@@ -1105,6 +1205,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
             ? null
             : {'id': robotMapInfo!['id'], 'name': robotMapInfo!['name'], 'updated': robotMapInfo!['updated'], 'size': robotMapInfo!['size']},
         'fromRobot': active.baseBytes != null,
+        'places': active.places,
         'savedAgoS': active.savedAt == null ? null : DateTime.now().difference(active.savedAt!).inSeconds,
         'loading': _loadingMap,
       };
@@ -2125,6 +2226,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'lastPose': p == null ? active.lastPose : [p.x, p.y, p.heading],
         'nextEditId': active.nextEditId,
         'edits': active.edits,
+        'anchor': active.anchor?.toJson(),
+        'places': active.places,
       });
       final info = {
         'id': active.id,
