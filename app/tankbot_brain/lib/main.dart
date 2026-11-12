@@ -502,6 +502,19 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         final gxv = (m['x'] as num?)?.toDouble(), gyv = (m['y'] as num?)?.toDouble();
         if (gxv != null && gyv != null) _navGoto(gxv, gyv);
         break;
+      case 'robot.outdoor': // outdoor mode on / off (the robot restarts its Wi-Fi)
+        final ip = robotIp;
+        final on = m['on'] == true;
+        if (ip == null) {
+          _flash('No robot connected');
+          break;
+        }
+        RobotStore.setWifi(ip, on).then((ok) => _flash(ok
+            ? (on
+                ? 'Outdoor mode: the robot is starting its own Wi-Fi "TankBot". Join it on this phone and the controller phone.'
+                : 'Back to home Wi-Fi: the robot is rejoining your home network.')
+            : "Couldn't switch the robot's Wi-Fi"));
+        break;
       case 'nav.gotoGeo': // a destination as latitude / longitude
         final ll = m['text'] is String
             ? parseLatLon(m['text'] as String)
@@ -774,6 +787,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'targets': exploreTargets,
         'cliffSensor': hasCliffSensor,
         'geo': _geoInfo(),
+        'robotNet': robotNet,
         'otherBrain': otherBrainActive ? otherBrain : null,
         'preview': explorePreview == null ? null : [explorePreview!.x, explorePreview!.y, explorePreview!.inRoom ? 1 : 0],
       },
@@ -2029,7 +2043,9 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     _connecting = true;
     try {
       String? ip;
+      if (myIp != null && myIp!.startsWith('192.168.4.')) ip = '192.168.4.1'; // the robot's own hotspot
       try {
+        if (ip != null) throw 'on the robot hotspot';
         final found = await InternetAddress.lookup('tankbot.local', type: InternetAddressType.IPv4)
             .timeout(const Duration(seconds: 5));
         if (found.isNotEmpty) ip = found.first.address;
@@ -2158,7 +2174,14 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }
     _maybeUploadMap();
     if (ip != null) _checkOtherBrain(ip);
+    if (ip != null && appClockMs() - _lastNetCheckMs > 10000) {
+      _lastNetCheckMs = appClockMs();
+      RobotStore.wifi(ip).then((w) => robotNet = w);
+    }
   }
+
+  Map<String, dynamic>? robotNet; // {"outdoor": bool, "mode": "hotspot"|"wifi"}
+  double _lastNetCheckMs = -1e9;
 
   /// On connect: the newer settings win (robot or brain); a map the robot has that this brain doesn't
   /// is added, and loaded straight away if this brain has no real map yet.

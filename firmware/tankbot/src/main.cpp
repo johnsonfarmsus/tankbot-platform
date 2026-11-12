@@ -231,6 +231,9 @@ DNSServer dnsServer;
 WiFiUDP udpLidar, udpMotion, udpSensor;
 bool apMode = false;
 uint32_t apSinceMs = 0;
+// Outdoor mode: run the robot's own hotspot on purpose (remembered across restarts) and never drop
+// it to retry home Wi-Fi, so the brain and controller stay connected away from home.
+bool outdoorMode = false;
 
 // ================= REFLEX state =================
 bool blockDir[4] = {false, false, false, false};
@@ -792,6 +795,30 @@ void handleHardware() {
 }
 void handleSensors() { server.send(200, "application/json", sensorsJson()); }
 
+/// GET /api/wifi -> {"outdoor": bool, "mode": "hotspot"|"wifi"}.
+/// POST /api/wifi {"mode":"hotspot"} (outdoor mode) or {"mode":"home"}: saved, then the robot restarts
+/// its Wi-Fi that way.
+void handleWifiApi() {
+  if (server.method() == HTTP_POST) {
+    JsonDocument d;
+    if (deserializeJson(d, server.arg("plain")) || !d["mode"].is<const char *>()) {
+      server.send(400, "application/json", "{\"error\":\"mode must be hotspot or home\"}");
+      return;
+    }
+    const bool out = !strcmp(d["mode"], "hotspot");
+    prefs.begin("tankbot", false);
+    prefs.putBool("outdoor", out);
+    prefs.end();
+    server.send(200, "application/json", out ? "{\"ok\":true,\"outdoor\":true}" : "{\"ok\":true,\"outdoor\":false}");
+    Serial.printf("[wifi] switching to %s mode: restarting\n", out ? "outdoor (hotspot)" : "home Wi-Fi");
+    delay(400);
+    ESP.restart();
+    return;
+  }
+  server.send(200, "application/json", String("{\"outdoor\":") + (outdoorMode ? "true" : "false") +
+                                            ",\"mode\":\"" + (apMode ? "hotspot" : "wifi") + "\"}");
+}
+
 /// GET /api/info - how to reach this robot (shown in the drive page's settings panel).
 void handleInfo() {
   JsonDocument doc;
@@ -802,6 +829,7 @@ void handleInfo() {
   doc["ssid"] = apMode ? String(AP_SSID) : WiFi.SSID();
   if (!apMode) doc["rssi"] = WiFi.RSSI();
   doc["fw"] = FW_VERSION;
+  doc["outdoor"] = outdoorMode;
   if (brainAlive()) doc["brain"] = brainUrl();
   String out;
   serializeJson(doc, out);
@@ -985,7 +1013,22 @@ void handleSetup() {
 }
 
 // ================= NETWORK / OTA =================
+void startHotspot(const char *why) {
+  apMode = true; apSinceMs = millis();
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  dnsServer.start(53, "*", WiFi.softAPIP());
+  Serial.printf("[wifi] %s -> access point '%s' at %s\n", why, AP_SSID, WiFi.softAPIP().toString().c_str());
+}
+
 void setupNetwork() {
+  prefs.begin("tankbot", true);
+  outdoorMode = prefs.getBool("outdoor", false);
+  prefs.end();
+  if (outdoorMode) {
+    startHotspot("outdoor mode");
+  } else {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(HOSTNAME);
   WiFi.setSleep(false);
@@ -997,12 +1040,8 @@ void setupNetwork() {
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[wifi] connected, IP %s, RSSI %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
   } else {
-    apMode = true; apSinceMs = millis();
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
-    dnsServer.start(53, "*", WiFi.softAPIP());
-    Serial.printf("[wifi] home network unavailable -> access point '%s'\n", AP_SSID);
+    startHotspot("home network unavailable");
+  }
   }
   if (MDNS.begin(HOSTNAME)) {
     MDNS.addService("http", "tcp", 80);
@@ -1021,6 +1060,7 @@ void setupNetwork() {
   server.on("/api/capabilities", handleHardware);
   server.on("/api/sensors", handleSensors);
   server.on("/api/info", handleInfo);
+  server.on("/api/wifi", handleWifiApi);
   server.on("/api/test/motor", handleTestMotor);
   server.on("/api/brain", handleBrainApi);
   server.on("/brain", handleBrainRedirect);
@@ -1053,7 +1093,7 @@ void setupOta() {
 }
 
 void wifiRecovery() {
-  if (!apMode) return;
+  if (!apMode || outdoorMode) return; // outdoors the hotspot stays up, whoever is connected
   if (WiFi.softAPgetStationNum() > 0) { apSinceMs = millis(); return; }
   if (millis() - apSinceMs > 60000) { Serial.println("[wifi] AP idle for 60 s: restarting to retry home Wi-Fi"); delay(100); ESP.restart(); }
 }

@@ -56,6 +56,12 @@ class RobotStore {
     return r.statusCode == 200;
   }
 
+  /// How the robot is connected: {"outdoor": bool, "mode": "hotspot"|"wifi"}.
+  static Future<Map<String, dynamic>?> wifi(String ip) => _json(ip, '/api/wifi');
+  /// Switch outdoor mode (the robot's own hotspot) on or off; the robot restarts its Wi-Fi.
+  static Future<bool> setWifi(String ip, bool outdoor) =>
+      _ok(ip, '/api/wifi', utf8.encode(jsonEncode({'mode': outdoor ? 'hotspot' : 'home'})), type: 'application/json');
+
   /// The brain the robot heard from most recently: {"url": ...} or {}.
   static Future<Map<String, dynamic>?> brain(String ip) => _json(ip, '/api/brain');
 

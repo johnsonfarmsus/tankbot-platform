@@ -319,6 +319,15 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
       <div class="small">Depth camera (low obstacles the lidar can't see): block forward closer than the depth stop; only things at least this tall count. Raise the height if carpet or thresholds trigger it.</div>
     </div>
     <div class="card">
+      <h2>Outdoor mode</h2>
+      <div class="small" id="outdoorState">Checking...</div>
+      <div class="small">For trips away from home Wi-Fi: the robot runs its own Wi-Fi network <b>TankBot</b> and
+        keeps it all trip, so the brain and this controller never drop. After switching, join <b>TankBot</b> in
+        Wi-Fi settings on the brain phone and on this phone, then open <b>http://192.168.4.1/brain</b>. Switching
+        back: the phones rejoin home Wi-Fi by themselves.</div>
+      <div class="row"><button id="outdoorOn">Turn outdoor mode on</button><button id="outdoorOff">Back to home Wi-Fi</button></div>
+    </div>
+    <div class="card">
       <h2>Position tracking</h2>
       <label>Track position with <select id="trackMode"><option value="auto">camera + lidar (lidar alone when the camera drifts)</option><option value="lidar">lidar only</option></select></label>
       <div class="small">Lidar only ignores the phone camera for position. Often steadier on phones without a depth sensor, or in dim rooms and rooms with plain walls.</div>
@@ -1009,6 +1018,13 @@ function renderGeo(t) {
     row.append(lab, go, rm); list.append(row);
   }
 }
+$("outdoorOn").onclick = () => { if (confirm('Turn outdoor mode on? The robot restarts its Wi-Fi as "TankBot"; then join "TankBot" on the brain phone and this phone.')) send({type: "robot.outdoor", on: true}); };
+$("outdoorOff").onclick = () => { if (confirm("Switch the robot back to home Wi-Fi?")) send({type: "robot.outdoor", on: false}); };
+function renderOutdoor(t) {
+  const n = t.explore && t.explore.robotNet;
+  $("outdoorState").textContent = !n ? "Robot network: unknown" :
+    (n.outdoor ? "Outdoor mode is ON: the robot runs its own Wi-Fi (TankBot)." : "Outdoor mode is off: the robot uses home Wi-Fi" + (n.mode === "hotspot" ? " (currently unreachable, so it is on its fallback hotspot)." : "."));
+}
 $("geoGo").onclick = () => { const v = $("geoInput").value.trim(); if (v) send({type: "nav.gotoGeo", text: v}); };
 $("placeAdd").onclick = () => { const v = $("placeName").value.trim(); if (v) { send({type: "place.add", name: v}); $("placeName").value = ""; } };
 
@@ -1185,6 +1201,7 @@ function trayCards() {
     text: "Press where the robot really is and drag toward the way it is facing, then let go. The lidar fine-tunes it.",
     actions: [["Cancel", () => { setPosMode = false; posStart = null; cv.classList.remove("aiming"); renderTray(); }]]});
   const ex = t.explore;
+  renderOutdoor(t);
   if (ex && ex.otherBrain) cards.push({sev: "danger", title: "Two brains on one robot",
     text: "Another brain (" + ex.otherBrain + ") is also connected to this robot. They fight over it, so self-driving is off. Close the TankBot app on one of them, or switch it to Controller."});
   if (ex && ex.active) cards.push({sev: "info", title: "Exploring on its own", text: ex.note + (ex.targets ? " (" + ex.targets + " areas so far)" : ""),
