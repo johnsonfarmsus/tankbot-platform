@@ -219,7 +219,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   final poses = PoseClient();
-  final grid = OccupancyGrid();
+  /// 200 x 200 m (4000 cells of 5 cm a side): room for a town block around the map's start.
+  final grid = OccupancyGrid(size: 4000);
   final store = MapStore();
   late MapSession active;
   double _lastAutosaveMs = 0;
@@ -368,7 +369,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     }));
     _tick = Timer.periodic(const Duration(milliseconds: 400), (_) async {
       final wantImage = view == ViewMode.map || server.clientCount > 0;
-      if (grid.dirty && !_rendering && wantImage) {
+      if (grid.dirty && !_rendering && wantImage && appClockMs() - _lastRenderMs >= _mapRefreshMs()) {
+        _lastRenderMs = appClockMs();
         _rendering = true;
         final img = await grid.render();
         _rendering = false;
@@ -870,10 +872,20 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     });
   }
 
+  double _lastRenderMs = -1e9;
+
+  /// How often the map picture is redrawn and sent: every 0.4-1 s for a house, slower for big areas
+  /// (about 1 s per million mapped cells; a 100 x 100 m area is 4 million).
+  double _mapRefreshMs() {
+    if (grid.maxCx < 0) return 400;
+    final cells = (grid.maxCx - grid.minCx + 1) * (grid.maxCy - grid.minCy + 1);
+    return math.max(400.0, cells / 1e6 * 1000);
+  }
+
   Future<void> _sendMapIfDue() async {
     final img = mapImage;
     if (server.clientCount == 0 || img == null || !_mapChangedSinceSend) return;
-    if (appClockMs() - _lastMapSentMs < 1000) return;
+    if (appClockMs() - _lastMapSentMs < math.max(1000.0, _mapRefreshMs())) return;
     _lastMapSentMs = appClockMs();
     _mapChangedSinceSend = false;
     final bd = await img.image.toByteData(format: ui.ImageByteFormat.png);

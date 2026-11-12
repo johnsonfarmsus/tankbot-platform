@@ -43,8 +43,7 @@ double angErr(double a, double b) {
   return d.abs();
 }
 
-void main() {
-  test('loop closing pulls a drifted loop back into place', () async {
+Future<void> loopTest(double ox, double oy) async {
     final rnd = math.Random(3);
     // true path: a loop around the room, keyframes every 15 cm, turning on the spot at corners
     final corners = [[-2.4, -1.6], [2.5, -1.6], [2.5, 1.6], [-2.4, 1.6], [-2.4, -1.3]];
@@ -75,16 +74,16 @@ void main() {
         ey += math.sin(drift) * dx + math.cos(drift) * dy;
       }
       final t = truth[k];
-      kfs.add(Keyframe.fromScan(ex, ey, t[2] + drift, simScan(t[0], t[1], t[2], rnd)));
+      kfs.add(Keyframe.fromScan(ex + ox, ey + oy, t[2] + drift, simScan(t[0], t[1], t[2], rnd)));
     }
     final last = truth.last;
-    final before = math.sqrt(math.pow(kfs.last.x - last[0], 2) + math.pow(kfs.last.y - last[1], 2));
+    final before = math.sqrt(math.pow(kfs.last.x - (last[0] + ox), 2) + math.pow(kfs.last.y - (last[1] + oy), 2));
     final beforeH = angErr(kfs.last.h, last[2]);
 
     final lc = await LoopCloser.check(kfs, 0, 0);
     expect(lc, isNotNull, reason: 'the loop should be detected');
     LoopCloser.apply(kfs, lc!);
-    final after = math.sqrt(math.pow(kfs.last.x - last[0], 2) + math.pow(kfs.last.y - last[1], 2));
+    final after = math.sqrt(math.pow(kfs.last.x - (last[0] + ox), 2) + math.pow(kfs.last.y - (last[1] + oy), 2));
     final afterH = angErr(kfs.last.h, last[2]);
     // worst error anywhere on the path, before vs after
     // ignore: avoid_print
@@ -94,5 +93,10 @@ void main() {
         '${lc.corrDeg.toStringAsFixed(1)} deg, ${(lc.hitRatio * 100).round()}% match)');
     expect(after, lessThan(before * 0.35));
     expect(afterH, lessThan(0.035));
-  });
+}
+
+void main() {
+  test('loop closing pulls a drifted loop back into place', () => loopTest(0, 0));
+  test('loop closing works far from the map start (big outdoor maps)', () => loopTest(60, -45));
+
 }

@@ -76,24 +76,27 @@ class LoopCloser {
     if (old.length < 5) return null;
     final nearest = anchor;
 
-    // reference map from the old keyframes only
+    // reference map from the old keyframes only, in coordinates relative to the current keyframe
+    // (the local grid is 40 m across; world coordinates far from the map's start would fall outside it)
     final g = OccupancyGrid();
+    final ox = (cur.x / g.resolution).round() * g.resolution, oy = (cur.y / g.resolution).round() * g.resolution;
     for (var k = 0; k < old.length; k++) {
       final kf = kfs[old[k]];
-      g.integrate(Pose(0, kf.x, kf.y, kf.h, true), kf.points(), lidarFwdM: fwdM, lidarLeftM: leftM);
+      g.integrate(Pose(0, kf.x - ox, kf.y - oy, kf.h, true), kf.points(), lidarFwdM: fwdM, lidarLeftM: leftM);
       if (k % 20 == 19) await Future<void>.delayed(Duration.zero);
     }
     final m = ScanMatcher(g);
     final pts = ScanMatcher.robotFrame(cur.points(), fwdM: fwdM, leftM: leftM, stride: 2);
     if (pts.length < 60) return null;
-    var r = m.local(pts, cur.x, cur.y, cur.h, lin: 0.5, linStep: 0.05, ang: 0.26, angStep: 0.035);
+    var r = m.local(pts, cur.x - ox, cur.y - oy, cur.h, lin: 0.5, linStep: 0.05, ang: 0.26, angStep: 0.035);
     if (r.atEdge) return null; // drift bigger than we are willing to trust
     await Future<void>.delayed(Duration.zero);
     r = m.local(pts, r.x, r.y, r.h, lin: 0.05, linStep: 0.01, ang: 0.035, angStep: 0.007);
     if (r.hitRatio < 0.55) return null;
 
     final dth = _ad(r.h, cur.h);
-    final dcm = math.sqrt(_sq(r.x - cur.x) + _sq(r.y - cur.y)) * 100;
+    final mx = r.x + ox, my = r.y + oy; // back to map coordinates
+    final dcm = math.sqrt(_sq(mx - cur.x) + _sq(my - cur.y)) * 100;
     if (dcm < 3 && dth.abs() < 0.017) return null; // already consistent (under 3 cm and 1 degree)
 
     // Anchor on the old keyframe we are closing onto; everything after it gets corrected.
@@ -102,8 +105,8 @@ class LoopCloser {
     final c = math.cos(dth), s = math.sin(dth);
     final rx = p.x + c * (cur.x - p.x) - s * (cur.y - p.y);
     final ry = p.y + s * (cur.x - p.x) + c * (cur.y - p.y);
-    return LoopClosure(start, n - 1, p.x, p.y, dth, r.x - rx, r.y - ry, dcm, dth * 180 / math.pi, r.hitRatio,
-        matchX: r.x, matchY: r.y, matchH: r.h);
+    return LoopClosure(start, n - 1, p.x, p.y, dth, mx - rx, my - ry, dcm, dth * 180 / math.pi, r.hitRatio,
+        matchX: mx, matchY: my, matchH: r.h);
   }
 
   /// Transform a pose by a fraction w (0..1) of the correction.
