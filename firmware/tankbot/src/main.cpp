@@ -22,6 +22,7 @@
 #include "mbedtls/base64.h"
 #include <math.h>
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "secrets.h"
 #include "web_ui.h"
 
@@ -234,6 +235,7 @@ uint32_t apSinceMs = 0;
 // Outdoor mode: run the robot's own hotspot on purpose (remembered across restarts) and never drop
 // it to retry home Wi-Fi, so the brain and controller stay connected away from home.
 bool outdoorMode = false;
+bool altMac = false; // alternate network address (see applyNetMac)
 
 // ================= REFLEX state =================
 bool blockDir[4] = {false, false, false, false};
@@ -830,6 +832,8 @@ void handleInfo() {
   if (!apMode) doc["rssi"] = WiFi.RSSI();
   doc["fw"] = FW_VERSION;
   doc["outdoor"] = outdoorMode;
+  doc["netmac"] = altMac ? "alt" : "factory";
+  if (!apMode) { doc["bssid"] = WiFi.BSSIDstr(); doc["channel"] = WiFi.channel(); }
   if (brainAlive()) doc["brain"] = brainUrl();
   String out;
   serializeJson(doc, out);
@@ -1022,14 +1026,26 @@ void startHotspot(const char *why) {
   Serial.printf("[wifi] %s -> access point '%s' at %s\n", why, AP_SSID, WiFi.softAPIP().toString().c_str());
 }
 
+void applyNetMac() {
+  if (!altMac) return;
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  mac[0] |= 0x02; // locally administered, still unicast
+  mac[0] &= 0xFE;
+  esp_wifi_set_mac(WIFI_IF_STA, mac);
+  Serial.printf("[wifi] using alternate address %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 void setupNetwork() {
   prefs.begin("tankbot", true);
   outdoorMode = prefs.getBool("outdoor", false);
+  altMac = prefs.getBool("altmac", false);
   prefs.end();
   if (outdoorMode) {
     startHotspot("outdoor mode");
   } else {
   WiFi.mode(WIFI_STA);
+  applyNetMac();
   WiFi.setHostname(HOSTNAME);
   WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -1122,7 +1138,46 @@ void setup() {
   lastByteMs = millis(); revStartMs = millis();
 }
 
+// ---- USB serial console (115200 baud): recovery commands that need no network ----
+String consoleLine;
+void consolePrintStatus() {
+  Serial.printf("[console] fw %s | wifi %s %s | rssi %d | bssid %s ch %d | ip %s | outdoor %s | netmac %s\n",
+                FW_VERSION, apMode ? "hotspot" : "home", apMode ? AP_SSID : WiFi.SSID().c_str(), apMode ? 0 : WiFi.RSSI(),
+                apMode ? "-" : WiFi.BSSIDstr().c_str(), apMode ? 0 : WiFi.channel(),
+                apMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
+                outdoorMode ? "on" : "off", altMac ? "alt" : "factory");
+}
+void consoleCommand(String c) {
+  c.trim();
+  if (c == "") return;
+  if (c == "help") {
+    Serial.println("[console] commands: status | netmac alt | netmac factory | outdoor on | outdoor off | restart");
+  } else if (c == "status") {
+    consolePrintStatus();
+  } else if (c == "netmac alt" || c == "netmac factory") {
+    prefs.begin("tankbot", false); prefs.putBool("altmac", c == "netmac alt"); prefs.end();
+    Serial.printf("[console] network address set to %s: restarting\n", c == "netmac alt" ? "alternate" : "factory");
+    delay(200); ESP.restart();
+  } else if (c == "outdoor on" || c == "outdoor off") {
+    prefs.begin("tankbot", false); prefs.putBool("outdoor", c == "outdoor on"); prefs.end();
+    Serial.printf("[console] outdoor mode %s: restarting\n", c == "outdoor on" ? "on" : "off");
+    delay(200); ESP.restart();
+  } else if (c == "restart") {
+    Serial.println("[console] restarting"); delay(200); ESP.restart();
+  } else {
+    Serial.printf("[console] unknown command '%s' (try help)\n", c.c_str());
+  }
+}
+void consoleLoop() {
+  while (Serial.available()) {
+    char ch = (char)Serial.read();
+    if (ch == '\n' || ch == '\r') { consoleCommand(consoleLine); consoleLine = ""; }
+    else if (consoleLine.length() < 60) consoleLine += ch;
+  }
+}
+
 void loop() {
+  consoleLoop();
   if (hw.lidar) {
     while (Lidar.available()) { lidarByte(Lidar.read()); lastByteMs = millis(); }
     if (millis() - lastByteMs > 8000) { Serial.println("[lidar] no data for 8 s, restarting scan"); lidarStartScan(); lastByteMs = millis(); }
