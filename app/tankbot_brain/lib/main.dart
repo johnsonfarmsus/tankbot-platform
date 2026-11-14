@@ -2075,6 +2075,10 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final heard = (scan != null && !stale) || sensors.fresh;
     if (heard) {
       _lastRobotHeardMs = now;
+      if (!_robotLinkUp) {
+        _robotLinkUp = true;
+        _event('robot link restored', 'after ${((now - _robotLostMs) / 1000).round()} s without the robot');
+      }
       _onRobotHeard();
       final s = widget.settings;
       if (s != null && robotIp != null && s.lastRobotIp != robotIp) {
@@ -2087,6 +2091,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         if (navActive) _navCancel('Stopped: the robot stopped responding (power? Wi-Fi?)');
       }
       if (now - _lastRobotHeardMs > 8000) _robotSynced = false; // sync again when it's back
+      if (_robotLinkUp && _robotSilentS() > 3) {
+        _robotLinkUp = false;
+        _robotLostMs = now;
+        _event('robot link lost', 'nothing from the robot for 3 s (robot at ${robotIp ?? "?"})');
+      }
       if (now - _lastRobotHeardMs > 8000 && now - _lastReconnectMs > 8000) {
         _lastReconnectMs = now; // look for it again every 8 s while it stays quiet
         _connectRobot();
@@ -2181,6 +2190,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
   }
 
   Map<String, dynamic>? robotNet; // {"outdoor": bool, "mode": "hotspot"|"wifi"}
+  bool _robotLinkUp = true;
+  double _robotLostMs = 0;
   double _lastNetCheckMs = -1e9;
 
   /// On connect: the newer settings win (robot or brain); a map the robot has that this brain doesn't

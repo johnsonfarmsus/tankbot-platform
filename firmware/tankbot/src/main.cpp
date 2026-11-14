@@ -23,6 +23,7 @@
 #include <math.h>
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "ping/ping_sock.h"
 #include "secrets.h"
 #include "web_ui.h"
 
@@ -235,7 +236,11 @@ uint32_t apSinceMs = 0;
 // Outdoor mode: run the robot's own hotspot on purpose (remembered across restarts) and never drop
 // it to retry home Wi-Fi, so the brain and controller stay connected away from home.
 bool outdoorMode = false;
-bool altMac = false; // alternate network address (see applyNetMac)
+int macGen = 0; // network address: 0 = factory, 1, 2, ... = alternates (see applyNetMac)
+// Wi-Fi watchdog state (see netWatchdog)
+int netFailStreak = 0, netReconnects = 0, netRecoveries = 0;
+String netLastRecovery = "";
+uint32_t gatewayRttMs = 0, netCheckAtMs = 15000, pingStartMs = 0;
 
 // ================= REFLEX state =================
 bool blockDir[4] = {false, false, false, false};
@@ -832,7 +837,12 @@ void handleInfo() {
   if (!apMode) doc["rssi"] = WiFi.RSSI();
   doc["fw"] = FW_VERSION;
   doc["outdoor"] = outdoorMode;
-  doc["netmac"] = altMac ? "alt" : "factory";
+  doc["netmac"] = macGen == 0 ? String("factory") : String("alt ") + macGen;
+  JsonObject net = doc["net"].to<JsonObject>();
+  net["ok"] = netFailStreak == 0;
+  net["routerMs"] = gatewayRttMs;
+  net["recoveries"] = netRecoveries;
+  if (netLastRecovery.length()) net["last"] = netLastRecovery;
   if (!apMode) { doc["bssid"] = WiFi.BSSIDstr(); doc["channel"] = WiFi.channel(); }
   if (brainAlive()) doc["brain"] = brainUrl();
   String out;
@@ -1026,12 +1036,114 @@ void startHotspot(const char *why) {
   Serial.printf("[wifi] %s -> access point '%s' at %s\n", why, AP_SSID, WiFi.softAPIP().toString().c_str());
 }
 
+// ---- Wi-Fi watchdog ----
+// "Connected" isn't enough: a router or mesh can keep an association while traffic to the robot goes
+// nowhere. Every 10 s ping the router (its reply is traffic *to* the robot). After 3 failed checks,
+// stop and reconnect to the best other access point on the network; if two reconnects don't help,
+// switch to a new network address and restart (a stale router entry for the old one then can't matter).
+volatile int pingReplies = 0;
+volatile bool pingDone = true;
+volatile uint32_t pingRtt = 0;
+bool pingRunning = false;
+
+static void onPingSuccess(esp_ping_handle_t h, void *) {
+  uint32_t t = 0;
+  esp_ping_get_profile(h, ESP_PING_PROF_TIMEGAP, &t, sizeof(t));
+  pingRtt = t;
+  pingReplies++;
+}
+static void onPingTimeout(esp_ping_handle_t, void *) {}
+static void onPingEnd(esp_ping_handle_t h, void *) {
+  pingDone = true;
+  esp_ping_delete_session(h);
+}
+
+void startRouterPing() {
+  esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
+  cfg.target_addr.type = IPADDR_TYPE_V4;
+  cfg.target_addr.u_addr.ip4.addr = static_cast<uint32_t>(WiFi.gatewayIP());
+  cfg.count = 3;
+  cfg.interval_ms = 300;
+  cfg.timeout_ms = 1000;
+  esp_ping_callbacks_t cbs = {};
+  cbs.on_ping_success = onPingSuccess;
+  cbs.on_ping_timeout = onPingTimeout;
+  cbs.on_ping_end = onPingEnd;
+  esp_ping_handle_t h;
+  pingReplies = 0;
+  pingDone = false;
+  if (esp_ping_new_session(&cfg, &cbs, &h) == ESP_OK) esp_ping_start(h);
+  else pingDone = true;
+}
+
+void netRecover() {
+  netFailStreak = 0;
+  netRecoveries++;
+  stopMotorsRaw();
+  if (netReconnects >= 2) {
+    prefs.begin("tankbot", false); prefs.putInt("macgen", macGen + 1); prefs.end();
+    Serial.printf("[net] reconnecting didn't help: new network address (generation %d), restarting\n", macGen + 1);
+    delay(200);
+    ESP.restart();
+  }
+  netReconnects++;
+  uint8_t bad[6];
+  memcpy(bad, WiFi.BSSID(), 6);
+  const int n = WiFi.scanNetworks(false, false);
+  int best = -1;
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) != WIFI_SSID || !memcmp(WiFi.BSSID(i), bad, 6)) continue;
+    if (best < 0 || WiFi.RSSI(i) > WiFi.RSSI(best)) best = i;
+  }
+  WiFi.disconnect();
+  delay(100);
+  if (best >= 0) {
+    uint8_t b[6];
+    memcpy(b, WiFi.BSSID(best), 6);
+    const int ch = WiFi.channel(best);
+    netLastRecovery = "joined another access point (" + WiFi.BSSIDstr(best) + ")";
+    WiFi.begin(WIFI_SSID, WIFI_PASS, ch, b);
+  } else {
+    netLastRecovery = "reconnected (no other access point found)";
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+  }
+  WiFi.scanDelete();
+  Serial.printf("[net] router unreachable: %s\n", netLastRecovery.c_str());
+  netCheckAtMs = millis() + 20000; // give the new connection time
+}
+
+void netWatchdog() {
+  if (apMode || WiFi.status() != WL_CONNECTED) return;
+  const uint32_t now = millis();
+  if (pingRunning) {
+    if (!pingDone && now - pingStartMs < 6000) return;
+    pingRunning = false;
+    if (pingReplies > 0) {
+      gatewayRttMs = pingRtt;
+      if (netFailStreak) Serial.println("[net] router reachable again");
+      netFailStreak = 0;
+      netReconnects = 0;
+    } else {
+      netFailStreak++;
+      Serial.printf("[net] router didn't answer (%d of 3)\n", netFailStreak);
+      if (netFailStreak >= 3) netRecover();
+    }
+    return;
+  }
+  if ((int32_t)(now - netCheckAtMs) < 0) return;
+  netCheckAtMs = now + 10000;
+  pingRunning = true;
+  pingStartMs = now;
+  startRouterPing();
+}
+
 void applyNetMac() {
-  if (!altMac) return;
+  if (macGen <= 0) return;
   uint8_t mac[6];
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
   mac[0] |= 0x02; // locally administered, still unicast
   mac[0] &= 0xFE;
+  mac[5] ^= (uint8_t)(macGen - 1); // a different address for each generation
   esp_wifi_set_mac(WIFI_IF_STA, mac);
   Serial.printf("[wifi] using alternate address %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
@@ -1039,7 +1151,7 @@ void applyNetMac() {
 void setupNetwork() {
   prefs.begin("tankbot", true);
   outdoorMode = prefs.getBool("outdoor", false);
-  altMac = prefs.getBool("altmac", false);
+  macGen = prefs.getInt("macgen", prefs.getBool("altmac", false) ? 1 : 0);
   prefs.end();
   if (outdoorMode) {
     startHotspot("outdoor mode");
@@ -1145,18 +1257,21 @@ void consolePrintStatus() {
                 FW_VERSION, apMode ? "hotspot" : "home", apMode ? AP_SSID : WiFi.SSID().c_str(), apMode ? 0 : WiFi.RSSI(),
                 apMode ? "-" : WiFi.BSSIDstr().c_str(), apMode ? 0 : WiFi.channel(),
                 apMode ? WiFi.softAPIP().toString().c_str() : WiFi.localIP().toString().c_str(),
-                outdoorMode ? "on" : "off", altMac ? "alt" : "factory");
+                outdoorMode ? "on" : "off", macGen == 0 ? "factory" : (String("alt ") + macGen).c_str());
+  Serial.printf("[console] network check: %s, router %u ms, recoveries %d%s%s\n", netFailStreak == 0 ? "ok" : "failing",
+                (unsigned)gatewayRttMs, netRecoveries, netLastRecovery.length() ? ", last: " : "", netLastRecovery.c_str());
 }
 void consoleCommand(String c) {
   c.trim();
   if (c == "") return;
   if (c == "help") {
-    Serial.println("[console] commands: status | netmac alt | netmac factory | outdoor on | outdoor off | restart");
+    Serial.println("[console] commands: status | netmac alt | netmac next | netmac factory | outdoor on | outdoor off | restart");
   } else if (c == "status") {
     consolePrintStatus();
-  } else if (c == "netmac alt" || c == "netmac factory") {
-    prefs.begin("tankbot", false); prefs.putBool("altmac", c == "netmac alt"); prefs.end();
-    Serial.printf("[console] network address set to %s: restarting\n", c == "netmac alt" ? "alternate" : "factory");
+  } else if (c == "netmac alt" || c == "netmac factory" || c == "netmac next") {
+    const int g = c == "netmac factory" ? 0 : (c == "netmac alt" ? 1 : macGen + 1);
+    prefs.begin("tankbot", false); prefs.putInt("macgen", g); prefs.end();
+    Serial.printf("[console] network address set to %s: restarting\n", g == 0 ? "factory" : (String("alternate ") + g).c_str());
     delay(200); ESP.restart();
   } else if (c == "outdoor on" || c == "outdoor off") {
     prefs.begin("tankbot", false); prefs.putBool("outdoor", c == "outdoor on"); prefs.end();
@@ -1193,6 +1308,7 @@ void loop() {
   handleLidarUdp();
   handleSensorUdp();
   wifiRecovery();
+  netWatchdog();
 
   static uint32_t lastLidarStatus = 0, lastMotionStatus = 0, lastSensorFeed = 0, lastLog = 0;
   uint32_t now = millis();

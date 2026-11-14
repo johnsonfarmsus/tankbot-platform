@@ -664,6 +664,8 @@ const char MAIN_page[] PROGMEM = R"=====(
           'Name: <a href="http://' + i.host + '/">' + i.host + '</a><br>' +
           (i.mode === 'hotspot' ? 'Running its own hotspot: ' + i.ssid : 'Wi-Fi: ' + i.ssid + signal) + '<br>' +
           (i.brain ? 'Brain: <a href="' + i.brain + '">' + i.brain + '</a><br>' : '') +
+          (i.net ? 'Network check: ' + (i.net.ok ? 'OK, router ' + i.net.routerMs + ' ms' : 'trouble, recovering') +
+            (i.net.recoveries ? ' (' + i.net.recoveries + ' recoveries' + (i.net.last ? ', last: ' + i.net.last : '') + ')' : '') + '<br>' : '') +
           'Firmware ' + i.fw +
           '<div style="margin-top:12px"><button id="outdoorBtn" style="padding:8px 12px;border-radius:8px;border:1px solid #888;background:#fff;cursor:pointer">' +
           (i.outdoor ? 'Back to home Wi-Fi' : 'Outdoor mode: use the robot\'s own Wi-Fi') + '</button>' +
