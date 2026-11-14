@@ -124,10 +124,16 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
   nav.tabs button { flex: 1; padding: 6px 4px; }
   .extlink { display: none; }
   #drive { flex-direction: column; }
-  .panel { width: 100%; border-left: none; border-top: 1px solid var(--line); flex-direction: row; flex-wrap: wrap; padding: 10px; gap: 10px; }
-  #stick { width: 140px; height: 140px; order: 2; align-self: flex-end; }
+  .panel { width: 100%; border-left: none; border-top: 1px solid var(--line); flex-direction: row; flex-wrap: nowrap; align-items: center; padding: 8px 10px; gap: 10px; }
+  #stick { width: 128px; height: 128px; order: 2; align-self: center; flex: none; }
   body.leftstick #stick { order: 0; }
-  .panel .grow { flex: 1; min-width: 160px; }
+  /* one screen, no scrolling: compact controls beside the joystick, the map gets the rest */
+  .panel .grow { min-width: 0; gap: 6px; }
+  .panel .grow button, .panel .seg button { padding: 7px 6px; font-size: 14px; }
+  .panel .bigstop { padding: 9px; font-size: 16px; }
+  .panel .grow label { font-size: 13px; }
+  #mapModeHint { display: none; }
+  .panel .grow { flex: 1; }
   .panel .hidesmall { display: none; }
   .scroll { padding: 10px; }
 }
