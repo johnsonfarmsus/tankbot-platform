@@ -667,19 +667,8 @@ const char MAIN_page[] PROGMEM = R"=====(
           (i.net ? 'Network check: ' + (i.net.ok ? 'OK, router ' + i.net.routerMs + ' ms' : 'trouble, recovering') +
             (i.net.recoveries ? ' (' + i.net.recoveries + ' recoveries' + (i.net.last ? ', last: ' + i.net.last : '') + ')' : '') + '<br>' : '') +
           'Firmware ' + i.fw +
-          '<div style="margin-top:12px"><button id="outdoorBtn" style="padding:8px 12px;border-radius:8px;border:1px solid #888;background:#fff;cursor:pointer">' +
-          (i.outdoor ? 'Back to home Wi-Fi' : 'Outdoor mode: use the robot\'s own Wi-Fi') + '</button>' +
-          '<div style="margin-top:6px;color:#777">' + (i.outdoor
-            ? 'Outdoor mode is on: the robot runs its own Wi-Fi "TankBot" and keeps it, even with nobody connected.'
-            : 'For trips away from home: the robot runs its own Wi-Fi "TankBot" so phones stay connected. Join "TankBot" on the brain phone and this phone afterwards.') +
-          '</div></div>';
-        document.getElementById('outdoorBtn').onclick = function() {
-          const next = i.outdoor ? 'home' : 'hotspot';
-          if (!confirm(i.outdoor ? 'Switch back to home Wi-Fi? The robot restarts its Wi-Fi.'
-                                 : 'Switch to outdoor mode? The robot restarts its Wi-Fi as "TankBot". Then join "TankBot" on your phones.')) return;
-          fetch('/api/wifi', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({mode: next})});
-          box.textContent = next === 'hotspot' ? 'Switching to outdoor mode: join the "TankBot" Wi-Fi, then open http://192.168.4.1/' : 'Switching back to home Wi-Fi: rejoin your home network, then open http://tankbot.local/';
-        };
+          '<div style="margin-top:8px;color:#777">The robot always runs its own Wi-Fi "' + (i.robotNet || 'TankBot') +
+          '" (' + (i.robotNetClients || 0) + ' connected) and joins the home Wi-Fi when in range.</div>';
       }).catch(() => { box.textContent = "Couldn't look up the address."; });
     }
 

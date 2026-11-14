@@ -36,7 +36,7 @@ class _RoleChooserState extends State<RoleChooser> {
       setState(() => _secondsLeft--);
       if (_secondsLeft <= 0) {
         t.cancel();
-        widget.onChosen(last, brainUrl: last == AppRole.controller ? _brainUrl : null);
+        widget.onChosen(last, brainUrl: last == AppRole.controller ? _controllerUrl : null);
       }
     });
   }
@@ -99,6 +99,10 @@ class _RoleChooserState extends State<RoleChooser> {
     _startCountdown();
   }
 
+  /// Where a controller should point: the robot relays the brain on port 8080 from either network, so
+  /// one name works at home and away (tankbot.local). Null if no brain was found.
+  String? get _controllerUrl => _brainUrl == null ? null : 'http://tankbot.local:8080/';
+
   /// A brain is running on some other device.
   bool get _otherBrain => _brainUrl != null && (_myIp == null || !_brainUrl!.contains('//$_myIp:'));
 
@@ -119,11 +123,11 @@ class _RoleChooserState extends State<RoleChooser> {
       );
       if (!mounted || choice == null) return;
       if (choice == 'controller') {
-        widget.onChosen(AppRole.controller, brainUrl: _brainUrl);
+        widget.onChosen(AppRole.controller, brainUrl: _controllerUrl);
         return;
       }
     }
-    widget.onChosen(role, brainUrl: role == AppRole.controller ? _brainUrl : null);
+    widget.onChosen(role, brainUrl: role == AppRole.controller ? _controllerUrl : null);
   }
 
   @override

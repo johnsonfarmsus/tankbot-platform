@@ -508,18 +508,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         final gxv = (m['x'] as num?)?.toDouble(), gyv = (m['y'] as num?)?.toDouble();
         if (gxv != null && gyv != null) _navGoto(gxv, gyv);
         break;
-      case 'robot.outdoor': // outdoor mode on / off (the robot restarts its Wi-Fi)
-        final ip = robotIp;
-        final on = m['on'] == true;
-        if (ip == null) {
-          _flash('No robot connected');
-          break;
-        }
-        RobotStore.setWifi(ip, on).then((ok) => _flash(ok
-            ? (on
-                ? 'Outdoor mode: the robot is starting its own Wi-Fi "TankBot". Join it on this phone and the controller phone.'
-                : 'Back to home Wi-Fi: the robot is rejoining your home network.')
-            : "Couldn't switch the robot's Wi-Fi"));
+      case 'robot.outdoor': // old controllers: outdoor mode is gone (the robot network is always on)
+        _flash('Not needed any more: the robot always runs its own network (TankBot) and joins home Wi-Fi when in range');
         break;
       case 'nav.gotoGeo': // a destination as latitude / longitude
         final ll = m['text'] is String

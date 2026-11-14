@@ -237,6 +237,9 @@ uint32_t apSinceMs = 0;
 // it to retry home Wi-Fi, so the brain and controller stay connected away from home.
 bool outdoorMode = false;
 int macGen = 0; // network address: 0 = factory, 1, 2, ... = alternates (see applyNetMac)
+int routerCh = 0; // the home router's channel, remembered so the robot network can sit on it
+extern uint32_t loopHz, loopMaxShown;
+void rememberRouterChannel();
 // Wi-Fi watchdog state (see netWatchdog)
 int netFailStreak = 0, netReconnects = 0, netRecoveries = 0;
 String netLastRecovery = "";
@@ -802,28 +805,77 @@ void handleHardware() {
 }
 void handleSensors() { server.send(200, "application/json", sensorsJson()); }
 
+// ---- Relay: anything connecting to the robot on port 8080 is passed through to the brain ----
+// So http://tankbot.local:8080/ reaches the brain from the home Wi-Fi and from the robot network alike.
+WiFiServer relayServer(8080);
+struct RelayPair { WiFiClient a, b; bool used = false; };
+RelayPair relays[5];
+uint8_t relayBuf[1460];
+
+void relayPump(WiFiClient &from, WiFiClient &to) {
+  int budget = 8192;
+  while (budget > 0) {
+    int n = from.available();
+    if (n <= 0) break;
+    n = from.read(relayBuf, min(n, (int)sizeof(relayBuf)));
+    if (n <= 0) break;
+    to.write(relayBuf, n);
+    budget -= n;
+  }
+}
+
+void relayLoop() {
+  WiFiClient c = relayServer.accept();
+  if (c) {
+    int slot = -1;
+    for (int i = 0; i < 5; i++) if (!relays[i].used) { slot = i; break; }
+    if (slot < 0 || !brainAlive() || !relays[slot].b.connect(brainIp, brainPort, 2000)) {
+      c.stop();
+    } else {
+      c.setNoDelay(true);
+      relays[slot].b.setNoDelay(true);
+      relays[slot].a = c;
+      relays[slot].used = true;
+    }
+  }
+  for (auto &r : relays) {
+    if (!r.used) continue;
+    // up to 8 KB each way per loop: quick for map pictures, without holding up the lidar and motors
+    relayPump(r.a, r.b);
+    relayPump(r.b, r.a);
+    if ((!r.a.connected() && !r.a.available()) || (!r.b.connected() && !r.b.available())) {
+      r.a.stop(); r.b.stop(); r.used = false;
+    }
+  }
+}
+
+void relayTask(void *) {
+  for (;;) {
+    relayLoop();
+    vTaskDelay(1);
+  }
+}
+
+/// The brain's address as seen from where the asker is: direct on the robot network, through the
+/// relay (this robot, port 8080) from anywhere else.
+String brainUrlFor(const IPAddress &local) {
+  if (local == WiFi.softAPIP()) return brainUrl();
+  return "http://" + local.toString() + ":8080/";
+}
+
 /// GET /api/wifi -> {"outdoor": bool, "mode": "hotspot"|"wifi"}.
 /// POST /api/wifi {"mode":"hotspot"} (outdoor mode) or {"mode":"home"}: saved, then the robot restarts
 /// its Wi-Fi that way.
+/// GET /api/wifi -> the robot's networks. (Outdoor mode is gone: the robot network is always on.)
 void handleWifiApi() {
+  const bool up = WiFi.status() == WL_CONNECTED;
   if (server.method() == HTTP_POST) {
-    JsonDocument d;
-    if (deserializeJson(d, server.arg("plain")) || !d["mode"].is<const char *>()) {
-      server.send(400, "application/json", "{\"error\":\"mode must be hotspot or home\"}");
-      return;
-    }
-    const bool out = !strcmp(d["mode"], "hotspot");
-    prefs.begin("tankbot", false);
-    prefs.putBool("outdoor", out);
-    prefs.end();
-    server.send(200, "application/json", out ? "{\"ok\":true,\"outdoor\":true}" : "{\"ok\":true,\"outdoor\":false}");
-    Serial.printf("[wifi] switching to %s mode: restarting\n", out ? "outdoor (hotspot)" : "home Wi-Fi");
-    delay(400);
-    ESP.restart();
+    server.send(410, "application/json", "{\"error\":\"not needed: the robot network is always on\"}");
     return;
   }
-  server.send(200, "application/json", String("{\"outdoor\":") + (outdoorMode ? "true" : "false") +
-                                            ",\"mode\":\"" + (apMode ? "hotspot" : "wifi") + "\"}");
+  server.send(200, "application/json", String("{\"router\":") + (up ? "true" : "false") +
+              (up ? ",\"rssi\":" + String(WiFi.RSSI()) : String("")) +
+              ",\"robotNet\":\"" + String(AP_SSID) + "\",\"clients\":" + String(WiFi.softAPgetStationNum()) + "}");
 }
 
 /// GET /api/info - how to reach this robot (shown in the drive page's settings panel).
@@ -831,10 +883,16 @@ void handleInfo() {
   JsonDocument doc;
   doc["name"] = hw.name;
   doc["host"] = String(HOSTNAME) + ".local";
-  doc["ip"] = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
-  doc["mode"] = apMode ? "hotspot" : "wifi";
-  doc["ssid"] = apMode ? String(AP_SSID) : WiFi.SSID();
-  if (!apMode) doc["rssi"] = WiFi.RSSI();
+  const bool up = WiFi.status() == WL_CONNECTED;
+  doc["ip"] = up ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
+  doc["mode"] = up ? "wifi" : "robot network";
+  doc["ssid"] = up ? WiFi.SSID() : String("");
+  if (up) doc["rssi"] = WiFi.RSSI();
+  doc["robotNet"] = AP_SSID;
+  doc["loopHz"] = loopHz;
+  doc["loopMaxMs"] = loopMaxShown;
+  doc["robotNetIp"] = WiFi.softAPIP().toString();
+  doc["robotNetClients"] = WiFi.softAPgetStationNum();
   doc["fw"] = FW_VERSION;
   doc["outdoor"] = outdoorMode;
   doc["netmac"] = macGen == 0 ? String("factory") : String("alt ") + macGen;
@@ -843,7 +901,7 @@ void handleInfo() {
   net["routerMs"] = gatewayRttMs;
   net["recoveries"] = netRecoveries;
   if (netLastRecovery.length()) net["last"] = netLastRecovery;
-  if (!apMode) { doc["bssid"] = WiFi.BSSIDstr(); doc["channel"] = WiFi.channel(); }
+  if (up) { doc["bssid"] = WiFi.BSSIDstr(); doc["channel"] = WiFi.channel(); }
   if (brainAlive()) doc["brain"] = brainUrl();
   String out;
   serializeJson(doc, out);
@@ -960,14 +1018,15 @@ void handleMapEnd() {
 
 /// Where the brain's full controls are (empty object if no brain has been seen in 10 s).
 void handleBrainApi() {
-  server.send(200, "application/json", brainAlive() ? "{\"url\":\"" + brainUrl() + "\"}" : "{}");
+  server.send(200, "application/json", brainAlive() ? "{\"url\":\"" + brainUrlFor(server.client().localIP()) + "\"}" : "{}");
 }
 
 /// tankbot.local/brain: the one address to bookmark; it always leads to the brain, wherever it is.
 void handleBrainRedirect() {
   if (brainAlive()) {
-    server.sendHeader("Location", brainUrl());
-    server.send(302, "text/plain", "Brain at " + brainUrl());
+    const String u = brainUrlFor(server.client().localIP());
+    server.sendHeader("Location", u);
+    server.send(302, "text/plain", "Brain at " + u);
     return;
   }
   server.send(200, "text/html",
@@ -1079,8 +1138,7 @@ void startRouterPing() {
 void netRecover() {
   netFailStreak = 0;
   netRecoveries++;
-  stopMotorsRaw();
-  if (netReconnects >= 2) {
+  if (netReconnects >= 2 && millis() - lastCmdMs > 15000) { // only while parked: it restarts the robot
     prefs.begin("tankbot", false); prefs.putInt("macgen", macGen + 1); prefs.end();
     Serial.printf("[net] reconnecting didn't help: new network address (generation %d), restarting\n", macGen + 1);
     delay(200);
@@ -1119,28 +1177,15 @@ uint32_t netDownSinceMs = 0, netRejoinAtMs = 0;
 int netRejoins = 0;
 
 void netRejoin() {
-  stopMotorsRaw();
   netRejoins++;
-  const int n = WiFi.scanNetworks(false, false);
-  int best = -1;
-  for (int i = 0; i < n; i++) {
-    if (WiFi.SSID(i) != WIFI_SSID) continue;
-    if (best < 0 || WiFi.RSSI(i) > WiFi.RSSI(best)) best = i;
-  }
-  WiFi.disconnect();
-  delay(100);
-  if (best >= 0) {
-    uint8_t b[6];
-    memcpy(b, WiFi.BSSID(best), 6);
-    const int ch = WiFi.channel(best);
-    netLastRecovery = "rejoined after losing Wi-Fi (" + WiFi.BSSIDstr(best) + ", " + String(WiFi.RSSI(best)) + " dBm)";
-    WiFi.begin(WIFI_SSID, WIFI_PASS, ch, b);
-  } else {
-    netLastRecovery = "home Wi-Fi not in range, still trying";
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-  }
-  WiFi.scanDelete();
-  Serial.printf("[net] no Wi-Fi for %lus: %s\n", (unsigned long)((millis() - netDownSinceMs) / 1000), netLastRecovery.c_str());
+  // retry on the router's channel only: a full scan hops channels and would stutter the robot network
+  // the brain is on. Every 5th try with nobody on the robot network, do a full scan (the router may
+  // have changed channel).
+  const bool full = routerCh <= 0 || (netRejoins % 5 == 0 && WiFi.softAPgetStationNum() == 0);
+  WiFi.disconnect(false, false);
+  WiFi.begin(WIFI_SSID, WIFI_PASS, full ? 0 : routerCh);
+  netLastRecovery = full ? "looking for home Wi-Fi on every channel" : "home Wi-Fi out of range, retrying";
+  Serial.printf("[net] no home Wi-Fi for %lus: %s\n", (unsigned long)((millis() - netDownSinceMs) / 1000), netLastRecovery.c_str());
 }
 
 void netWatchdog() {
@@ -1152,7 +1197,7 @@ void netWatchdog() {
       netRejoinAtMs = now + 20000;
       Serial.println("[net] Wi-Fi lost");
     } else if ((int32_t)(now - netRejoinAtMs) >= 0) {
-      netRejoinAtMs = now + 20000;
+      netRejoinAtMs = now + 30000;
       netRecoveries++;
       netRejoin();
     }
@@ -1160,6 +1205,8 @@ void netWatchdog() {
   }
   if (netDownSinceMs) {
     Serial.printf("[net] Wi-Fi back after %lus\n", (unsigned long)((now - netDownSinceMs) / 1000));
+    netLastRecovery = "home Wi-Fi back";
+    rememberRouterChannel();
     netDownSinceMs = 0;
     netCheckAtMs = now + 5000;
   }
@@ -1196,28 +1243,42 @@ void applyNetMac() {
   Serial.printf("[wifi] using alternate address %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+void rememberRouterChannel() {
+  const int ch = WiFi.channel();
+  if (ch > 0 && ch != routerCh) {
+    routerCh = ch;
+    prefs.begin("tankbot", false); prefs.putInt("routerch", ch); prefs.end();
+  }
+}
+
+/// Two networks at once, always: the robot's own "TankBot" network, where the brain lives (it rides
+/// right next to the robot, so that link never depends on the house Wi-Fi), and the home Wi-Fi
+/// whenever it is in range, so phones and computers on the home network reach the robot and, through
+/// the relay on port 8080, the brain. Driving out of the router's range changes nothing for the brain.
 void setupNetwork() {
   prefs.begin("tankbot", true);
-  outdoorMode = prefs.getBool("outdoor", false);
   macGen = prefs.getInt("macgen", prefs.getBool("altmac", false) ? 1 : 0);
+  routerCh = prefs.getInt("routerch", 0);
   prefs.end();
-  if (outdoorMode) {
-    startHotspot("outdoor mode");
-  } else {
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_AP_STA);
   applyNetMac();
   WiFi.setHostname(HOSTNAME);
   WiFi.setSleep(false);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.setAutoReconnect(false); // the watchdog retries, gently and on the router's channel
+  // one radio: the robot network sits on the router's channel so joining the router never moves it
+  WiFi.softAP(AP_SSID, AP_PASSWORD, routerCh > 0 ? routerCh : 1, 0, 6);
+  Serial.printf("[wifi] robot network '%s' at %s (channel %d)\n", AP_SSID, WiFi.softAPIP().toString().c_str(),
+                routerCh > 0 ? routerCh : 1);
+  WiFi.begin(WIFI_SSID, WIFI_PASS, routerCh);
   Serial.print("[wifi] joining home network");
   uint32_t t = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) { delay(250); Serial.print("."); }
+  while (WiFi.status() != WL_CONNECTED && millis() - t < 12000) { delay(250); Serial.print("."); }
   Serial.println();
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[wifi] connected, IP %s, RSSI %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    rememberRouterChannel();
   } else {
-    startHotspot("home network unavailable");
-  }
+    Serial.println("[wifi] home network not in range: robot network only for now");
   }
   if (MDNS.begin(HOSTNAME)) {
     MDNS.addService("http", "tcp", 80);
@@ -1252,6 +1313,9 @@ void setupNetwork() {
   Serial.printf("[fs] %s, %u of %u bytes used\n", fsOk ? "ready" : "FAILED",
                 fsOk ? (unsigned)LittleFS.usedBytes() : 0, fsOk ? (unsigned)LittleFS.totalBytes() : 0);
   server.begin();
+  relayServer.begin();
+  // its own task on core 0 (the main loop runs on core 1): motors and reflexes never wait on it
+  xTaskCreatePinnedToCore(relayTask, "relay", 8192, nullptr, 1, nullptr, 0);
   udpLidar.begin(LIDAR_PORT);
   udpMotion.begin(MOTION_PORT);
   udpSensor.begin(SENSOR_PORT);
@@ -1269,7 +1333,8 @@ void setupOta() {
 }
 
 void wifiRecovery() {
-  if (!apMode || outdoorMode) return; // outdoors the hotspot stays up, whoever is connected
+  return; // the robot network is always on; the watchdog handles the home Wi-Fi
+  if (!apMode || outdoorMode) return;
   if (WiFi.softAPgetStationNum() > 0) { apSinceMs = millis(); return; }
   if (millis() - apSinceMs > 60000) { Serial.println("[wifi] AP idle for 60 s: restarting to retry home Wi-Fi"); delay(100); ESP.restart(); }
 }
@@ -1339,7 +1404,16 @@ void consoleLoop() {
   }
 }
 
+uint32_t loopCount = 0, loopHz = 0, loopMaxMs = 0, loopMaxShown = 0, loopRateAtMs = 0, loopLastMs = 0;
+
 void loop() {
+  { // how often the loop comes round (and its slowest pass): motors, lidar and the relay all depend on it
+    const uint32_t m = millis();
+    if (loopLastMs && m - loopLastMs > loopMaxMs) loopMaxMs = m - loopLastMs;
+    loopLastMs = m;
+    loopCount++;
+    if (m - loopRateAtMs >= 1000) { loopHz = loopCount; loopCount = 0; loopRateAtMs = m; loopMaxShown = loopMaxMs; loopMaxMs = 0; }
+  }
   consoleLoop();
   if (hw.lidar) {
     while (Lidar.available()) { lidarByte(Lidar.read()); lastByteMs = millis(); }
