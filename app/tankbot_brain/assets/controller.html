@@ -125,7 +125,8 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
   .extlink { display: none; }
   #drive { flex-direction: column; }
   .panel { width: 100%; border-left: none; border-top: 1px solid var(--line); flex-direction: row; flex-wrap: wrap; padding: 10px; gap: 10px; }
-  #stick { width: 140px; height: 140px; }
+  #stick { width: 140px; height: 140px; order: 2; align-self: flex-end; }
+  body.leftstick #stick { order: 0; }
   .panel .grow { flex: 1; min-width: 160px; }
   .panel .hidesmall { display: none; }
   .scroll { padding: 10px; }
@@ -239,6 +240,7 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
     <h3>Places</h3>
     <div class="row"><input id="placeName" placeholder="Name this spot (e.g. Front door)" style="flex:1;min-width:180px"><button id="placeAdd">Save the robot&#39;s spot</button></div>
     <div id="placeList" class="small"></div>
+    <div class="row"><button id="geoReset">Reset GPS anchor</button></div>
   </div>
   <div class="card">
     <h2>Saved maps</h2>
@@ -317,6 +319,11 @@ canvas.botcanvas { background: var(--bg); border: 1px solid var(--line); border-
         <label>Depth height <input id="dmh" type="number" min="10" max="300" step="5" style="width:76px"> mm</label>
       </div>
       <div class="small">Depth camera (low obstacles the lidar can't see): block forward closer than the depth stop; only things at least this tall count. Raise the height if carpet or thresholds trigger it.</div>
+    </div>
+    <div class="card">
+      <h2>This phone</h2>
+      <label><input type="checkbox" id="leftStick"> Joystick on the left (left-handed)</label>
+      <div class="small">On phones the joystick sits bottom right, under a right thumb. This setting is remembered on this phone only.</div>
     </div>
     <div class="card">
       <h2>Outdoor mode</h2>
@@ -1025,6 +1032,18 @@ function renderOutdoor(t) {
   $("outdoorState").textContent = !n ? "Robot network: unknown" :
     (n.outdoor ? "Outdoor mode is ON: the robot runs its own Wi-Fi (TankBot)." : "Outdoor mode is off: the robot uses home Wi-Fi" + (n.mode === "hotspot" ? " (currently unreachable, so it is on its fallback hotspot)." : "."));
 }
+(function () {
+  let left = false;
+  try { left = localStorage.getItem("tb.leftStick") === "1"; } catch (e) {}
+  document.body.classList.toggle("leftstick", left);
+  $("leftStick").checked = left;
+  $("leftStick").onchange = () => {
+    const v = $("leftStick").checked;
+    document.body.classList.toggle("leftstick", v);
+    try { localStorage.setItem("tb.leftStick", v ? "1" : "0"); } catch (e) {}
+  };
+})();
+$("geoReset").onclick = () => { if (confirm("Forget this map's GPS anchor and fixes? It re-anchors itself the next time you drive outdoors.")) send({type: "geo.reset"}); };
 $("geoGo").onclick = () => { const v = $("geoInput").value.trim(); if (v) send({type: "nav.gotoGeo", text: v}); };
 $("placeAdd").onclick = () => { const v = $("placeName").value.trim(); if (v) { send({type: "place.add", name: v}); $("placeName").value = ""; } };
 
@@ -1202,6 +1221,8 @@ function trayCards() {
     actions: [["Cancel", () => { setPosMode = false; posStart = null; cv.classList.remove("aiming"); renderTray(); }]]});
   const ex = t.explore;
   renderOutdoor(t);
+  if (ex && ex.offMap) cards.push({sev: "warn", title: "Driving off the map",
+    text: "Most of what the lidar sees isn't on this map, and Mapping is Off, so the robot can't place itself here. Switch Mapping to Maintain or Explore to map new areas (Explore for a first trip outside)."});
   if (ex && ex.otherBrain) cards.push({sev: "danger", title: "Two brains on one robot",
     text: "Another brain (" + ex.otherBrain + ") is also connected to this robot. They fight over it, so self-driving is off. Close the TankBot app on one of them, or switch it to Controller."});
   if (ex && ex.active) cards.push({sev: "info", title: "Exploring on its own", text: ex.note + (ex.targets ? " (" + ex.targets + " areas so far)" : ""),

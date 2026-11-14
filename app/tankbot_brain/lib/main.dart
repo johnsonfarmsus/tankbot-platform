@@ -181,6 +181,8 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (p == null || lat == null || lon == null || locState != 'tracking' || _loadingMap || _rebuilding) return;
     if (acc <= 0 || acc > profile.gpsMaxAccM) return;
     final now = appClockMs();
+    // only while tracking is solid: the last scan matched, and no position jump for 20 s
+    if (_matchMissStreak > 0 || now - _lastPoseJumpMs < 20000) return;
     final ss = active.geoSamples;
     if (ss.isNotEmpty) {
       final l = ss.last;
@@ -536,6 +538,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
           _navGoto(gx2, gy2);
         }
         break;
+      case 'geo.reset': // start the GPS anchor afresh (e.g. after fixes taken while lost)
+        active.geoSamples.clear();
+        active.anchor = null;
+        active.edited = true;
+        _event('map anchor reset', 'by the user');
+        _flash('GPS anchor reset: it re-anchors itself next time you drive outdoors');
+        break;
       case 'place.add': // name a spot (the robot's, unless x / y are given)
         final name = (m['name'] as String? ?? '').trim();
         final rp = robotPose;
@@ -791,6 +800,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
         'targets': exploreTargets,
         'cliffSensor': hasCliffSensor,
         'geo': _geoInfo(),
+        'offMap': mappingEffective == 'off' && locState == 'tracking' && _lastKnownFrac < 0.45,
         'robotNet': robotNet,
         'otherBrain': otherBrainActive ? otherBrain : null,
         'preview': explorePreview == null ? null : [explorePreview!.x, explorePreview!.y, explorePreview!.inRoom ? 1 : 0],
@@ -2117,7 +2127,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
 
   // ---------- position events: every change of position that isn't driving ----------
   // Documents/logs/events_YYYYMMDD.csv: time, kind, from x/y/h, to x/y/h, distance, turn, state, detail
+  double _lastPoseJumpMs = -1e9;
+  static const _jumpKinds = {'relocalized', 'wide search fix', 'set position (user)', 'heading jump'};
+
   void _event(String kind, String detail, {Pose? from, double? x, double? y, double? h}) {
+    if (_jumpKinds.contains(kind)) _lastPoseJumpMs = appClockMs();
     final d = _docsDir;
     if (d == null) return;
     try {
