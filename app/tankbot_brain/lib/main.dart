@@ -71,7 +71,11 @@ class _RoleGateState extends State<RoleGate> {
     setState(() => active = r);
   }
 
-  void _changeRole() => setState(() => active = null);
+  bool _autoStart = true; // only when the app opens, not after "change role"
+  void _changeRole() => setState(() {
+        active = null;
+        _autoStart = false;
+      });
 
   @override
   Widget build(BuildContext context) {
@@ -79,7 +83,7 @@ class _RoleGateState extends State<RoleGate> {
     if (s == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
     switch (active) {
       case null:
-        return RoleChooser(onChosen: _choose, lastRole: s.role, lastRobotIp: s.lastRobotIp);
+        return RoleChooser(onChosen: _choose, lastRole: s.role, lastRobotIp: s.lastRobotIp, autoStart: _autoStart);
       case AppRole.controller:
         return ControllerScreen(settings: s, onChangeRole: _changeRole);
       case AppRole.mounted:
@@ -2668,6 +2672,11 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     if (!robotMode || mountState != 'mounting') return;
     final now = appClockMs();
     if (now - _robotModeSinceMs < 5000 || !_motorsIdle) return;
+    if (_mode == 'lidar') {
+      // tracking with the lidar alone: it's bolted to the robot, the phone's position doesn't matter
+      _onMounted();
+      return;
+    }
     final h = poses.history;
     if (h.isEmpty) return;
     final last = h.last;
@@ -2692,7 +2701,7 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     while (_sigs.isNotEmpty && sig.t - _sigs.first.t > 1500) {
       _sigs.removeAt(0);
     }
-    if (mountState != 'mounted' || !_motorsIdle) return;
+    if (mountState != 'mounted' || !_motorsIdle || _mode == 'lidar') return;
     _ScanSig? old;
     for (final o in _sigs) {
       if (sig.t - o.t >= 450) old = o;
@@ -2704,6 +2713,13 @@ class _LidarScreenState extends State<LidarScreen> with WidgetsBindingObserver {
     final turned = _angDiff(p1.heading, p0.heading).abs();
     if (moved < 0.03 && turned < 0.052) return; // under 3 cm and 3 deg: fine
     if (_sceneChange(old.bins, sig.bins) > 0.15) return; // lidar saw the robot move too: consistent
+    // a knock turns the phone, and the gyro measures that directly: if it saw no turn, the camera
+    // tracking drifted (common on phones without depth) and the phone didn't move at all
+    final g0 = poses.gyroYawAt(old.t), g1 = poses.gyroYawAt(sig.t);
+    if (g0 != null && g1 != null && (g1 - g0).abs() < 0.035) {
+      _event('camera drifting while still', 'camera moved ${(moved * 100).round()} cm / ${(turned * 180 / math.pi).round()} deg, gyro still: not a knock');
+      return;
+    }
     disturbances++;
     mountState = 'mounting';
     mountNote = 'Phone moved on the robot - mapping paused until it settles';

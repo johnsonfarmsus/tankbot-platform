@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 // First-launch role chooser, and the Controller role (the app as a remote for a brain).
@@ -9,16 +10,47 @@ import 'app_settings.dart';
 /// Shown every time the app opens: what is this device doing today? The last choice is highlighted,
 /// and it checks whether the robot already has a brain, so two brains never fight over one robot.
 class RoleChooser extends StatefulWidget {
-  const RoleChooser({super.key, required this.onChosen, this.lastRole, this.lastRobotIp = ''});
+  const RoleChooser({super.key, required this.onChosen, this.lastRole, this.lastRobotIp = '', this.autoStart = false});
   final void Function(AppRole role, {String? brainUrl}) onChosen;
   final AppRole? lastRole;
   final String lastRobotIp;
+  /// On app launch: if nobody chooses within 10 s, start as last time (a phone in a robot's holder).
+  final bool autoStart;
   @override
   State<RoleChooser> createState() => _RoleChooserState();
 }
 
 class _RoleChooserState extends State<RoleChooser> {
   bool _checking = true;
+  Timer? _countdown;
+  int _secondsLeft = 0;
+
+  void _startCountdown() {
+    final last = widget.lastRole;
+    if (!widget.autoStart || last == null || _countdown != null) return;
+    // never start a second brain automatically
+    if ((last == AppRole.mounted || last == AppRole.brain) && _otherBrain) return;
+    _secondsLeft = 10;
+    _countdown = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) return t.cancel();
+      setState(() => _secondsLeft--);
+      if (_secondsLeft <= 0) {
+        t.cancel();
+        widget.onChosen(last, brainUrl: last == AppRole.controller ? _brainUrl : null);
+      }
+    });
+  }
+
+  void _stopCountdown() {
+    _countdown?.cancel();
+    if (_secondsLeft > 0 && mounted) setState(() => _secondsLeft = 0);
+  }
+
+  @override
+  void dispose() {
+    _countdown?.cancel();
+    super.dispose();
+  }
   String? _robotIp, _brainUrl, _myIp;
 
   @override
@@ -64,12 +96,14 @@ class _RoleChooserState extends State<RoleChooser> {
       _robotIp = robot;
       _brainUrl = brain;
     });
+    _startCountdown();
   }
 
   /// A brain is running on some other device.
   bool get _otherBrain => _brainUrl != null && (_myIp == null || !_brainUrl!.contains('//$_myIp:'));
 
   Future<void> _pick(AppRole role) async {
+    _stopCountdown();
     if ((role == AppRole.mounted || role == AppRole.brain) && _otherBrain) {
       final choice = await showDialog<String>(
         context: context,
@@ -141,7 +175,20 @@ class _RoleChooserState extends State<RoleChooser> {
                     : 'Robot found ($_robotIp)';
     return Scaffold(
       appBar: AppBar(title: const Text('TankBot: what is this device doing?')),
-      body: ListView(padding: const EdgeInsets.all(16), children: [
+      body: Listener(
+        onPointerDown: (_) => _stopCountdown(), // any touch: the person is choosing
+        child: ListView(padding: const EdgeInsets.all(16), children: [
+        if (_secondsLeft > 0 && widget.lastRole != null)
+          Card(
+            color: Colors.teal.withValues(alpha: 0.25),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text(
+                'Starting as ${_roleName(widget.lastRole!)} in $_secondsLeft s - touch the screen to choose instead',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
         Row(children: [
           Icon(_robotIp == null ? Icons.wifi_off : Icons.smart_toy,
               color: _checking ? Colors.white54 : (_robotIp == null ? Colors.amberAccent : Colors.tealAccent)),
@@ -165,8 +212,15 @@ class _RoleChooserState extends State<RoleChooser> {
                 style: TextStyle(color: Colors.amberAccent)),
           ),
       ]),
+      ),
     );
   }
+
+  String _roleName(AppRole r) => switch (r) {
+        AppRole.mounted => 'Mounted brain',
+        AppRole.brain => 'Brain in hand',
+        AppRole.controller => 'Controller',
+      };
 }
 
 class ControllerScreen extends StatefulWidget {
