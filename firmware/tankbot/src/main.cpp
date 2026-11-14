@@ -1112,9 +1112,57 @@ void netRecover() {
   netCheckAtMs = millis() + 20000; // give the new connection time
 }
 
+// Disconnected (out of range, then back): the built-in auto-reconnect can give up after a long
+// outage, so after 20 s without Wi-Fi rejoin actively: scan, join the best access point for the home
+// network, and repeat every 20 s until connected.
+uint32_t netDownSinceMs = 0, netRejoinAtMs = 0;
+int netRejoins = 0;
+
+void netRejoin() {
+  stopMotorsRaw();
+  netRejoins++;
+  const int n = WiFi.scanNetworks(false, false);
+  int best = -1;
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) != WIFI_SSID) continue;
+    if (best < 0 || WiFi.RSSI(i) > WiFi.RSSI(best)) best = i;
+  }
+  WiFi.disconnect();
+  delay(100);
+  if (best >= 0) {
+    uint8_t b[6];
+    memcpy(b, WiFi.BSSID(best), 6);
+    const int ch = WiFi.channel(best);
+    netLastRecovery = "rejoined after losing Wi-Fi (" + WiFi.BSSIDstr(best) + ", " + String(WiFi.RSSI(best)) + " dBm)";
+    WiFi.begin(WIFI_SSID, WIFI_PASS, ch, b);
+  } else {
+    netLastRecovery = "home Wi-Fi not in range, still trying";
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+  }
+  WiFi.scanDelete();
+  Serial.printf("[net] no Wi-Fi for %lus: %s\n", (unsigned long)((millis() - netDownSinceMs) / 1000), netLastRecovery.c_str());
+}
+
 void netWatchdog() {
-  if (apMode || WiFi.status() != WL_CONNECTED) return;
+  if (apMode) return;
   const uint32_t now = millis();
+  if (WiFi.status() != WL_CONNECTED) {
+    if (!netDownSinceMs) {
+      netDownSinceMs = now;
+      netRejoinAtMs = now + 20000;
+      Serial.println("[net] Wi-Fi lost");
+    } else if ((int32_t)(now - netRejoinAtMs) >= 0) {
+      netRejoinAtMs = now + 20000;
+      netRecoveries++;
+      netRejoin();
+    }
+    return;
+  }
+  if (netDownSinceMs) {
+    Serial.printf("[net] Wi-Fi back after %lus\n", (unsigned long)((now - netDownSinceMs) / 1000));
+    netDownSinceMs = 0;
+    netCheckAtMs = now + 5000;
+  }
   if (pingRunning) {
     if (!pingDone && now - pingStartMs < 6000) return;
     pingRunning = false;
